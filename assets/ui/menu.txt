@@ -1,0 +1,736 @@
+﻿;$screenSize = 800 480
+;$windowSize = 800 480
+;$windowYPos = 0
+;$autoResize = 1
+;$windowNameSize = 800 40
+;$buttonFrame0Width = 4
+;$buttonFrame1Width = 2
+;$buttonFrame2Width = 4
+;$buttonSize = 110 110
+;$button2x1Size = 220 110
+;$button3x1Size = 330 110
+;$jumpButtonSize = 110 110
+;$valuesSize = 220 220
+;$sliderLineWidth = 8
+;$sliderValueSize = 110 44
+;$hSliderSize = 330 110
+;$hSliderValueOffset = 455
+;$vSliderSize = 110 330
+;$vSliderValueOffset = -185
+;$offset1 = 110
+;$offset2 = 220
+;$offset3 = 330
+;$margin1 = 70
+;$margin2 = 180
+;$marginA = 235
+;$margin3 = 290
+;$margin4 = 400
+;$mtlSetsSize = 322 75
+;$mtlSetsPos = -74 -203
+;$mtlSetNSize = 46 40
+;$mtlSet0Pos = 0 0
+;$mtlSet1Pos = 46 0
+;$mtlSet2Pos = 92 0
+;$mtlSet3Pos = 138 0
+;$mtlSet4Pos = 184 0
+;$mtlSet5Pos = 230 0
+;$mtlSet6Pos = 276 0
+;$nextMtlSetSize = 70 165
+;$nextMtlSetPos = 0 -83
+;$prevMtlSetSize = 70 165
+;$prevMtlSetPos = 0 82
+;$mtlPanelSize = 330 330
+;$mtlScale = 64
+;$screenshotSize = 330 198
+;$playButtonSize = 398 266
+;$playButtonTextPos = 0 166
+;$messageSize = 322 58
+;$crosshairWidth = 2
+;$crosshairHeight = 16
+$backgroundColor = B4000000
+$fillColor = 38DCDCDC
+$textColor = C8DCDCDC
+$textShadowColor = 641E1E1E
+$selectionFrameColor = FF4080FF
+$buttonDefaultFrameColor = 78DCDCDC
+$buttonDefaultBackgroundColor = 00000000
+$buttonDefaultTextColor = FFDCDCDC
+$buttonDefaultTextShadowColor = $textShadowColor
+$buttonPressedFrameColor = FFDCDCDC
+$buttonPressedBackgroundColor = 64FAFAFA
+$buttonPressedTextColor = FFFFFFFF
+$buttonPressedTextShadowColor = $textShadowColor
+$buttonDisabledTextColor = 80DCDCDC
+$buttonDisabledTextShadowColor = $textShadowColor
+$messageBackgroundColor = DC805A2D
+$messageTextColor = FFFFFFFF
+
+UIElement
+  Name = "frame_background"
+  Size = $screenSize
+  State[0].Default.BackgroundColor = $backgroundColor
+  State[0].Pressed.BackgroundColor = $backgroundColor
+End
+
+UIElement
+  Name = "frame"
+  Parent = "frame_background"
+  Size = $windowSize
+  AutoResizeX = 1
+  AutoResizeY = $autoResize
+  HitTest = 0
+  XAlign = 0.5
+  YAlign = 0.5
+  Position = 0 $windowYPos
+End
+
+UIElement
+  Name = "menu_new_terrain"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $margin1 -$offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/NewTerrain/New\nTerrain"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_full_version"
+  Parent = "frame"
+  Visible = 0
+  Size = $buttonSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $margin1 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/FullVersion/Full\nVersion"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_select_terrain"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $margin1 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/SelectTerrain/Select\nTerrain"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_options"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $margin1 $offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/Options/Options"
+  Font = "Sans"
+End
+
+UIGridModelMtl
+  Name = "menu_GM0_mtl"
+  Parent = "frame"
+  HitTest = 0
+  Size = $mtlPanelSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin1 0
+  ModelName = "GM0"
+  Materials.Size = 9
+  Materials[0] = 0
+  Materials[1] = 1
+  Materials[2] = 2
+  Materials[3] = 3
+  Materials[4] = 4
+  Materials[5] = 5
+  Materials[6] = 6
+  Materials[7] = 7
+  Materials[8] = 8
+  ArrayWidth = 3
+  ArrayHeight = 3
+  MtlScale = $mtlScale
+End
+
+UIElement
+  Name = "menu_mtl_sets"
+  Parent = "frame"
+  Size = $mtlSetsSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = $mtlSetsPos
+  HitTest = 1
+End
+
+UIElement
+  Name = "menu_mtl_set_0"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet0Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "1"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_set_1"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet1Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "2"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_set_2"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet2Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "3"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_set_3"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet3Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "4"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_set_4"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet4Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "5"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_set_5"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet5Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "6"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_set_6"
+  Parent = "menu_mtl_sets"
+  Size = $mtlSetNSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $mtlSet6Pos
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[1].Default.BackgroundColor = $fillColor
+  State[1].Default.TextColor = $textColor
+  State[1].Default.TextShadowColor = $textShadowColor
+  Text = "7"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_mtl_0"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin3 -$offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_1"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin2 -$offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_2"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin1 -$offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_3"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin3 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_4"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin2 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_5"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin1 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_6"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin3 $offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_7"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin2 $offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_mtl_8"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin1 $offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  State[1].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[1].Default.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Default.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[1].Default.TextColor = $buttonDefaultTextColor
+  State[1].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[1].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[1].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[1].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[1].Pressed.BackgroundFrame[2].Width = $buttonFrame2Width
+  State[1].Pressed.BackgroundFrame[2].Color = $selectionFrameColor
+  State[1].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[1].Pressed.TextColor = $buttonPressedTextColor
+  State[1].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  UseTouchMove = 1
+End
+
+UIElement
+  Name = "menu_next_mtl_set"
+  Parent = "frame"
+  Size = $nextMtlSetSize
+  Position = 0 0
+  XAlign = 1
+  YAlign = 0.5
+  Position = $nextMtlSetPos
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/MoveRight/→"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_prev_mtl_set"
+  Parent = "frame"
+  Size = $prevMtlSetSize
+  Position = 0 0
+  XAlign = 1
+  YAlign = 0.5
+  Position = $prevMtlSetPos
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/MoveLeft/←"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_game_name_and_version"
+  Parent = "frame_background"
+  Size = $windowNameSize
+  XAlign = 0.5
+  YAlign = 1
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[0].Pressed.TextColor = $textColor
+  State[0].Pressed.TextShadowColor = $textShadowColor
+  Text = ""
+  Font = "Sans"
+End

@@ -1,0 +1,96 @@
+﻿MoveForward,"↑"
+MoveBackward,"↓"
+MoveLeft,"←"
+MoveRight,"→"
+Jump,"⇡"
+Add,"Add"
+Delete,"Delete"
+Toggle,"Toggle"
+Menu,"  Menu ‣"
+NewTerrain,"New
+Terrain"
+SelectTerrain,"Select
+Terrain"
+Options,"Options"
+File,"Edit"
+Copy,"Copy"
+FileProperties,"Created: 
+Modified: 
+Terrain size: 
+Position: 
+File name: 
+File size: "
+QuestionDelete,"Delete?"
+Yes,"Yes"
+FullVersion,"Full
+Version"
+FullVersionText,"The full version of Exploration allows save game state."
+BuyFullVersion,"Buy Full Version"
+NoSavedGames,"There are no saved games."
+MaxNumOfSaveGames,"Maximum number of save games reached."
+GameLoaded,"Game loaded."
+Deleted,"Deleted."
+Copied,"Copied."
+UnableToReadFile,"Unable to read file."
+UnableToWriteFile,"Unable to write file."
+DamagedSavedGame,"Damaged saved game."
+TouchAndMoveTheBlocks,"Touch and move the blocks."
+NewTerrainMenuName,"New terrain"
+TerrainType,"Terrain type: "
+TerrainTypeEarth,"Earth"
+TerrainTypeFlat,"Flat"
+TerrainTypeTest,"Flying blocks"
+More,"More..."
+Create,"Create"
+NewTerrainSubMenuName,"New terrain ‣ "
+TerrainSize,"Terrain
+Size"
+GroundLevel,"Ground
+Level"
+FlyingBlocks,"Flying
+Blocks"
+OptionsMenuName,"Options"
+GraphicsOptions,"Graphics"
+ControlsOptions,"Controls"
+GameOptions,"Game"
+Flying,"Flying"
+Walking,"Walking"
+GraphicsMenuName,"Options ‣ Graphics"
+DrawDistance,"Draw distance:
+"
+DrawDistanceFar,"Far"
+DrawDistanceNormal,"Normal"
+DrawDistanceShort,"Short"
+DrawDistanceTiny,"Tiny"
+LeavesQuality,"Leaves - quality:
+"
+Performance,"Performance"
+HighPerformance,"High performance"
+Quality,"Quality"
+Clouds,"Clouds:
+"
+CloudsOn,"On"
+CloudsOff,"Off"
+AnimatedWater,"Animated water:
+"
+AnimatedWaterOn,"On"
+AnimatedWaterOff,"Off"
+Apply,"Apply"
+GameMenuName,"Options ‣ Game"
+Time,"Time"
+ControlsMenuName,"Options ‣ Controls"
+Sensitivity,"Sensi-
+tivity"
+ScreenSize,"Screen: "
+ScreenSizePhone,"Smartphone"
+ScreenSizeSmallTablet,"Small tablet"
+ScreenSizeTablet,"Tablet"
+MoreOptions,"More options..."
+Continue,"Continue..."
+Connecting,"Connecting..."
+FullVersionUnlocked,"The full version is unlocked."
+NoInternetConnection,"Error: No Internet connection."
+ServiceUnavailable,"Error: Server is not responding.
+
+Please check your Internet connection and try again."
+UnableToWriteFile,"Error: Unable to write file."

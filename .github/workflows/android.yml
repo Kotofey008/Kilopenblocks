@@ -1,0 +1,86 @@
+name: Build ExplorationLite APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25c
+          link-to-sdk: true
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install platform & build-tools
+        run: |
+          sdkmanager "platforms;android-19" "build-tools;29.0.3"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+
+      - name: NDK build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cd ExplorationLite_RE 2>/dev/null || cd .
+          $ANDROID_NDK_HOME/ndk-build -C jni \
+            NDK_PROJECT_PATH=$PWD \
+            APP_BUILD_SCRIPT=$PWD/jni/Android.mk \
+            NDK_APPLICATION_MK=$PWD/jni/Application.mk \
+            -j$(nproc)
+
+      - name: Package unsigned APK
+        run: |
+          set -e
+          ROOT=$(pwd)
+          if [ -d ExplorationLite_RE ]; then ROOT=$ROOT/ExplorationLite_RE; fi
+          cd "$ROOT"
+          mkdir -p build/apk/lib/armeabi-v7a build/apk/lib/x86
+          cp -r assets build/apk/ 2>/dev/null || true
+          # aapt needs compiled resources
+          AAPT=$(ls $ANDROID_HOME/build-tools/*/aapt | head -1)
+          PLATFORM=$ANDROID_HOME/platforms/android-19/android.jar
+          $AAPT package -f -M AndroidManifest.xml -S res -A assets \
+            -I $PLATFORM -F build/unsigned.apk
+          # add native libs
+          if [ -f libs/armeabi-v7a/libExplorationLite.so ]; then
+            mkdir -p build/libstage/lib/armeabi-v7a
+            cp libs/armeabi-v7a/libExplorationLite.so build/libstage/lib/armeabi-v7a/
+            (cd build/libstage && zip -u ../unsigned.apk lib/armeabi-v7a/libExplorationLite.so)
+          fi
+          if [ -f libs/x86/libExplorationLite.so ]; then
+            mkdir -p build/libstage/lib/x86
+            cp libs/x86/libExplorationLite.so build/libstage/lib/x86/
+            (cd build/libstage && zip -u ../unsigned.apk lib/x86/libExplorationLite.so)
+          fi
+          ZIPALIGN=$(ls $ANDROID_HOME/build-tools/*/zipalign | head -1)
+          $ZIPALIGN -f 4 build/unsigned.apk build/aligned.apk
+          # debug sign
+          KEYSTORE=build/debug.keystore
+          if [ ! -f $KEYSTORE ]; then
+            keytool -genkeypair -v -keystore $KEYSTORE -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=Debug"
+          fi
+          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 \
+            -keystore $KEYSTORE -storepass android -keypass android \
+            build/aligned.apk androiddebugkey
+          cp build/aligned.apk build/ExplorationLite-reimpl-debug.apk
+          ls -la build/*.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExplorationLite-reimpl
+          path: |
+            **/build/ExplorationLite-reimpl-debug.apk
+            **/libs/**/libExplorationLite.so

@@ -1,0 +1,202 @@
+﻿;$screenSize = 800 480
+;$windowSize = 800 480
+;$windowYPos = 0
+;$autoResize = 1
+;$windowNameSize = 800 40
+;$buttonFrame0Width = 4
+;$buttonFrame1Width = 2
+;$buttonFrame2Width = 4
+;$buttonSize = 110 110
+;$button2x1Size = 220 110
+;$button3x1Size = 330 110
+;$jumpButtonSize = 110 110
+;$valuesSize = 220 220
+;$sliderLineWidth = 8
+;$sliderValueSize = 110 44
+;$hSliderSize = 330 110
+;$hSliderValueOffset = 455
+;$vSliderSize = 110 330
+;$vSliderValueOffset = -185
+;$offset1 = 110
+;$offset2 = 220
+;$offset3 = 330
+;$margin1 = 70
+;$margin2 = 180
+;$marginA = 235
+;$margin3 = 290
+;$margin4 = 400
+;$mtlSetsSize = 322 75
+;$mtlSetsPos = -74 -203
+;$mtlSetNSize = 46 40
+;$mtlSet0Pos = 0 0
+;$mtlSet1Pos = 46 0
+;$mtlSet2Pos = 92 0
+;$mtlSet3Pos = 138 0
+;$mtlSet4Pos = 184 0
+;$mtlSet5Pos = 230 0
+;$mtlSet6Pos = 276 0
+;$nextMtlSetSize = 70 165
+;$nextMtlSetPos = 0 -83
+;$prevMtlSetSize = 70 165
+;$prevMtlSetPos = 0 82
+;$mtlPanelSize = 330 330
+;$mtlScale = 64
+;$screenshotSize = 330 198
+;$playButtonSize = 398 266
+;$playButtonTextPos = 0 166
+;$messageSize = 322 58
+;$crosshairWidth = 2
+;$crosshairHeight = 16
+$backgroundColor = B4000000
+$fillColor = 38DCDCDC
+$textColor = C8DCDCDC
+$textShadowColor = 641E1E1E
+$selectionFrameColor = FF4080FF
+$buttonDefaultFrameColor = 78DCDCDC
+$buttonDefaultBackgroundColor = 00000000
+$buttonDefaultTextColor = FFDCDCDC
+$buttonDefaultTextShadowColor = $textShadowColor
+$buttonPressedFrameColor = FFDCDCDC
+$buttonPressedBackgroundColor = 64FAFAFA
+$buttonPressedTextColor = FFFFFFFF
+$buttonPressedTextShadowColor = $textShadowColor
+$buttonDisabledTextColor = 80DCDCDC
+$buttonDisabledTextShadowColor = $textShadowColor
+$messageBackgroundColor = DC805A2D
+$messageTextColor = FFFFFFFF
+
+UIElement
+  Name = "frame_background"
+  Size = $screenSize
+  State[0].Default.BackgroundColor = $backgroundColor
+  State[0].Pressed.BackgroundColor = $backgroundColor
+End
+
+UIElement
+  Name = "frame"
+  Parent = "frame_background"
+  Size = $windowSize
+  AutoResizeX = 1
+  AutoResizeY = $autoResize
+  HitTest = 0
+  XAlign = 0.5
+  YAlign = 0.5
+  Position = 0 $windowYPos
+End
+
+UISliderElement
+  Name = "sensitivity"
+  Parent = "frame"
+  Size = $hSliderSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $margin1 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundColor = $fillColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundColor = $fillColor
+  CurrentValue = 0.5
+  Horizontal = 1
+  LineWidth = $sliderLineWidth
+End
+
+UIElement
+  Name = "sensitivity_i"
+  Parent = "sensitivity"
+  Size = $buttonSize
+  XAlign = 0.5
+  YAlign = 0.5
+  Position = 0 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/Sensitivity/Sensi-\ntivity"
+  Font = "Sans"
+  Draggable = 1
+End
+
+UIElement
+  Name = "sensitivity_v"
+  Parent = "frame"
+  Size = $sliderValueSize
+  XAlign = 0
+  YAlign = 0.5
+  Position = $hSliderValueOffset 0
+  HitTest = 0
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundColor = $fillColor
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  Font = "Sans"
+  Text = "1"
+End
+
+UIElement
+  Name = "screen_size"
+  Parent = "frame"
+  Size = $button3x1Size
+  XAlign = 0
+  YAlign = 0.5
+  Position = $margin1 -$offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/ScreenSize/Screen: "
+  Font = "Sans"
+End
+
+UIElement
+  Name = "apply"
+  Parent = "frame"
+  Size = $buttonSize
+  XAlign = 1
+  YAlign = 0.5
+  Position = -$margin1 -$offset1
+  State[0].Default.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Default.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Default.BackgroundFrame[1].Color = $buttonDefaultFrameColor
+  State[0].Default.BackgroundColor = $buttonDefaultBackgroundColor
+  State[0].Default.TextColor = $buttonDefaultTextColor
+  State[0].Default.TextShadowColor = $buttonDefaultTextShadowColor
+  State[0].Pressed.BackgroundFrame[0].Width = $buttonFrame0Width
+  State[0].Pressed.BackgroundFrame[1].Width = $buttonFrame1Width
+  State[0].Pressed.BackgroundFrame[1].Color = $buttonPressedFrameColor
+  State[0].Pressed.BackgroundColor = $buttonPressedBackgroundColor
+  State[0].Pressed.TextColor = $buttonPressedTextColor
+  State[0].Pressed.TextShadowColor = $buttonPressedTextShadowColor
+  Text = "/Apply/Apply"
+  Font = "Sans"
+End
+
+UIElement
+  Name = "menu_name"
+  Parent = "frame_background"
+  Size = $windowNameSize
+  XAlign = 0.5
+  YAlign = 1
+  HitTest = 0
+  State[0].Default.TextColor = $textColor
+  State[0].Default.TextShadowColor = $textShadowColor
+  State[0].Pressed.TextColor = $textColor
+  State[0].Pressed.TextShadowColor = $textShadowColor
+  Text = "/ControlsMenuName/Options ‣ Controls"
+  Font = "Sans"
+End

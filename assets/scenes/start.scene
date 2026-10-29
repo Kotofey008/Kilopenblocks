@@ -1,0 +1,598 @@
+Globals
+  TimeMultiplier:Float = 1
+  MaxTimestep:Integer = 200
+  WorldSizeMin:Vector = -576 -64 -576
+  WorldSizeMax:Vector = 576 192 576
+  ClearColor:Color = 255 255 180 140
+  TexAtlases.Size:Integer = 1
+  TexAtlases[0]:String = "Screen/texatlas/texatlas.txt"
+  SpriteAnimSets.Size:Integer = 0
+End
+
+Camera
+  ID:Integer = 1
+  Name:String = ""
+  Position:Vector = 0.5 65.500099 0.5
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 1
+  UpdateOrder:Integer = 0
+  RenderOrder:Integer = 0
+  RenderFlags:Integer = 0
+  RenderInCamera:Integer = 1
+  CameraRenderOrder:Integer = 0
+  ViewportX0:Float = 0
+  ViewportY0:Float = 0
+  ViewportX1:Float = 1
+  ViewportY1:Float = 1
+  Perspective:Bool = 1
+  FieldOfView:Float = 90
+  ProjX0:Float = -1
+  ProjY0:Float = -1
+  ProjX1:Float = 1
+  ProjY1:Float = 1
+  NearPlane:Float = 0.025
+  FarPlane:Float = 350
+  Width:Float = 800
+  Height:Float = 480
+  XOffset:Float = 0
+  YOffset:Float = 0
+  XScale:Float = 1
+  YScale:Float = 1
+  SizeFromViewport:Bool = 1
+  ClampXOffset:Bool = 0
+  ClampYOffset:Bool = 0
+  ClearColor:Bool = 1
+  ClearDepth:Bool = 1
+  ColorValue:Color = 255 0 0 0
+  DepthValue:Float = 1
+  RelocateObjects:Bool = 0
+  RelocationBox:Vector = 16 0 16
+End
+
+SkyBox
+  ID:Integer = 2
+  Name:String = ""
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 16 1 16
+  Visible:Bool = 1
+  UpdateOrder:Integer = 0
+  RenderOrder:Integer = 0
+  RenderFlags:Integer = 0
+  RenderInCamera:Integer = 1
+  FileName:String = ""
+  SunriseBegin:Float = 0.208333
+  SunriseEnd:Float = 0.270833
+  SunsetBegin:Float = 0.729167
+  SunsetEnd:Float = 0.791667
+  DaySkyLowerColor:Color = 255 255 207 167
+  DaySkyUpperColor:Color = 255 255 168 115
+  NightSkyLowerColor:Color = 255 19 12 9
+  NightSkyUpperColor:Color = 255 10 6 4
+  Horizon:Bool = 1
+  SunTextureFileName:String = "textures/sun.png"
+  MoonTextureFileName:String = "textures/moon.png"
+  SunScale:Float = 3
+  MoonScale:Float = 3
+  NumStars:Integer = 600
+  StarsSeed:Integer = 1
+End
+
+EntityPlayerSet
+  ID:Integer = 3
+  Name:String = "EPS"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 1
+  UpdateOrder:Integer = 2
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 26
+  RenderInCamera:Integer = 1
+  GridModel:ObjectID = 5
+  ModelFileName:String = ""
+  LocalBBox.Min:Vector = -0.245 -1.5 -0.245
+  LocalBBox.Max:Vector = 0.245 0.25 0.245
+  CollisionBBox.Min:Vector = -0.245 -1.5 -0.245
+  CollisionBBox.Max:Vector = 0.245 0.25 0.245
+  Camera:ObjectID = 1
+  CursorColor:Color = 255 255 255 255
+  OperationDistance:Float = 8
+  OperationTime:Integer = 300
+  TouchSensitivity:Float = 0.33
+  FlipXRotation:Bool = 0
+  FlipYRotation:Bool = 0
+  DXThreshold:Integer = 200
+  DYThreshold:Integer = 200
+  ParamSets[0].MaximumSpeed:Float = 3
+  ParamSets[0].Acceleration:Float = 9
+  ParamSets[0].Deceleration:Float = 18
+  ParamSets[0].StepSize:Float = 0.501
+  ParamSets[0].SmallStepSize:Float = 0.062625
+  ParamSets[0].Gravity:Float = -9.81
+  ParamSets[0].GravityLimit:Float = -50
+  ParamSets[0].Jump:Float = 5
+  ParamSets[1].MaximumSpeed:Float = 2
+  ParamSets[1].Acceleration:Float = 9
+  ParamSets[1].Deceleration:Float = 9
+  ParamSets[1].StepSize:Float = 0.501
+  ParamSets[1].SmallStepSize:Float = 0.062625
+  ParamSets[1].Gravity:Float = -4.9
+  ParamSets[1].GravityLimit:Float = -2
+  ParamSets[1].Jump:Float = 3
+  ParamSets[2].MaximumSpeed:Float = 2
+  ParamSets[2].Acceleration:Float = 9
+  ParamSets[2].Deceleration:Float = 18
+  ParamSets[2].StepSize:Float = 0.501
+  ParamSets[2].SmallStepSize:Float = 0.062625
+  ParamSets[2].Gravity:Float = 0
+  ParamSets[2].GravityLimit:Float = 0
+  ParamSets[2].Jump:Float = 5
+  ParamSets[3].MaximumSpeed:Float = 6
+  ParamSets[3].Acceleration:Float = 18
+  ParamSets[3].Deceleration:Float = 18
+  ParamSets[3].StepSize:Float = 0.501
+  ParamSets[3].SmallStepSize:Float = 0.062625
+  ParamSets[3].Gravity:Float = -9.81
+  ParamSets[3].GravityLimit:Float = -50
+  ParamSets[3].Jump:Float = 5
+End
+
+Clouds
+  ID:Integer = 4
+  Name:String = ""
+  Position:Vector = 0 129.5 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 12 5 12
+  Visible:Bool = 1
+  UpdateOrder:Integer = 0
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 2
+  RenderInCamera:Integer = 1
+  FileName:String = ""
+  Enabled:Bool = 1
+  SkyBox:ObjectID = 2
+  Wind:Vector = 0.05 0 0
+  Radius:Integer = 20
+  FogStart:Float = 48
+  FogEnd:Float = 340
+  BitmapFileName:String = "textures/clouds.png"
+End
+
+GridModel
+  ID:Integer = 5
+  Name:String = "GM0"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 1
+  UpdateOrder:Integer = 10
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 2
+  RenderInCamera:Integer = 1
+  BlocksTextureFileName:String = "textures/blocks.png"
+  WaterTextureFileName:String = "textures/water.png"
+  LavaTextureFileName:String = "textures/lava.png"
+  MtlDescFileName:String = "scenes/blocks.txt"
+  Camera:ObjectID = 1
+  WaterPlaneColor:Color = 64 232 144 5
+  LavaPlaneColor:Color = 204 0 50 204
+  WaterFlowSpeed:Float = 0.625
+  LavaFlowSpeed:Float = 0.15
+  UseProceduralTextures:Bool = 1
+  WaterPaletteFileName:String = "textures/water_pal.png"
+  LavaPaletteFileName:String = "textures/lava_pal.png"
+End
+
+UISceneObject
+  ID:Integer = 6
+  Name:String = "hud_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 1
+  UpdateOrder:Integer = 0
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/hud.txt"
+  ElementClickedMessage.Size:Integer = 2
+  ElementClickedMessage[0]:String = "hud_menu;ClearInput;hud_* SetVisible 0;menu_* SetVisible 1;Game Call SetUINeedFastResponse"
+  ElementClickedMessage[1]:String = "hud_activate;EPS UpdateElement"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 7
+  ElementTouchOverMessage[0]:String = "hud_delete;EPS DeleteElement"
+  ElementTouchOverMessage[1]:String = "hud_add;EPS CreateElement"
+  ElementTouchOverMessage[2]:String = "hud_up;EPS MoveObject MoveForward"
+  ElementTouchOverMessage[3]:String = "hud_left;EPS MoveObject MoveLeft"
+  ElementTouchOverMessage[4]:String = "hud_down;EPS MoveObject MoveBackward"
+  ElementTouchOverMessage[5]:String = "hud_right;EPS MoveObject MoveRight"
+  ElementTouchOverMessage[6]:String = "hud_jump;EPS MoveObject MoveUp"
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 7
+  Name:String = "menu_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu.txt"
+  ElementClickedMessage.Size:Integer = 17
+  ElementClickedMessage[0]:String = "frame*;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[1]:String = "menu_new_terrain;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 1;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0;Game Call FinishScreenshot"
+  ElementClickedMessage[2]:String = "menu_full_version;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 1;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[3]:String = "menu_select_terrain;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 1;options_* SetVisible 0;Game Call FinishScreenshot;Game Call EnterGameList"
+  ElementClickedMessage[4]:String = "menu_options;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 1;Game Call SetUINeedFastResponse"
+  ElementClickedMessage[5]:String = "menu_mtl_0;ClearInput;Game SelectPaletteItem 0;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[6]:String = "menu_mtl_1;ClearInput;Game SelectPaletteItem 1;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[7]:String = "menu_mtl_2;ClearInput;Game SelectPaletteItem 2;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[8]:String = "menu_mtl_3;ClearInput;Game SelectPaletteItem 3;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[9]:String = "menu_mtl_4;ClearInput;Game SelectPaletteItem 4;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[10]:String = "menu_mtl_5;ClearInput;Game SelectPaletteItem 5;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[11]:String = "menu_mtl_6;ClearInput;Game SelectPaletteItem 6;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[12]:String = "menu_mtl_7;ClearInput;Game SelectPaletteItem 7;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[13]:String = "menu_mtl_8;ClearInput;Game SelectPaletteItem 8;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[14]:String = "menu_next_mtl_set;Game SelectPalettePage -2;Game Call SetUINeedFastResponse"
+  ElementClickedMessage[15]:String = "menu_prev_mtl_set;Game SelectPalettePage -1;Game Call SetUINeedFastResponse"
+  ElementClickedMessage[16]:String = "menu_mtl_sets;Game Call AboutPalette"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 9
+  ElementTouchReleasedMessage[0]:String = "menu_mtl_0;Game SelectPalettePage 0 0"
+  ElementTouchReleasedMessage[1]:String = "menu_mtl_1;Game SelectPalettePage 1 0"
+  ElementTouchReleasedMessage[2]:String = "menu_mtl_2;Game SelectPalettePage 2 0"
+  ElementTouchReleasedMessage[3]:String = "menu_mtl_3;Game SelectPalettePage 3 0"
+  ElementTouchReleasedMessage[4]:String = "menu_mtl_4;Game SelectPalettePage 4 0"
+  ElementTouchReleasedMessage[5]:String = "menu_mtl_5;Game SelectPalettePage 5 0"
+  ElementTouchReleasedMessage[6]:String = "menu_mtl_6;Game SelectPalettePage 6 0"
+  ElementTouchReleasedMessage[7]:String = "menu_mtl_7;Game SelectPalettePage 7 0"
+  ElementTouchReleasedMessage[8]:String = "menu_mtl_8;Game SelectPalettePage 8 0"
+  ElementTouchOverMessage.Size:Integer = 9
+  ElementTouchOverMessage[0]:String = "menu_mtl_0;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[1]:String = "menu_mtl_1;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[2]:String = "menu_mtl_2;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[3]:String = "menu_mtl_3;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[4]:String = "menu_mtl_4;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[5]:String = "menu_mtl_5;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[6]:String = "menu_mtl_6;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[7]:String = "menu_mtl_7;Game Call SetUINeedFastResponse"
+  ElementTouchOverMessage[8]:String = "menu_mtl_8;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage.Size:Integer = 9
+  ElementTouchMovedMessage[0]:String = "menu_mtl_0;Game SelectPalettePage 0 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[1]:String = "menu_mtl_1;Game SelectPalettePage 1 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[2]:String = "menu_mtl_2;Game SelectPalettePage 2 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[3]:String = "menu_mtl_3;Game SelectPalettePage 3 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[4]:String = "menu_mtl_4;Game SelectPalettePage 4 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[5]:String = "menu_mtl_5;Game SelectPalettePage 5 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[6]:String = "menu_mtl_6;Game SelectPalettePage 6 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[7]:String = "menu_mtl_7;Game SelectPalettePage 7 1;Game Call SetUINeedFastResponse"
+  ElementTouchMovedMessage[8]:String = "menu_mtl_8;Game SelectPalettePage 8 1;Game Call SetUINeedFastResponse"
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 8
+  Name:String = "new_terrain_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_new_terrain.txt"
+  ElementClickedMessage.Size:Integer = 4
+  ElementClickedMessage[0]:String = "frame*;ClearInput;menu_* SetVisible 1;terrain_options_* SetVisible 0;new_terrain_* SetVisible 0"
+  ElementClickedMessage[1]:String = "terrain_type;Game Call UpdateTerrainType"
+  ElementClickedMessage[2]:String = "terrain_options;ClearInput;menu_* SetVisible 0;terrain_options_* SetVisible 1;new_terrain_* SetVisible 0"
+  ElementClickedMessage[3]:String = "terrain_create;ClearInput;menu_* SetVisible 0;terrain_options_* SetVisible 0;new_terrain_* SetVisible 0;Game CreateElement"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 9
+  Name:String = "terrain_options_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_terrain_options.txt"
+  ElementClickedMessage.Size:Integer = 2
+  ElementClickedMessage[0]:String = "frame*;ClearInput;new_terrain_* SetVisible 1;terrain_options_* SetVisible 0"
+  ElementClickedMessage[1]:String = "terrain_create;ClearInput;new_terrain_* SetVisible 0;terrain_options_* SetVisible 0;Game CreateElement"
+  ElementDraggedMessage.Size:Integer = 4
+  ElementDraggedMessage[0]:String = "terrain_size_i;Game Call UpdateTerrainSize"
+  ElementDraggedMessage[1]:String = "flat_ground_level_i;Game Call UpdateFlatGroundLevel"
+  ElementDraggedMessage[2]:String = "test_ground_level_i;Game Call UpdateTestGroundLevel"
+  ElementDraggedMessage[3]:String = "test_flying_blocks_i;Game Call UpdateTestFlyingBlocks"
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 10
+  Name:String = "full_version_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_full_version.txt"
+  ElementClickedMessage.Size:Integer = 3
+  ElementClickedMessage[0]:String = "frame*;ClearInput;menu_* SetVisible 1;full_version_* SetVisible 0"
+  ElementClickedMessage[1]:String = "store;ClearInput;Game Call LaunchStoreApplication"
+  ElementClickedMessage[2]:String = "more_options;ClearInput;Game Call LaunchWebBrowserApplication"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 11
+  Name:String = "select_terrain_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_select_terrain.txt"
+  ElementClickedMessage.Size:Integer = 5
+  ElementClickedMessage[0]:String = "frame*;ClearInput;menu_* SetVisible 1;select_terrain_* SetVisible 0;terrain_info_* SetVisible 0;Game Call LeaveGameList"
+  ElementClickedMessage[1]:String = "file;ClearInput;menu_* SetVisible 0;select_terrain_* SetVisible 0;terrain_info_* SetVisible 1"
+  ElementClickedMessage[2]:String = "play;ClearInput;Game Play;Game Call LeaveGameList;hud_* SetVisible 1;menu_* SetVisible 0;select_terrain_* SetVisible 0;terrain_info_* SetVisible 0"
+  ElementClickedMessage[3]:String = "prev;Game SelectElement 0"
+  ElementClickedMessage[4]:String = "next;Game SelectElement 1"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 12
+  Name:String = "terrain_info_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_terrain_info.txt"
+  ElementClickedMessage.Size:Integer = 3
+  ElementClickedMessage[0]:String = "frame*;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0;terrain_info_* SetVisible 0"
+  ElementClickedMessage[1]:String = "delete;ClearInput;select_terrain_* SetVisible 0;delete_terrain_* SetVisible 1;terrain_info_* SetVisible 0"
+  ElementClickedMessage[2]:String = "copy;ClearInput;select_terrain_* SetVisible 0;delete_terrain_* SetVisible 0;terrain_info_* SetVisible 0;Game CopyElement"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 13
+  Name:String = "delete_terrain_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_delete_terrain.txt"
+  ElementClickedMessage.Size:Integer = 2
+  ElementClickedMessage[0]:String = "frame*;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0"
+  ElementClickedMessage[1]:String = "delete;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0;Game DeleteElement"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 14
+  Name:String = "message_frame_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_message_frame.txt"
+  ElementClickedMessage.Size:Integer = 1
+  ElementClickedMessage[0]:String = "frame*;ClearInput;menu_* SetVisible 1;message_frame_* SetVisible 0"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 15
+  Name:String = "options_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_options.txt"
+  ElementClickedMessage.Size:Integer = 5
+  ElementClickedMessage[0]:String = "frame*;ClearInput;menu_* SetVisible 1;game_options_* SetVisible 0;graphics_options_* SetVisible 0;options_* SetVisible 0"
+  ElementClickedMessage[1]:String = "controls_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 0;controls_options_* SetVisible 1;options_* SetVisible 0;Game Call EnterControlsSettings"
+  ElementClickedMessage[2]:String = "graphics_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 1;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call EnterGraphicsSettings"
+  ElementClickedMessage[3]:String = "game_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 1;graphics_options_* SetVisible 0;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call EnterGameSettings"
+  ElementClickedMessage[4]:String = "fly_mode_toggle;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 0;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call FlyModeToggle"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 16
+  Name:String = "controls_options_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_controls_options.txt"
+  ElementClickedMessage.Size:Integer = 3
+  ElementClickedMessage[0]:String = "frame*;ClearInput;options_* SetVisible 1;controls_options_* SetVisible 0"
+  ElementClickedMessage[1]:String = "screen_size;Game Call UpdateScreenSize"
+  ElementClickedMessage[2]:String = "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;controls_options_* SetVisible 0;Game Call ApplyControlsSettings"
+  ElementDraggedMessage.Size:Integer = 1
+  ElementDraggedMessage[0]:String = "sensitivity_i;Game Call UpdateSensitivity"
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 17
+  Name:String = "graphics_options_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_graphics_options.txt"
+  ElementClickedMessage.Size:Integer = 6
+  ElementClickedMessage[0]:String = "frame*;ClearInput;options_* SetVisible 1;graphics_options_* SetVisible 0"
+  ElementClickedMessage[1]:String = "draw_distance;Game Call UpdateDrawDistance"
+  ElementClickedMessage[2]:String = "leaves_quality;Game Call UpdateLeavesQuality"
+  ElementClickedMessage[3]:String = "clouds;Game Call UpdateClouds"
+  ElementClickedMessage[4]:String = "animated_water;Game Call UpdateAnimatedWater"
+  ElementClickedMessage[5]:String = "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;graphics_options_* SetVisible 0;Game Call ApplyGraphicsSettings"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 18
+  Name:String = "game_options_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/menu_game_options.txt"
+  ElementClickedMessage.Size:Integer = 2
+  ElementClickedMessage[0]:String = "frame*;ClearInput;options_* SetVisible 1;game_options_* SetVisible 0"
+  ElementClickedMessage[1]:String = "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;game_options_* SetVisible 0;Game Call ApplyGameSettings"
+  ElementDraggedMessage.Size:Integer = 1
+  ElementDraggedMessage[0]:String = "time_i;Game Call UpdateTimeOfDay"
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 19
+  Name:String = "progress_screen_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 1
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/progress_screen.txt"
+  ElementClickedMessage.Size:Integer = 1
+  ElementClickedMessage[0]:String = "frame*;Game Call ScreenClicked"
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 1
+End
+
+UISceneObject
+  ID:Integer = 20
+  Name:String = "message_ui"
+  Position:Vector = 0 0 0
+  Rotation:Quaternion = 0 0 0 1
+  Scale:Vector = 1 1 1
+  Visible:Bool = 0
+  UpdateOrder:Integer = 1
+  RenderOrder:Integer = 2
+  RenderFlags:Integer = 24
+  RenderInCamera:Integer = 1
+  FileName:String = "Screen/ui/message.txt"
+  ElementClickedMessage.Size:Integer = 0
+  ElementDraggedMessage.Size:Integer = 0
+  ElementTouchPressedMessage.Size:Integer = 0
+  ElementTouchReleasedMessage.Size:Integer = 0
+  ElementTouchOverMessage.Size:Integer = 0
+  ElementTouchMovedMessage.Size:Integer = 0
+  ResizeToViewport:Bool = 0
+End
+
