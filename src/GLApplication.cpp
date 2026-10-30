@@ -84,6 +84,13 @@ void GLApplication::OnCreateGLContext() {
     eglSwapBuffers(mDisplay, mSurface);
 }
 
+void GLApplication::OnDeleteGLContext() {
+    LOGI("GLApplication::OnDeleteGLContext");
+    worldReady_ = false;
+    regionMeshes_.clear();
+    ApplicationBase::OnDeleteGLContext();
+}
+
 void GLApplication::EnsureRegionMeshes() {
     regionMeshes_.clear();
     GridData& grid = game_.GetGrid();
