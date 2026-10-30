@@ -229,3 +229,25 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         }
     }
 }
+
+// DrawPrimitive @ 0xcfa30 — GLES client arrays, PCT1Vertex stride 24
+#if defined(__ANDROID__)
+#include <GLES/gl.h>
+void DrawPrimitive(unsigned int mode, const PCT1Vertex* verts, const uint16_t* indices,
+                   int indexCount, int) {
+    if (!verts || !indices || indexCount <= 0) return;
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    const char* base = reinterpret_cast<const char*>(verts);
+    glVertexPointer(3, GL_FLOAT, 24, base + 0);
+    glColorPointer(4, GL_UNSIGNED_BYTE, 24, base + 12);
+    glTexCoordPointer(2, GL_FLOAT, 24, base + 16);
+    glDrawElements(mode, indexCount, GL_UNSIGNED_SHORT, indices);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+}
+#else
+void DrawPrimitive(unsigned int, const PCT1Vertex*, const uint16_t*, int, int) {}
+#endif
