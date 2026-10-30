@@ -1,9 +1,10 @@
+#include "Assets.h"
 #include "SkyBox.h"
 #include <algorithm>
 
 void SkyBox::LoadResources() {
-    sunTex_.LoadPNG("assets/textures/sun.png");
-    moonTex_.LoadPNG("assets/textures/moon.png");
+    sunTex_.LoadPNGAsset("textures/sun.png");
+    moonTex_.LoadPNGAsset("textures/moon.png");
 }
 
 void SkyBox::SetTimeOfDay(float t) {

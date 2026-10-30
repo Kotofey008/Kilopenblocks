@@ -1,9 +1,9 @@
+#include "Assets.h"
 #include "Clouds.h"
 #include <cmath>
 
 void Clouds::LoadResources(const char* texturePath) {
-    if (!texture_.LoadPNG(texturePath))
-        texture_.LoadPNG("assets/textures/clouds.png");
+    if (!texture_.LoadPNGAsset(texturePath) && !texture_.LoadPNGAsset("textures/clouds.png")) {}
     BuildMesh(0, 0, 120.f, 512.f);
 }
 

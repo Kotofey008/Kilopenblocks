@@ -1,3 +1,4 @@
+#include "Assets.h"
 #include "Texture.h"
 #include <cmath>
 #include "BlockDef.h"
@@ -134,8 +135,18 @@ bool Texture::LoadPNG(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     std::vector<uint8_t> file((std::istreambuf_iterator<char>(f)), {});
+    return LoadPNGFromMemory(file.data(), file.size());
+}
+bool Texture::LoadPNGFromMemory(const uint8_t* data, size_t size) {
+    if (!data || size == 0) return false;
+    std::vector<uint8_t> file(data, data + size);
     if (!DecodePNG(file, pixels_, width_, height_)) return false;
     return UploadGL();
+}
+bool Texture::LoadPNGAsset(const char* assetPath) {
+    std::vector<uint8_t> buf;
+    if (!Assets::ReadAll(assetPath, buf)) return false;
+    return LoadPNGFromMemory(buf.data(), buf.size());
 }
 
 bool Texture::UploadGL() {

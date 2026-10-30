@@ -11,6 +11,8 @@ public:
     ~Texture();
 
     bool LoadPNG(const std::string& path);
+    bool LoadPNGFromMemory(const uint8_t* data, size_t size);
+    bool LoadPNGAsset(const char* assetPath);
     void Bind() const;
     void Unbind() const;
     unsigned Width() const { return width_; }

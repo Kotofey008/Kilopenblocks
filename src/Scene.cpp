@@ -1,3 +1,4 @@
+#include "Assets.h"
 #include "Scene.h"
 #include <fstream>
 #include <sstream>
@@ -16,11 +17,22 @@ static std::string trim(const std::string& s) {
 // Handles Globals (world bounds, time), and records Camera / GridModel / UISceneObject sections.
 // Full property typing, Quaternion, message wiring, and LoadSceneObjects call still incomplete.
 bool Scene::Load(const std::string& path) {
-    std::ifstream f(path);
-    if (!f) {
-        std::cerr << "Scene::Load failed to open " << path << std::endl;
-        return false;
+    std::string fileText;
+    std::istream* pin = nullptr;
+    std::istringstream assetStream;
+    std::ifstream fileStream;
+    if (Assets::ReadText(path.c_str(), fileText)) {
+        assetStream.str(fileText);
+        pin = &assetStream;
+    } else {
+        fileStream.open(path);
+        if (!fileStream) {
+            std::cerr << "Scene::Load failed to open " << path << std::endl;
+            return false;
+        }
+        pin = &fileStream;
     }
+    std::istream& f = *pin;
     std::string line, section;
     UISceneObject* currentUI = nullptr;
     int objectCount = 0;

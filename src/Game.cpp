@@ -16,7 +16,7 @@ Game::~Game() {}
 
 void Game::InitUI() {
     // Original @ 0x66350 size 1195 — loads UI scene objects, wires messages
-    scene_.Load("assets/scenes/start.scene");
+    scene_.Load("scenes/start.scene");
 }
 
 void Game::InitSceneConnections() {
@@ -26,6 +26,9 @@ void Game::InitSceneConnections() {
 void Game::Play(int slot) {
     // Original @ 0x6c720 size 2679 — major entry: load/create world, spawn player
     state_ = GameState::Loading;
+    // Mobile-safe bounds: full ±576 scene is ~1GB and will ANR/OOM before first frame
+    grid_.worldMin = Vector(-64.f, -16.f, -64.f);
+    grid_.worldMax = Vector( 64.f,  96.f,  64.f);
     grid_.InitDimensionsFromWorldBounds();
     switch (terrainType_) {
         case TerrainType::Earth:

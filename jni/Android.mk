@@ -5,6 +5,7 @@ LOCAL_MODULE := ExplorationLite
 
 LOCAL_SRC_FILES := \
     ../src/android_main.cpp \
+    ../src/Assets.cpp \
     ../src/ApplicationBase.cpp \
     ../src/GLApplication.cpp \
     ../src/Game.cpp \

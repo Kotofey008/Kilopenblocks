@@ -1,11 +1,14 @@
 #include <cstdio>
 #include "GLApplication.h"
+#include "Assets.h"
+#include <android/native_window.h>
 #include <android/log.h>
 #include <EGL/egl.h>
 #include <GLES/gl.h>
 #include <cmath>
 
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "ExplorationLite", __VA_ARGS__))
+#define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "ExplorationLite", __VA_ARGS__))
 
 GLApplication::GLApplication(int a, int b) : ApplicationBase(false, 0) {
     (void)a; (void)b;
@@ -15,14 +18,14 @@ GLApplication::GLApplication(int a, int b) : ApplicationBase(false, 0) {
 GLApplication::~GLApplication() {}
 
 void GLApplication::OnCreateGLContext() {
-    // Recovered flow: eglGetDisplay → Initialize → ChooseConfig → CreateWindowSurface
-    // → CreateContext → MakeCurrent. Exact attrib list still approximate.
     LOGI("GLApplication::OnCreateGLContext");
-    if (!mApp || !mApp->window) return;
+    if (!mApp || !mApp->window) { LOGE("no window"); return; }
+
+    ANativeWindow_setBuffersGeometry(mApp->window, 0, 0, WINDOW_FORMAT_RGBX_8888);
 
     mDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (mDisplay == EGL_NO_DISPLAY) return;
-    eglInitialize(mDisplay, nullptr, nullptr);
+    if (mDisplay == EGL_NO_DISPLAY) { LOGE("eglGetDisplay failed"); return; }
+    if (!eglInitialize(mDisplay, nullptr, nullptr)) { LOGE("eglInitialize failed"); return; }
 
     const EGLint attribs[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -32,42 +35,53 @@ void GLApplication::OnCreateGLContext() {
         EGL_NONE
     };
     EGLConfig config;
-    EGLint numConfigs;
-    eglChooseConfig(mDisplay, attribs, &config, 1, &numConfigs);
+    EGLint numConfigs = 0;
+    if (!eglChooseConfig(mDisplay, attribs, &config, 1, &numConfigs) || numConfigs < 1) {
+        LOGE("eglChooseConfig failed"); return;
+    }
+    EGLint format = 0;
+    eglGetConfigAttrib(mDisplay, config, EGL_NATIVE_VISUAL_ID, &format);
+    ANativeWindow_setBuffersGeometry(mApp->window, 0, 0, format);
+
     mSurface = eglCreateWindowSurface(mDisplay, config, mApp->window, nullptr);
+    if (mSurface == EGL_NO_SURFACE) { LOGE("eglCreateWindowSurface %d", eglGetError()); return; }
     const EGLint ctxAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 1, EGL_NONE };
     mContext = eglCreateContext(mDisplay, config, nullptr, ctxAttribs);
-    eglMakeCurrent(mDisplay, mSurface, mSurface, mContext);
+    if (mContext == EGL_NO_CONTEXT) { LOGE("eglCreateContext %d", eglGetError()); return; }
+    if (!eglMakeCurrent(mDisplay, mSurface, mSurface, mContext)) {
+        LOGE("eglMakeCurrent %d", eglGetError()); return;
+    }
+    LOGI("EGL ready");
 
+    glViewport(0, 0, ANativeWindow_getWidth(mApp->window), ANativeWindow_getHeight(mApp->window));
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glEnable(GL_TEXTURE_2D);
-    glClearColor(0.5f, 0.7f, 1.0f, 1.f); // sky blue
+    glClearColor(0.35f, 0.55f, 0.95f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    eglSwapBuffers(mDisplay, mSurface);
 
-    // Load block defs + start a default world once GL is up
-    blockDefs_ = LoadBlockDefs("assets/scenes/blocks.txt");
-    if (!blocksAtlas_.LoadPNG("assets/textures/blocks.png"))
-        blocksAtlas_.LoadPNG("/sdcard/ExplorationLite/textures/blocks.png");
-    LOGI("blocks atlas %s %ux%u", blocksAtlas_.Valid()?"OK":"FAIL",
-         blocksAtlas_.Width(), blocksAtlas_.Height());
-    if (blockDefs_.empty())
-        blockDefs_ = LoadBlockDefs("/sdcard/ExplorationLite/blocks.txt"); // fallback path
+    Assets::Init(mApp);
+    blockDefs_ = LoadBlockDefs("scenes/blocks.txt");
+    LOGI("blockDefs=%d", (int)blockDefs_.size());
+    if (!blocksAtlas_.LoadPNGAsset("textures/blocks.png"))
+        LOGE("blocks.png FAILED");
+    else
+        LOGI("blocks atlas %ux%u", blocksAtlas_.Width(), blocksAtlas_.Height());
 
     game_.InitUI();
-    game_.SelectTerrainType(Game::TerrainType::Earth);
+    game_.SelectTerrainType(Game::TerrainType::Flat);
     game_.Play(0);
-    clouds_.LoadResources("assets/textures/clouds.png");
+    clouds_.LoadResources("textures/clouds.png");
     skyBox_.LoadResources();
-    hudFont_.Load("assets/font/font_16.txt", "assets/font/font_16.png");
+    hudFont_.Load(nullptr, nullptr);
     worldReady_ = true;
     lightMap_.Init(game_.GetGrid());
     EnsureRegionMeshes();
-    LOGI("World ready, regions meshed: %d", (int)regionMeshes_.size());
-}
+    LOGI("World ready meshes=%d", (int)regionMeshes_.size());
 
-void GLApplication::OnDeleteGLContext() {
-    regionMeshes_.clear();
-    ApplicationBase::OnDeleteGLContext();
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    eglSwapBuffers(mDisplay, mSurface);
 }
 
 void GLApplication::EnsureRegionMeshes() {
@@ -192,7 +206,14 @@ void GLApplication::RenderHUD(int screenW, int screenH) {
 }
 
 void GLApplication::Frame() {
-    if (!worldReady_) return;
+    if (mDisplay == EGL_NO_DISPLAY || mSurface == EGL_NO_SURFACE) return;
+    if (!eglMakeCurrent(mDisplay, mSurface, mSurface, mContext)) return;
+    if (!worldReady_) {
+        glClearColor(0.2f, 0.3f, 0.5f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        eglSwapBuffers(mDisplay, mSurface);
+        return;
+    }
     game_.Update();
     clouds_.Update(1.f/60.f);
     game_.UpdateTime();

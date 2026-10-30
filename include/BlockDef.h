@@ -25,3 +25,4 @@ struct BlockDef {
 };
 
 std::vector<BlockDef> LoadBlockDefs(const std::string& path);
+std::vector<BlockDef> LoadBlockDefsFromText(const std::string& text);
