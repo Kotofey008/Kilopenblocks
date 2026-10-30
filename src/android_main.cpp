@@ -1,23 +1,19 @@
-// Reimplementation of android_main based on Rizin disassembly
-// Evidence: sym.android_main @ 0x43470 — Console::SetWriter, GLApplication ctor, AndroidMain
+// android_main — entry called by android_native_app_glue on its app thread.
+// Do NOT define ANativeActivity_onCreate here; the glue provides it and
+// would be overridden, leaving the activity with no event loop (black screen).
 
 #include "GLApplication.h"
+#include <android_native_app_glue.h>
 #include <android/log.h>
 
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "ExplorationLite", __VA_ARGS__))
 
 extern "C" void android_main(struct android_app* state) {
-    // app_dummy() removed (deprecated in NDK r25)
-    LOGI("android_main entered (reimpl)");
+    LOGI("android_main entered");
     GLApplication* app = new GLApplication(0, 0);
     ApplicationBase::SetGLApp(app);
-    ApplicationBase::AndroidMain(state);
+    app->AndroidMain(state);  // instance method uses this for EGL fields
     ApplicationBase::SetGLApp(nullptr);
     delete app;
-}
-
-extern "C" void ANativeActivity_onCreate(ANativeActivity* activity,
-                                         void* savedState, size_t savedStateSize) {
-    (void)activity; (void)savedState; (void)savedStateSize;
-    LOGI("ANativeActivity_onCreate");
+    LOGI("android_main exit");
 }

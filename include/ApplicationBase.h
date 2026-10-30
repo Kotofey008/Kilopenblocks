@@ -11,7 +11,7 @@ class ApplicationBase {
 public:
     ApplicationBase(bool, int);
     virtual ~ApplicationBase();
-    static void AndroidMain(struct android_app* app);
+    void AndroidMain(struct android_app* app);
     static void SetGLApp(GLApplication* app);
     virtual void OnCreateGLContext();
     virtual void OnDeleteGLContext();
