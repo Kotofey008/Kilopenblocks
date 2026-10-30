@@ -41,7 +41,7 @@ jobs:
           fi
 
           yes | "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install "platform-tools" "platforms;android-19" "build-tools;29.0.3"
+          "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install "platform-tools" "platforms;android-19" "platforms;android-28" "build-tools;34.0.0"
 
           echo "$ANDROID_HOME/cmdline-tools/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
@@ -57,47 +57,72 @@ jobs:
             NDK_APPLICATION_MK=$PWD/jni/Application.mk \
             -j$(nproc)
 
-      - name: Package unsigned APK
+      - name: Package signed APK
         run: |
-          set -e
+          set -euxo pipefail
           ROOT=$(pwd)
           if [ -d ExplorationLite_RE ]; then ROOT=$ROOT/ExplorationLite_RE; fi
           cd "$ROOT"
-          mkdir -p build/apk/lib/armeabi-v7a build/apk/lib/x86
-          cp -r assets build/apk/ 2>/dev/null || true
+          mkdir -p build
 
-          AAPT=$(ls $ANDROID_HOME/build-tools/*/aapt | head -1)
-          PLATFORM=$ANDROID_HOME/platforms/android-19/android.jar
+          AAPT=$(ls $ANDROID_HOME/build-tools/*/aapt | sort | tail -1)
+          ZIPALIGN=$(ls $ANDROID_HOME/build-tools/*/zipalign | sort | tail -1)
+          APKSIGNER=$(ls $ANDROID_HOME/build-tools/*/apksigner 2>/dev/null | sort | tail -1 || true)
+
+          # Prefer a modern android.jar if installed; fall back to 19
+          PLATFORM=$ANDROID_HOME/platforms/android-28/android.jar
+          if [ ! -f "$PLATFORM" ]; then PLATFORM=$ANDROID_HOME/platforms/android-19/android.jar; fi
+
+          # Build resource APK
           $AAPT package -f -M AndroidManifest.xml -S res -A assets \
-            -I $PLATFORM -F build/unsigned.apk
+            -I "$PLATFORM" -F build/base.apk
 
+          # Stage native libs (must use store/uncompressed for reliable install)
+          rm -rf build/libstage
+          mkdir -p build/libstage
           if [ -f libs/armeabi-v7a/libExplorationLite.so ]; then
             mkdir -p build/libstage/lib/armeabi-v7a
             cp libs/armeabi-v7a/libExplorationLite.so build/libstage/lib/armeabi-v7a/
-            (cd build/libstage && zip -u ../unsigned.apk lib/armeabi-v7a/libExplorationLite.so)
           fi
           if [ -f libs/x86/libExplorationLite.so ]; then
             mkdir -p build/libstage/lib/x86
             cp libs/x86/libExplorationLite.so build/libstage/lib/x86/
-            (cd build/libstage && zip -u ../unsigned.apk lib/x86/libExplorationLite.so)
+          fi
+          # zip -0 = store only (uncompressed) — required for pre-M extractNativeLibs=false,
+          # and still safest for .so packaging
+          if [ -d build/libstage/lib ]; then
+            (cd build/libstage && zip -0 -r ../base.apk lib)
           fi
 
-          ZIPALIGN=$(ls $ANDROID_HOME/build-tools/*/zipalign | head -1)
-          $ZIPALIGN -f 4 build/unsigned.apk build/aligned.apk
+          # Verify lib present
+          unzip -l build/base.apk | grep -E 'lib/.*/libExplorationLite\.so' || {
+            echo "ERROR: native library missing from APK"; exit 1
+          }
+
+          $ZIPALIGN -f 4 build/base.apk build/aligned.apk
 
           KEYSTORE=build/debug.keystore
-          if [ ! -f $KEYSTORE ]; then
-            keytool -genkeypair -v -keystore $KEYSTORE -storepass android \
+          if [ ! -f "$KEYSTORE" ]; then
+            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass android \
               -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname "CN=Debug"
+              -validity 10000 -dname "CN=Debug,O=Android,C=US"
           fi
 
-          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 \
-            -keystore $KEYSTORE -storepass android -keypass android \
-            build/aligned.apk androiddebugkey
+          if [ -n "$APKSIGNER" ]; then
+            $APKSIGNER sign --ks "$KEYSTORE" --ks-pass pass:android \
+              --key-pass pass:android --ks-key-alias androiddebugkey \
+              --out build/ExplorationLite-reimpl-debug.apk build/aligned.apk
+            $APKSIGNER verify build/ExplorationLite-reimpl-debug.apk
+          else
+            jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+              -keystore "$KEYSTORE" -storepass android -keypass android \
+              build/aligned.apk androiddebugkey
+            cp build/aligned.apk build/ExplorationLite-reimpl-debug.apk
+          fi
 
-          cp build/aligned.apk build/ExplorationLite-reimpl-debug.apk
           ls -la build/*.apk
+          echo "APK contents:"
+          unzip -l build/ExplorationLite-reimpl-debug.apk | head -40
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
