@@ -1,6 +1,7 @@
 #include "Scene.h"
 #include <fstream>
 #include <sstream>
+#include <cstdlib>
 #include <iostream>
 #include <algorithm>
 
@@ -61,7 +62,7 @@ bool Scene::Load(const std::string& path) {
 
         if (section == "Globals") {
             if (key == "TimeMultiplier") {
-                try { timeMultiplier = std::stof(val); } catch (...) {}
+                timeMultiplier = std::strtof(val.c_str(), nullptr);
             } else if (key == "WorldSizeMin") {
                 // "x y z"
                 std::istringstream iss(val);
@@ -77,7 +78,7 @@ bool Scene::Load(const std::string& path) {
             // GridModel owns GridData; bounds already set from Globals
         } else if (section == "UISceneObject" && currentUI) {
             if (key == "ID") {
-                try { currentUI->id = std::stoi(val); } catch (...) {}
+                currentUI->id = (int)std::strtol(val.c_str(), nullptr, 10);
             } else if (key == "Name") {
                 currentUI->name = val;
             } else if (key == "FileName") {

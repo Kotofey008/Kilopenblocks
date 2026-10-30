@@ -7,7 +7,7 @@
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "ExplorationLite", __VA_ARGS__))
 
 extern "C" void android_main(struct android_app* state) {
-    app_dummy();
+    // app_dummy() removed (deprecated in NDK r25)
     LOGI("android_main entered (reimpl)");
     GLApplication* app = new GLApplication(0, 0);
     ApplicationBase::SetGLApp(app);

@@ -215,8 +215,8 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         bool vis = (s.find(" SetVisible 1") != std::string::npos);
         // Apply to matching scene objects
         for (auto* obj : scene_.objects) {
-            auto* ui = dynamic_cast<UISceneObject*>(obj);
-            if (!ui) continue;
+            if (!obj || obj->GetKind() != SceneObject::Kind::UI) continue;
+            auto* ui = static_cast<UISceneObject*>(obj);
             // simple wildcard: prefix ends with * or exact match
             if (!prefix.empty() && prefix.back() == '*') {
                 std::string p = prefix.substr(0, prefix.size() - 1);

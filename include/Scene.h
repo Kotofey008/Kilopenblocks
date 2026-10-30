@@ -16,6 +16,8 @@ struct Properties {
 
 class SceneObject {
 public:
+    enum class Kind { Base = 0, UI = 1, GridModel = 2, Camera = 3 };
+    virtual Kind GetKind() const { return Kind::Base; }
     int id = 0;
     std::string name;
     Vector position;
@@ -36,6 +38,7 @@ public:
 
 class UISceneObject : public SceneObject {
 public:
+    Kind GetKind() const override { return Kind::UI; }
     std::string fileName; // e.g. "Screen/ui/menu.txt"
     // ElementClickedMessage etc. as string commands that call into Game
 };
