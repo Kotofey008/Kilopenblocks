@@ -131,104 +131,41 @@ static void EmitGreedyQuad(MeshBuffer& out, int face,
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                          const std::vector<BlockDef>& defs, MeshBuffer& out,
                          const LightMap* lights) {
+    // Per-face emission (no greedy merge) — correct single-tile UVs from BlockDef atlas indices
     out.Clear();
     const int S = 16;
-    const float tile = 1.f / 16.f;
+    for (int z = 0; z < S; ++z)
+    for (int y = 0; y < S; ++y)
+    for (int x = 0; x < S; ++x) {
+        int wx = ox + x, wy = oy + y, wz = oz + z;
+        int cidx = grid.CoordToIndex(wx, wy, wz);
+        if (cidx < 0) continue;
+        unsigned char t = grid.cellTypes[cidx];
+        if (t == 0) continue; // air
 
-    // --- Greedy meshing per face direction ---
-    // mask[S][S]: 0 = skip, else pack type in low 8 + light key
-    // For each of 6 faces, walk slices and merge runs.
-
-    for (int face = 0; face < 6; ++face) {
-        // d = primary axis of the face normal
-        // u,v = the two axes in the plane
-        int du_axis, dv_axis, dn_axis;
-        // axis indices: 0=x 1=y 2=z
-        if (face == 0 || face == 1) { dn_axis = 0; du_axis = 2; dv_axis = 1; } // X faces: plane Z,Y
-        else if (face == 2 || face == 3) { dn_axis = 1; du_axis = 0; dv_axis = 2; } // Y: X,Z
-        else { dn_axis = 2; du_axis = 0; dv_axis = 1; } // Z: X,Y
-
-        for (int slice = 0; slice < S; ++slice) {
-            // Build mask for this slice
-            int mask[16][16];
-            uint32_t colors[16][16];
-            float uvs[16][16][4]; // u0,v0,u1,v1
-            memset(mask, 0, sizeof(mask));
-
-            for (int b = 0; b < S; ++b) {
-                for (int a = 0; a < S; ++a) {
-                    int coords[3];
-                    coords[dn_axis] = slice;
-                    coords[du_axis] = a;
-                    coords[dv_axis] = b;
-                    int x = ox + coords[0], y = oy + coords[1], z = oz + coords[2];
-
-                    int cidx = grid.CoordToIndex(x, y, z);
-                    if (cidx < 0) continue;
-                    unsigned char t = grid.cellTypes[cidx];
-                    if (t == BlockId::Air) continue;
-
-                    // neighbor in face direction
-                    int ncoords[3] = {coords[0], coords[1], coords[2]};
-                    if (face == 0 || face == 2 || face == 4) ncoords[dn_axis]++;
-                    else ncoords[dn_axis]--;
-                    int nx = ox + ncoords[0], ny = oy + ncoords[1], nz = oz + ncoords[2];
-                    if (IsSolid(grid, nx, ny, nz)) continue; // occluded
-
-                    mask[b][a] = (int)t + 1;
-                    float uu0=0,vv0=0,uu1=tile,vv1=tile;
-                    if (t < defs.size()) GetFaceUV(defs[t], face, uu0, vv0, uu1, vv1);
-                    uvs[b][a][0]=uu0; uvs[b][a][1]=vv0; uvs[b][a][2]=uu1; uvs[b][a][3]=vv1;
-                    uint32_t col = 0xFFFFFFFFu;
-                    if (lights) col = LightMap::GetLightColor(lights->GetFaceLight(x,y,z,face));
-                    colors[b][a] = col;
-                }
+        // Skip non-cube decorative for now (still emit leaves/wood)
+        for (int face = 0; face < 6; ++face) {
+            int nx = wx, ny = wy, nz = wz;
+            if (face == 0) nx++; else if (face == 1) nx--;
+            else if (face == 2) ny++; else if (face == 3) ny--;
+            else if (face == 4) nz++; else nz--;
+            // cull if neighbor solid
+            int nidx = grid.CoordToIndex(nx, ny, nz);
+            if (nidx >= 0) {
+                unsigned char nt = grid.cellTypes[nidx];
+                if (nt != 0 && nt != 5 && nt != 11) // not air/water/glass
+                    continue;
             }
-
-            // Greedy merge on mask
-            bool used[16][16] = {};
-            for (int b = 0; b < S; ++b) {
-                for (int a = 0; a < S; ++a) {
-                    if (!mask[b][a] || used[b][a]) continue;
-                    int type = mask[b][a];
-                    uint32_t col = colors[b][a];
-                    // width
-                    int w = 1;
-                    while (a + w < S && mask[b][a+w] == type && colors[b][a+w] == col && !used[b][a+w])
-                        w++;
-                    // height
-                    int h = 1;
-                    bool ok = true;
-                    while (b + h < S && ok) {
-                        for (int k = 0; k < w; ++k) {
-                            if (mask[b+h][a+k] != type || colors[b+h][a+k] != col || used[b+h][a+k]) {
-                                ok = false; break;
-                            }
-                        }
-                        if (ok) h++;
-                    }
-                    for (int j = 0; j < h; ++j)
-                        for (int k = 0; k < w; ++k)
-                            used[b+j][a+k] = true;
-
-                    // world origin of this quad
-                    int coords[3];
-                    coords[dn_axis] = slice;
-                    coords[du_axis] = a;
-                    coords[dv_axis] = b;
-                    int x = ox + coords[0], y = oy + coords[1], z = oz + coords[2];
-
-                    // map w,h to the correct axes for EmitGreedyQuad
-                    // face 0/1: du=z(w), dv=y(h)
-                    // face 2/3: du=x(w), dv=z(h)
-                    // face 4/5: du=x(w), dv=y(h)
-                    EmitGreedyQuad(out, face, x, y, z, w, h,
-                                   uvs[b][a][0], uvs[b][a][1], uvs[b][a][2], uvs[b][a][3], col);
-                }
-            }
+            float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
+            if (t < defs.size()) GetFaceUV(defs[t], face, u0, v0, u1, v1);
+            else Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
+            uint32_t col = 0xFFFFFFFFu;
+            if (lights) col = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
+            EmitFace(out, wx, wy, wz, face, u0, v0, u1, v1, col);
         }
     }
 }
+
 
 // DrawPrimitive @ 0xcfa30 — GLES client arrays, PCT1Vertex stride 24
 #if defined(__ANDROID__)

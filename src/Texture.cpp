@@ -20,12 +20,11 @@ Texture::~Texture() {
 
 void Texture::TileUV(int tileU, int tileV, float& u0, float& v0, float& u1, float& v1) {
     const float inv = 1.f / (float)kAtlasTiles;
-    // V is often flipped in GL (0 at bottom); blocks.png row 0 is top of image
-    // Original may sample with V+ downward in atlas space → convert
+    // blocks.png: row 0 at top of image; GL V=0 at bottom → flip V
     u0 = tileU * inv;
-    v0 = tileV * inv;
     u1 = u0 + inv;
-    v1 = v0 + inv;
+    v1 = 1.f - tileV * inv;       // top of tile in GL space
+    v0 = v1 - inv;                // bottom of tile
 }
 
 void GetFaceUV(const BlockDef& def, int face, float& u0, float& v0, float& u1, float& v1) {
@@ -156,8 +155,8 @@ bool Texture::UploadGL() {
     glBindTexture(GL_TEXTURE_2D, glId_);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)width_, (GLsizei)height_,
                  0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
     return true;

@@ -70,7 +70,7 @@ void GLApplication::OnCreateGLContext() {
         LOGI("blocks atlas %ux%u", blocksAtlas_.Width(), blocksAtlas_.Height());
 
     game_.InitUI();
-    game_.SelectTerrainType(Game::TerrainType::Flat);
+    game_.SelectTerrainType(Game::TerrainType::Earth);
     game_.Play(0);
     clouds_.LoadResources("textures/clouds.png");
     skyBox_.LoadResources();
@@ -176,32 +176,73 @@ void GLApplication::RenderWorld() {
 
 
 void GLApplication::RenderHUD(int screenW, int screenH) {
-    // Ortho 2D overlay — selected block name + time
 #if defined(__ANDROID__)
     glDisable(GL_DEPTH_TEST);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrthof(0, (float)screenW, 0, (float)screenH, -1, 1);
+    glOrthof(0, (float)screenW, (float)screenH, 0, -1, 1); // top-left origin like touches
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
+    glDisable(GL_TEXTURE_2D);
+#endif
+    // Control buttons matching InputMgr layout (original hud_up/down/left/right/jump/delete/add)
+    InputMgr::HudLayout L = game_.GetInput().ComputeLayout();
+    auto quad = [&](int x, int y, int w, int h, uint32_t rgba) {
+        float r = ((rgba >> 16) & 0xff) / 255.f;
+        float g = ((rgba >> 8) & 0xff) / 255.f;
+        float b = (rgba & 0xff) / 255.f;
+        float a = ((rgba >> 24) & 0xff) / 255.f;
+#if defined(__ANDROID__)
+        glColor4f(r, g, b, a);
+        float x0 = (float)x, y0 = (float)y, x1 = (float)(x+w), y1 = (float)(y+h);
+        const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glVertexPointer(2, GL_FLOAT, 0, verts);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        glDisableClientState(GL_VERTEX_ARRAY);
+#else
+        (void)x0; (void)r; (void)g; (void)b; (void)a;
+#endif
+    };
+#if defined(__ANDROID__)
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+#endif
+    // D-pad cross
+    int s = L.btnS / 2;
+    quad(L.padCx - s/2, L.padCy - s*2, s, s, 0x88FFFFFF); // up
+    quad(L.padCx - s/2, L.padCy + s, s, s, 0x88FFFFFF);   // down
+    quad(L.padCx - s*2, L.padCy - s/2, s, s, 0x88FFFFFF); // left
+    quad(L.padCx + s, L.padCy - s/2, s, s, 0x88FFFFFF);   // right
+    // Actions
+    quad(L.btnJumpX, L.btnJumpY, L.btnS, L.btnS, 0xAA80FF80); // jump green
+    quad(L.btnDelX, L.btnDelY, L.btnS, L.btnS, 0xAAFF8080);   // delete red
+    quad(L.btnAddX, L.btnAddY, L.btnS, L.btnS, 0xAA8080FF);   // add blue
+    quad(L.btnActX, L.btnActY, L.btnS, L.btnS, 0xAAFFFF80);   // activate
+
+    // Crosshair center
+    int cx = screenW / 2, cy = screenH / 2;
+    quad(cx - 1, cy - 12, 2, 24, 0xFFFFFFFF);
+    quad(cx - 12, cy - 1, 24, 2, 0xFFFFFFFF);
+
+#if defined(__ANDROID__)
+    glEnable(GL_TEXTURE_2D);
+    glColor4f(1,1,1,1);
 #endif
     hudMesh_.Clear();
     unsigned char bt = game_.GetSelectedBlockType();
     const char* name = "Block";
-    // Map common ids to names (from blocks.txt comments)
     switch (bt) {
         case 1: name = "Stone"; break; case 2: name = "Brick"; break;
         case 3: name = "Granite"; break; case 4: name = "Oak Wood"; break;
         case 6: name = "Planks"; break; case 7: name = "Dirt"; break;
         case 8: name = "Grass"; break; case 11: name = "Glass"; break;
         case 17: name = "Torch"; break; case 10: name = "Leaves"; break;
-        default: name = "Block"; break;
+        default: break;
     }
     char line[128];
     std::snprintf(line, sizeof(line), "Selected: %s", name);
-    hudFont_.AddTextToMesh(hudMesh_, Vector(12, (float)screenH - 28, 0), line, 1.5f, 0xFFFFFFFFu);
-    std::snprintf(line, sizeof(line), "Time: %.2f", game_.GetTimeOfDay());
-    hudFont_.AddTextToMesh(hudMesh_, Vector(12, (float)screenH - 52, 0), line, 1.2f, 0xFFCCFFFFu);
+    hudFont_.AddTextToMesh(hudMesh_, Vector(12, 24, 0), line, 1.5f, 0xFFFFFFFFu);
     if (hudMesh_.IndexCount() > 0) {
         hudFont_.GetTexture().Bind();
         DrawPrimitive(0x0004, hudMesh_.Vertices().data(), hudMesh_.Indices().data(),
@@ -220,6 +261,14 @@ void GLApplication::Frame() {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         eglSwapBuffers(mDisplay, mSurface);
         return;
+    }
+    {
+        int sw = 800, sh = 480;
+        if (mApp && mApp->window) {
+            sw = ANativeWindow_getWidth(mApp->window);
+            sh = ANativeWindow_getHeight(mApp->window);
+        }
+        game_.GetInput().SetScreenSize(sw, sh);
     }
     game_.Update();
     clouds_.Update(1.f/60.f);

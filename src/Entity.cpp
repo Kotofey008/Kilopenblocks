@@ -142,8 +142,10 @@ void EntityPlayer::FixedUpdate() {
 
     float yawRad = yaw_ * 3.14159265f / 180.f;
     float speed = (mode_ == Mode::Flying) ? flySpeed_ : walkSpeed_;
-    float fx = -std::sin(yawRad) * moveForward_ + std::cos(yawRad) * moveStrafe_;
-    float fz =  std::cos(yawRad) * moveForward_ + std::sin(yawRad) * moveStrafe_;
+    float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
+    // Match GetLookDirection XZ: (-sin, cos)
+    float fx = (-sinY) * moveForward_ + (cosY) * moveStrafe_;
+    float fz = ( cosY) * moveForward_ + (sinY) * moveStrafe_;
     // normalize horizontal
     float len = std::sqrt(fx*fx + fz*fz);
     if (len > 1.f) { fx /= len; fz /= len; }
