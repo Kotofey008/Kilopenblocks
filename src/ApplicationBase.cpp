@@ -74,22 +74,31 @@ static void on_app_cmd(struct android_app* app, int32_t cmd) {
 
 static int32_t on_input_event(struct android_app* app, AInputEvent* event) {
     if (!g_glApp) return 0;
-    // Forward touches to InputMgr
     if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION) {
         int action = AMotionEvent_getAction(event);
         int masked = action & AMOTION_EVENT_ACTION_MASK;
         int idx = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
                   >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
-        int id = AMotionEvent_getPointerId(event, idx);
-        int x = (int)AMotionEvent_getX(event, idx);
-        int y = (int)AMotionEvent_getY(event, idx);
         InputMgr& in = g_glApp->GetGame().GetInput();
-        if (masked == AMOTION_EVENT_ACTION_DOWN || masked == AMOTION_EVENT_ACTION_POINTER_DOWN)
-            in.TouchPressEvent((unsigned)id, x, y);
-        else if (masked == AMOTION_EVENT_ACTION_MOVE)
-            in.TouchMoveEvent((unsigned)id, x, y);
-        else if (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP)
-            in.TouchReleaseEvent((unsigned)id, x, y);
+        if (masked == AMOTION_EVENT_ACTION_MOVE) {
+            // MOVE must update every active pointer (not only index 0)
+            int n = AMotionEvent_getPointerCount(event);
+            for (int i = 0; i < n; ++i) {
+                int id = AMotionEvent_getPointerId(event, i);
+                int x = (int)AMotionEvent_getX(event, i);
+                int y = (int)AMotionEvent_getY(event, i);
+                in.TouchMoveEvent((unsigned)id, x, y);
+            }
+        } else {
+            int id = AMotionEvent_getPointerId(event, idx);
+            int x = (int)AMotionEvent_getX(event, idx);
+            int y = (int)AMotionEvent_getY(event, idx);
+            if (masked == AMOTION_EVENT_ACTION_DOWN || masked == AMOTION_EVENT_ACTION_POINTER_DOWN)
+                in.TouchPressEvent((unsigned)id, x, y);
+            else if (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP
+                     || masked == AMOTION_EVENT_ACTION_CANCEL)
+                in.TouchReleaseEvent((unsigned)id, x, y);
+        }
         return 1;
     }
     return 0;

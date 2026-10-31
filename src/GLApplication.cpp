@@ -67,7 +67,7 @@ void GLApplication::OnCreateGLContext() {
     if (!blocksAtlas_.LoadPNGAsset("textures/blocks.png"))
         LOGE("blocks.png FAILED");
     else
-        LOGI("blocks atlas %ux%u", blocksAtlas_.Width(), blocksAtlas_.Height());
+        LOGI("blocks atlas %ux%u gl=%u", blocksAtlas_.Width(), blocksAtlas_.Height(), blocksAtlas_.Valid()?1u:0u);
 
     game_.InitUI();
     game_.SelectTerrainType(Game::TerrainType::Earth);
@@ -126,6 +126,9 @@ void GLApplication::RenderWorld() {
     if (h <= 0) h = 480;
     glViewport(0, 0, w, h);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_DEPTH_TEST);
+    glColor4f(1.f, 1.f, 1.f, 1.f);
 
     // Load projection / modelview from Camera
     Camera& cam = game_.GetCamera();
@@ -163,7 +166,9 @@ void GLApplication::RenderWorld() {
                       clouds_.GetMesh().Indices().data(),
                       clouds_.GetMesh().IndexCount(), 0);
     }
+    glEnable(GL_TEXTURE_2D);
     blocksAtlas_.Bind();
+    glColor4f(1.f, 1.f, 1.f, 1.f);
     // Draw all region meshes
     for (auto& rm : regionMeshes_) {
         if (!rm.valid) continue;
