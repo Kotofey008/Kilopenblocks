@@ -539,6 +539,147 @@ bool GridData::BreakBlock(const GridDataTraceResult& tr) {
 }
 
 // ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Material table — InitMaterials @ 0x98720, LoadMaterials @ 0x987d0
+// Source: assets/scenes/blocks.txt (text, # comments, GetLine parse)
+// ---------------------------------------------------------------------------
+bool GridData::InitMaterials() {
+    materials.clear();
+    materials.resize(256);
+    for (int i = 0; i < 256; ++i)
+        materials[i].initDefault(i);
+    materialCount = 256;
+    return true;
+}
+
+bool GridData::LoadMaterials(const char* path) {
+    if (materials.empty()) InitMaterials();
+    FILE* fp = std::fopen(path, "r");
+    if (!fp) return false;
+    char line[1024];
+    while (std::fgets(line, sizeof(line), fp)) {
+        // skip comments and empty
+        char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p == '#' || *p == '\0' || *p == '\n' || *p == '\r') continue;
+        // Parse whitespace-separated integers matching blocks.txt columns.
+        // Full column→field mapping still partial; recover key fields used by
+        // NeedFace / IsFlowAllowed / water height / UVs.
+        int idx = -1, sIndex = -1;
+        int uxp=0,vxp=0,uyp=0,vyp=0,uzp=0,vzp=0,uxn=0,vxn=0,uyn=0,vyn=0,uzn=0,vzn=0;
+        int bh=0, bmt=0, mbi=0, sau=0, col=0, all=0, uvr=0;
+        int xt=0,yt=0,zt=0,w=0,h=0,l=0,ftl=0,ftw=0;
+        int n = std::sscanf(p,
+            "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+            &idx, &sIndex,
+            &uxp,&vxp,&uyp,&vyp,&uzp,&vzp,&uxn,&vxn,&uyn,&vyn,&uzn,&vzn,
+            &bh,&bmt,&mbi,&sau,&col,&all,&uvr,&xt,&yt,&zt,&w,&h,&l,&ftl,&ftw);
+        if (n < 2 || idx < 0 || idx >= (int)materials.size()) continue;
+        Material& m = materials[idx];
+        m.initDefault(idx);
+        // prop01: type class. Binary validates S-Index-like values in 0..0x0a.
+        // Hypothesis: MBI or clamped S-Index feeds prop01. Observed:
+        //   water MBI=3, leaves S-Index=6, glass S-Index=7, torch BMT=2.
+        // Prefer S-Index when in 0..10, else BMT, else MBI.
+        int cls = sIndex;
+        if (cls < 0 || cls > 0x0a) cls = bmt;
+        if (cls < 0 || cls > 0x0a) cls = mbi;
+        if (cls < 0 || cls > 0x0a) cls = 0;
+        m.raw[0x01] = (uint8_t)cls;
+        // prop02: opacity — solid cubes often 0 with further checks; non-solids non-zero
+        // Hypothesis from NeedFace: prop02==0 triggers deeper neighbour checks.
+        // Col==1 is collision/solid in blocks.txt for stone etc.
+        m.raw[0x02] = (col != 0) ? 0 : 1; // tentative
+        m.raw[0x03] = (uint8_t)(bh & 0xff); // water base height column BH
+        // UV faces: XP YP ZP XN YN ZN
+        m.raw[0x0c] = (uint8_t)(uxp & 0xff);
+        m.raw[0x0d] = (uint8_t)(uyp & 0xff);
+        m.raw[0x0e] = (uint8_t)(uzp & 0xff);
+        m.raw[0x0f] = (uint8_t)(uxn & 0xff);
+        m.raw[0x10] = (uint8_t)(uyn & 0xff);
+        m.raw[0x11] = (uint8_t)(uzn & 0xff);
+        m.raw[0x12] = (uint8_t)(vxp & 0xff);
+        m.raw[0x13] = (uint8_t)(vyp & 0xff);
+        m.raw[0x14] = (uint8_t)(vzp & 0xff);
+        m.raw[0x15] = (uint8_t)(vxn & 0xff);
+        m.raw[0x16] = (uint8_t)(vyn & 0xff);
+        m.raw[0x17] = (uint8_t)(vzn & 0xff);
+        // All flag → raw[0x07] style transparency hint (leaves All=1)
+        m.raw[0x07] = (all != 0) ? 1 : 0;
+        // Default flow perms: non-solid (Col==0) allow all dirs
+        uint8_t perm = (col == 0) ? 0x0f : 0x00;
+        for (int f = 0; f < 6; ++f)
+            m.raw[0x1b + f] = perm;
+        // UNRESOLVED: exact mapping of BMT/MBI/SAU/FTL/FTW → remaining bytes
+        // UNRESOLVED: prop02 encoding (current is hypothesis)
+    }
+    std::fclose(fp);
+    return true;
+}
+
+const Material* GridData::GetMaterial(int type) const {
+    if (type < 0 || type >= (int)materials.size()) return nullptr;
+    return &materials[type];
+}
+
+// ---------------------------------------------------------------------------
+// IsFlowAllowed* recovery (all six directions share the same core):
+//
+//   mat = materials[types[cellIndex]]          // +0xe8 stride 34
+//   perm = mat[+0x1b + FlowType]               // direction-specific permission byte
+//
+//   if (perm & 0x01) {
+//     if (perm & 0x08) { /* special prop01 paths (0,6,7,0x0a) → 0 or 0x0f */ }
+//     else return 0x0f;                        // fully allowed
+//   } else {
+//     if (perm & 0x02) return 0;               // Y axes: inverted logic via sbb/not
+//     if (perm & 0x04) {
+//       // XP/XN/ZP/ZN: return (state&3)==3 ? 0x0f : 0
+//       // YP/YN: different — if !(perm&2) result via sbb
+//     }
+//     return 0;
+//   }
+//
+// Without the binary material table, we approximate permission from type:
+//   air(0)/water(5)/glass(11)/leaves/torch → allow (0x0f)
+//   solid cubes → block (0)
+// Full material+0x1b table load remains open.
+// ---------------------------------------------------------------------------
+int GridData::IsFlowAllowed(int cellIndex, FlowType flow) const {
+    if (cellIndex < 0 || cellIndex >= (int)cellTypes.size()) return 0;
+    unsigned char t = cellTypes[cellIndex];
+    // Prefer material table permission byte when loaded (binary: mat[+0x1b+FlowType])
+    if (!materials.empty() && t < materials.size()) {
+        uint8_t perm = materials[t].flowPerm((int)flow);
+        // Recovered bit tests from IsFlowAllowedXP:
+        if (perm & 0x01) {
+            if (perm & 0x08) {
+                // special prop01 paths — simplified: allow if prop01 in {0,6,7,0x0a}
+                uint8_t p01 = materials[t].prop01();
+                if (p01 == 0 || p01 == 6 || p01 == 7 || p01 == 0x0a) return 0x0f;
+                return 0;
+            }
+            return 0x0f;
+        }
+        if (perm & 0x02) return 0;
+        if (perm & 0x04) {
+            if (cellIndex < (int)cellStates.size()) {
+                unsigned st = cellStates[cellIndex] & 0x03;
+                return (st == 3) ? 0x0f : 0;
+            }
+            return 0;
+        }
+        return 0;
+    }
+    // Fallback heuristic when materials not loaded
+    if (t == 0 || t == 5 || t == 11) return 0x0f;
+    if (t == 10 || t == 20 || t == 17 || t == 18) return 0x0f;
+    if (t == 12 || t == 13 || t == 14) return 0x0f;
+    return 0;
+}
+
 // Material::MinWaterHeight @ 0x86b70 / MaxWaterHeight @ 0x86c70
 // matProp03 = material byte +0x03 (base height)
 // matProp01 = material byte +0x01 (class; 0x0a = special liquid)
@@ -572,6 +713,9 @@ int GridData::MaxWaterHeight(unsigned char matProp01, unsigned char matProp03, u
 // Rules: water falls into air below; otherwise spreads horizontally to air neighbors
 // (finite-ish by limiting steps). Full level-based flow still TBD.
 void GridData::UpdateWater(int maxSteps) {
+    // Partial UpdateWaterState @ 0xa1040:
+    // Uses IsFlowAllowed* before placing; Min/MaxWaterHeight available for level
+    // encoding once material table is loaded. Current: binary water type only.
     if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) return;
     const unsigned char WATER = 5;
     struct Cell { int x,y,z; };
@@ -585,25 +729,40 @@ void GridData::UpdateWater(int maxSteps) {
     }
     int steps = 0;
     bool any = false;
+    // Direction → FlowType mapping (binary axis names)
+    // fall uses FlowYN into cell below
     for (size_t si = 0; si < sources.size() && steps < maxSteps; ++si) {
         int x = sources[si].x, y = sources[si].y, z = sources[si].z;
-        // fall
-        int below = CoordToIndex(x, y-1, z);
+        int selfIdx = CoordToIndex(x, y, z);
+        if (selfIdx < 0) continue;
+
+        // Vertical fall (YN direction into cell below)
+        int below = CoordToIndex(x, y - 1, z);
         if (below >= 0 && cellTypes[below] == 0) {
-            cellTypes[below] = WATER;
-            any = true; steps++;
-            continue;
-        }
-        // horizontal
-        const int dirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-        for (auto& d : dirs) {
-            int ni = CoordToIndex(x+d[0], y, z+d[1]);
-            if (ni >= 0 && cellTypes[ni] == 0) {
-                // only spread if supported or has water neighbor above/side (simple)
-                cellTypes[ni] = WATER;
+            if (IsFlowAllowed(below, FlowYN) || IsFlowAllowed(selfIdx, FlowYN)) {
+                cellTypes[below] = WATER;
+                // Default full height: state bit 0x04 clear → Min uses prop03
+                if (below < (int)cellStates.size()) cellStates[below] = 0;
                 any = true; steps++;
-                if (steps >= maxSteps) break;
+                continue;
             }
+        }
+        // Horizontal: XP XN ZP ZN
+        struct Dir { int dx, dz; FlowType ft; };
+        const Dir dirs[4] = {
+            {1, 0, FlowXP}, {-1, 0, FlowXN},
+            {0, 1, FlowZP}, {0, -1, FlowZN}
+        };
+        for (const auto& d : dirs) {
+            if (steps >= maxSteps) break;
+            int ni = CoordToIndex(x + d.dx, y, z + d.dz);
+            if (ni < 0 || cellTypes[ni] != 0) continue;
+            // Target cell must allow inflow
+            if (!IsFlowAllowed(ni, d.ft) && !IsFlowAllowed(selfIdx, d.ft))
+                continue;
+            cellTypes[ni] = WATER;
+            if (ni < (int)cellStates.size()) cellStates[ni] = 0;
+            any = true; steps++;
         }
     }
     if (any) MarkModifiedRegions();

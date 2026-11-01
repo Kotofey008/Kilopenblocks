@@ -43,6 +43,49 @@ struct GridDataTraceResult {
     }
 };
 
+
+// GridData::Material — 34 bytes (0x22). Recovered from Material::Init @ 0x98640
+// and LoadMaterials @ 0x987d0 (parses assets/scenes/blocks.txt text).
+// Allocation: InitMaterials sets +0xe0=0x100, +0xe8 = new byte[0x2200].
+//
+// Verified field map:
+//   +0x00 byte0          Init=0x10; LoadMaterials overwrites
+//   +0x01 prop01         type class 0..0x0a (NeedFace jump key)
+//   +0x02 prop02         opacity-related (NeedFace checks ==0)
+//   +0x03 waterBase      Min/MaxWaterHeight
+//   +0x04                Init=0x07
+//   +0x05..+0x0b         misc / flags (+0x07 setnz in LoadMaterials)
+//   +0x0c..+0x11 uFace[6] atlas U per face XP,YP,ZP,XN,YN,ZN
+//   +0x12..+0x17 vFace[6] atlas V per face
+//   +0x18..+0x1a         flags (AddMesh reads +0x18/+0x19 occlusion)
+//   +0x1b+FlowType       IsFlowAllowed permission byte (FlowType 0..5)
+//   +0x1e short          Init from Material::Init 3rd arg
+//   +0x20 short          Init=0xffff
+// FlowType index into +0x1b overlaps trailing shorts — exact ownership open.
+#pragma pack(push, 1)
+struct Material {
+    uint8_t raw[0x22];
+    uint8_t prop01() const { return raw[0x01]; }
+    uint8_t prop02() const { return raw[0x02]; }
+    uint8_t waterBase() const { return raw[0x03]; }
+    uint8_t uFace(int face) const { return raw[0x0c + (face % 6)]; }
+    uint8_t vFace(int face) const { return raw[0x12 + (face % 6)]; }
+    uint8_t flowPerm(int flowType) const { return raw[0x1b + (flowType % 6)]; }
+    void initDefault(int index) {
+        for (int i = 0; i < 0x22; ++i) raw[i] = 0;
+        raw[0x00] = 0x10;
+        raw[0x04] = 0x07;
+        raw[0x06] = 0x01;
+        raw[0x1e] = (uint8_t)(index & 0xff);
+        raw[0x1f] = (uint8_t)((index >> 8) & 0xff);
+        raw[0x20] = 0xff;
+        raw[0x21] = 0xff;
+    }
+};
+#pragma pack(pop)
+static_assert(sizeof(Material) == 0x22, "Material must be 34 bytes");
+
+
 class GridData {
 public:
     enum class LeavesQuality : int { Low = 0, Medium = 1, High = 2, Ultra = 3 };
@@ -82,8 +125,23 @@ public:
     bool MeshesDirty() const { return meshesDirty_; }
     void ClearMeshesDirty() { meshesDirty_ = false; }
     void UpdateWater(int maxSteps = 64);
+    // InitMaterials @ 0x98720 / LoadMaterials @ 0x987d0 (blocks.txt)
+    bool InitMaterials();
+    bool LoadMaterials(const char* path);
+    const Material* GetMaterial(int type) const;
     // Water height helpers (Material::Min/MaxWaterHeight @ 0x86b70 / 0x86c70)
     // matProp01 = material+0x01, matProp03 = material+0x03 (base height)
+
+    // FlowType / LiquidType — used by IsFlowAllowed* and UpdateWaterState (binary enums).
+    // FlowType indexes material permission byte at mat+0x1b+flowType.
+    enum FlowType : int {
+        FlowXP = 0, FlowXN = 1, FlowYP = 2, FlowYN = 3, FlowZP = 4, FlowZN = 5
+    };
+    // IsFlowAllowed* @ 0x851a0 / 0x852c0 / 0x85380 / 0x854a0 / 0x85cb0 / 0x86370
+    // Returns 0 (blocked) or 0x0f (allowed) per recovered arithmetic; other values rare.
+    // permByte = materials[type].bytes[0x1b + flowType]; without full table, uses type heuristics.
+    int IsFlowAllowed(int cellIndex, FlowType flow) const;
+
     static int MinWaterHeight(unsigned char matProp01, unsigned char matProp03, unsigned short state);
     static int MaxWaterHeight(unsigned char matProp01, unsigned char matProp03, unsigned short state);
 
@@ -106,6 +164,9 @@ public:
     void UpdateHierarchy4000(int cellIndex, bool bitOn);
     int sizeX = 0, sizeY = 0, sizeZ = 0;     // dims used for index (orig +0x44 / +0x50 related)
     int originX = 0, originY = 0, originZ = 0;
+    // materials at binary +0xe8; capacity +0xe0 (=256)
+    std::vector<Material> materials;
+    int materialCount = 0;
     bool meshesDirty_ = true;
 
     // Region dirty tracking (region size 16, stride 0xa4 observed in InitRegions).

@@ -80,12 +80,15 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
 
     if (!occludes(nType)) return 1;
 
-    // Neighbour is solid. Binary still emits in special material cases
-    // (prop+0x01 in {6,7,0x0a}, state orientation). Without full material
-    // table those return 0 (cull) — matches common solid-vs-solid case.
-    // Special return 2 not yet distinguished (requires material+0x01).
-    if (selfType == nType) return 0; // same solid — cull
-    return 0; // different solids still occlude each other for full cubes
+    // Neighbour is solid. Binary NeedFaceXP cases (verified returns):
+    //   0 = cull
+    //   1 = emit full face
+    //   2 = special/partial (prop+0x02==0 paths, type mismatch with neigh)
+    //   3 = observed in one jump-table case (state&7==3 related)
+    // Without material table (+0xe8 stride 34), return-2/3 paths stay closed.
+    // Solid-vs-solid → 0 (cull) matches the common opaque case.
+    (void)selfType;
+    return 0;
 }
 
 bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
@@ -131,7 +134,12 @@ void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
     out.PushQuad(v);
 }
 
-// Emit a rectangular quad in face plane spanning [u0..u1) x [v0..v1) in the 2D axes
+// ---------------------------------------------------------------------------
+// NON-ORIGINAL: EmitGreedyQuad is NOT present in the binary mesher path.
+// Region::AddMesh emits faces individually via NeedFace* + AddBlockFace.
+// Kept isolated for reference only; RegionMesher::Build must not call it.
+// ---------------------------------------------------------------------------
+#if 0  // disabled — non-original greedy path
 static void EmitGreedyQuad(MeshBuffer& out, int face,
                            int x0, int y0, int z0, int du, int dv,
                            float uu0, float vv0, float uu1, float vv1, uint32_t color) {
@@ -188,6 +196,8 @@ static void EmitGreedyQuad(MeshBuffer& out, int face,
     }
     out.PushQuad(v);
 }
+
+#endif // non-original greedy
 
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                          const std::vector<BlockDef>& defs, MeshBuffer& out,

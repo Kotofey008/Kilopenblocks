@@ -1,4 +1,14 @@
 #include "Lighting.h"
+// Light storage (AddLight @ 0x95b90 / AddLightUpdate @ 0x94b60):
+//   per-cell value: low nibble 0x0f + high nibble 0xf0 (sky/block hypothesis)
+//   hierarchy maps at +0x280.. use value | 0x8000 as dirty/valid flag
+// Mode bits applied in GetLight @ 0x94480 by face arg (4th param):
+//   face 5: or ah,0x28 → mode 0x2800; face 4: returns 0x200e (mode 0x2000)
+// GetLightColor @ 0x947e0 only consumes the ushort from GetLight (AddBlockFace callers)
+// consumption (RGB scale). No OR of these constants found in AddLight/SetAddLights
+// bodies examined so far — assignment site still open (may be external context:
+// time-of-day / biome applied at color lookup, not stored per cell).
+
 #include "TreeBuilder.h"
 #include <algorithm>
 #include <cstring>

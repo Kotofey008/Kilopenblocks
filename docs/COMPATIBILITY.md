@@ -121,3 +121,22 @@ See docs/MESHER_LIGHTING_WATER.md for full mismatch tables.
 | Min/MaxWaterHeight | Verified equivalent (arithmetic) | Exact match to binary |
 | Light mode bits | Implemented but unverified | Make accepts mode; assignment sites open |
 | IsFlowAllowed* | Missing | |
+
+### IsFlowAllowed / UpdateWater / mode (2026-11-01)
+| Item | Class | Notes |
+|------|-------|-------|
+| IsFlowAllowed* | Partially equivalent | Core bit logic recovered; material+0x1b table open |
+| UpdateWater + heights | Partially equivalent | Gates on IsFlowAllowed; level encoding not full |
+| Light mode assignment | Not investigated fully | Not found in AddLight; only GetLightColor consume |
+| Greedy meshing | Incorrect (isolated) | #if 0; not in binary |
+| NeedFace return 2/3 | Missing | Requires material jump table |
+
+### Material table / GetLight mode (2026-11-01)
+| Item | Class | Notes |
+|------|-------|-------|
+| Material 34B layout | Partially equivalent | Structure + key fields; full column map open |
+| LoadMaterials from blocks.txt | Partially equivalent | Parses text; prop01/UV/flow partial |
+| IsFlowAllowed + mat perm | Partially equivalent | Uses table when loaded |
+| GetLight face→mode | Verified (documented) | Mode OR at read by face; not per-cell storage |
+| NeedFace return 2/3 | Missing | Jump table cases open |
+| AddBlockFace | Partially equivalent | EmitFace stand-in; UV can use Material.uFace |

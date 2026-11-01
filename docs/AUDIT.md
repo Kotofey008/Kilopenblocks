@@ -103,3 +103,9 @@ Full call-graph and size inventory of Region::AddMesh, NeedFace*, AddBlockFace (
 
 ## NeedFace / light modes / water heights (2026-11-01)
 NeedFaceXP recovered as template; RegionMesher::NeedFace implements opacity-based 0/1. Greedy merging confirmed absent from binary. Min/MaxWaterHeight arithmetic implemented exactly. Light mode mask 0x3800 and scale factors documented; assignment not recovered. See NEEDFACE_LIGHT_WATER.md.
+
+## IsFlowAllowed / light mode / greedy isolation (2026-11-01)
+All six IsFlowAllowed* recovered; UpdateWater uses them. Greedy under #if 0. Light mode bits not written in AddLight examined paths — only consumed in GetLightColor. NeedFace returns 0–3 documented. See ISFLOW_LIGHTMODE.md.
+
+## Material table recovery (2026-11-01)
+GridData+0xe8 Material[256]×34B from blocks.txt via LoadMaterials. Field map for prop01/02, waterBase, UVs, flowPerm recovered. GetLightColor mode originates in GetLight face-parameter OR (not per-cell storage). NeedFace jump cases 2/3 and full column→byte map still open. See MATERIAL_TABLE.md.
