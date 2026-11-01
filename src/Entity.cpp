@@ -103,7 +103,9 @@ void EntityPlayer::Init() {
 
 void EntityPlayer::SetYawPitch(float yaw, float pitch) {
     yaw_ = yaw;
-    pitch_ = std::max(-89.f, std::min(89.f, pitch));
+    if (pitch > 89.f) pitch = 89.f;
+    if (pitch < -89.f) pitch = -89.f;
+    pitch_ = pitch;
 }
 
 void EntityPlayer::SetMoveInput(float forward, float strafe, bool jump) {

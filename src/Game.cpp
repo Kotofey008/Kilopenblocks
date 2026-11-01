@@ -72,9 +72,8 @@ void Game::Update() {
         player_->FixedPostUpdate();
         fluidAnim.Update(1.f/60.f);
         input_.EndFrame();
-        // Camera follows eye
-        auto eye = player_->GetPosition();
-        eye.y += 1.62f;
+        // Camera is hard-locked to player eye (first-person)
+        Vector eye = player_->GetEyePosition();
         camera_.SetPosition(eye);
         camera_.SetYawPitch(player_->GetYaw(), player_->GetPitch());
     }
@@ -90,6 +89,25 @@ void Game::SpawnPlayer() {
         genEarth_.GetStartPosition(x, y, z);
     else
         genFlat_.GetStartPosition(x, y, z);
+
+    // Scan upward for feet in air above solid — never spawn inside terrain
+    auto isSolid = [&](int bx, int by, int bz) -> bool {
+        int idx = grid_.CoordToIndex(bx, by, bz);
+        if (idx < 0) return false;
+        unsigned char t = grid_.cellTypes[idx];
+        return t != 0 && t != 5 && t != 11 && t != 10 && t != 20
+            && t != 12 && t != 13 && t != 14 && t != 17 && t != 18;
+    };
+    int maxY = (int)grid_.worldMax.y - 2;
+    int minY = (int)grid_.worldMin.y + 1;
+    if (y < minY) y = minY;
+    // If feet solid, climb; then ensure head room
+    while (y < maxY && isSolid(x, y, z)) ++y;
+    while (y > minY && !isSolid(x, y - 1, z)) --y; // drop onto ground
+    if (isSolid(x, y, z)) ++y; // one more if still blocked
+    // Head clearance
+    while (y < maxY && (isSolid(x, y, z) || isSolid(x, y + 1, z))) ++y;
+
     if (!player_) {
         player_ = new EntityPlayer(&playerSet_);
         playerSet_.SetLocalPlayer(player_);
@@ -97,8 +115,11 @@ void Game::SpawnPlayer() {
     player_->SetGrid(&grid_);
     player_->SetPosition(Vector((float)x + 0.5f, (float)y, (float)z + 0.5f));
     player_->Init();
+    // Attach camera immediately so first frame is not at origin
     camera_.SetPerspective(70.f, 1.777f, 0.1f);
     camera_.SetFarPlane(256.f);
+    camera_.SetPosition(player_->GetEyePosition());
+    camera_.SetYawPitch(player_->GetYaw(), player_->GetPitch());
 }
 
 void Game::OnForeground() {}

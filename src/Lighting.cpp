@@ -158,7 +158,7 @@ uint32_t LightMap::GetLightColor(uint16_t packed) {
     float t = level / 15.f;
     t = t * t;
     int c = (int)(t * 255.f);
-    if (c < 16) c = 16;
+    if (c < 48) c = 48; // playable visibility floor
     int r = c, g = c, b = c;
     if (sky >= block) {
         b = std::min(255, c + 10);

@@ -6,7 +6,7 @@ Camera::Camera() {}
 void Camera::SetPerspective(float fovYDegrees, float aspect, float nearPlane) {
     projection_ = Projection::Perspective;
     fov_ = fovYDegrees;
-    aspect_ = aspect;
+    aspect_ = aspect > 0.01f ? aspect : 1.777f;
     near_ = nearPlane;
 }
 
@@ -30,42 +30,47 @@ void Camera::SetProjection(Projection p) { projection_ = p; }
 
 void Camera::SetYawPitch(float yaw, float pitch) {
     yaw_ = yaw;
+    // Clamp pitch so camera never flips
+    if (pitch > 89.f) pitch = 89.f;
+    if (pitch < -89.f) pitch = -89.f;
     pitch_ = pitch;
 }
 
 Matrix4 Camera::GetViewMatrix() const {
-    // Full FPS view: rotation from yaw/pitch + translation (matches GetLookDirection)
+    // Standard FPS: yaw around Y, pitch around X. OpenGL looks down -Z.
     float yr = yaw_ * 3.14159265f / 180.f;
     float pr = pitch_ * 3.14159265f / 180.f;
     float cy = std::cos(yr), sy = std::sin(yr);
     float cp = std::cos(pr), sp = std::sin(pr);
 
-    // Forward (camera looks along -Z in view space)
+    // Forward (world direction the player looks)
     float fx = -sy * cp;
     float fy =  sp;
     float fz =  cy * cp;
+
     // Right = normalize(cross(forward, worldUp))
-    // worldUp = (0,1,0); cross(f, up) = (fz, 0, -fx) then renormalize
-    float rx = fz, ry = 0.f, rz = -fx;
-    float rlen = std::sqrt(rx*rx + rz*rz);
+    // cross(f, (0,1,0)) = (-fz, 0, fx)
+    float rx = -fz, ry = 0.f, rz = fx;
+    float rlen = std::sqrt(rx * rx + rz * rz);
     if (rlen > 1e-6f) { rx /= rlen; rz /= rlen; }
     else { rx = 1.f; rz = 0.f; }
+
     // Up = cross(right, forward)
     float ux = ry * fz - rz * fy;
     float uy = rz * fx - rx * fz;
     float uz = rx * fy - ry * fx;
 
     Matrix4 m = Matrix4::Identity();
-    // Column-major OpenGL: first row of rotation is right, etc.
+    // Rows of R: right, up, -forward (camera looks along -Z)
     m.m[0] = rx;  m.m[4] = ux;  m.m[8]  = -fx; m.m[12] = 0;
     m.m[1] = ry;  m.m[5] = uy;  m.m[9]  = -fy; m.m[13] = 0;
     m.m[2] = rz;  m.m[6] = uz;  m.m[10] = -fz; m.m[14] = 0;
     m.m[3] = 0;   m.m[7] = 0;   m.m[11] = 0;   m.m[15] = 1;
-    // Apply -position in camera space: t = -R * position
+    // t = -R * position
     float px = position_.x, py = position_.y, pz = position_.z;
-    m.m[12] = -(rx*px + ry*py + rz*pz);
-    m.m[13] = -(ux*px + uy*py + uz*pz);
-    m.m[14] = -(-fx*px + -fy*py + -fz*pz);
+    m.m[12] = -(rx * px + ry * py + rz * pz);
+    m.m[13] = -(ux * px + uy * py + uz * pz);
+    m.m[14] = -(-fx * px + -fy * py + -fz * pz);
     return m;
 }
 
@@ -75,7 +80,8 @@ Matrix4 Camera::GetProjectionMatrix() const {
         float f = 1.f / std::tan(fov_ * 3.14159265f / 360.f);
         float fn = near_;
         float ff = far_ > fn + 1.f ? far_ : 256.f;
-        m.m[0] = f / (aspect_ > 0.01f ? aspect_ : 1.777f);
+        float asp = aspect_ > 0.01f ? aspect_ : 1.777f;
+        m.m[0] = f / asp;
         m.m[5] = f;
         m.m[10] = (ff + fn) / (fn - ff);
         m.m[11] = -1.f;

@@ -85,7 +85,7 @@ private:
     float moveStrafe_ = 0.f;
     bool jumpPressed_ = false;
     Mode mode_ = Mode::Walking;
-    float walkSpeed_ = 4.3f;   // typical voxel walk
+    float walkSpeed_ = 6.5f;
     float flySpeed_ = 8.f;
     float gravity_ = -20.f;
     float jumpSpeed_ = 8.f;

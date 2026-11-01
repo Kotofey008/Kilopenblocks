@@ -68,7 +68,7 @@ private:
     float lookDX_ = 0.f, lookDY_ = 0.f;
     float moveForward_ = 0.f, moveStrafe_ = 0.f;
     bool jump_ = false;
-    float sensitivity_ = 0.25f;
+    float sensitivity_ = 0.15f;
     int screenW_ = 800, screenH_ = 480;
 
     bool breakPending_ = false;

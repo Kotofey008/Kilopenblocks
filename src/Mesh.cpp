@@ -227,7 +227,12 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             if (t < defs.size()) GetFaceUV(defs[t], face, u0, v0, u1, v1);
             else Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
             uint32_t col = 0xFFFFFFFFu;
-            if (lights) col = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
+            if (lights) {
+                col = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
+                // Never pure-black vertices (uninitialized light map edges)
+                if ((col & 0xFFu) < 32 && ((col >> 8) & 0xFFu) < 32)
+                    col = 0xFFC0C0C0u;
+            }
             EmitFace(out, wx, wy, wz, face, u0, v0, u1, v1, col);
         }
     }

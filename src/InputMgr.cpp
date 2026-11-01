@@ -28,23 +28,27 @@ InputMgr::HudLayout InputMgr::ComputeLayout() const {
 
 InputMgr::Zone InputMgr::HitTest(int x, int y) const {
     float fx = (float)x, fy = (float)y;
-    if (hudRects_.valid) {
-        if (hudRects_.up.Contains(fx, fy) || hudRects_.down.Contains(fx, fy) ||
-            hudRects_.left.Contains(fx, fy) || hudRects_.right.Contains(fx, fy))
-            return Zone::Pad;
-        if (hudRects_.jump.Contains(fx, fy)) return Zone::Jump;
-        if (hudRects_.del.Contains(fx, fy)) return Zone::Delete;
-        if (hudRects_.add.Contains(fx, fy)) return Zone::Add;
-        if (hudRects_.act.Contains(fx, fy)) return Zone::Activate;
-        return Zone::Look;
-    }
+    // Always reserve large bottom-left for movement (even if HUD rects exist).
+    // This prevents "everything is look / cannot move" when hud_* rects are wrong.
     HudLayout L = ComputeLayout();
+    int dx = x - L.padCx, dy = y - L.padCy;
+    int padR2 = (L.padR * 2 + L.btnS / 2);
+    if (dx * dx + dy * dy <= padR2 * padR2)
+        return Zone::Pad;
+    // Bottom-left quadrant fallback for movement
+    if (x < screenW_ / 3 && y > screenH_ * 2 / 3)
+        return Zone::Pad;
+
     auto inBtn = [&](int bx, int by) {
         return x >= bx && x < bx + L.btnS && y >= by && y < by + L.btnS;
     };
-    int dx = x - L.padCx, dy = y - L.padCy;
-    if (dx * dx + dy * dy <= (L.padR * 2) * (L.padR * 2))
-        return Zone::Pad;
+    if (hudRects_.valid) {
+        if (hudRects_.jump.Contains(fx, fy) || inBtn(L.btnJumpX, L.btnJumpY)) return Zone::Jump;
+        if (hudRects_.del.Contains(fx, fy) || inBtn(L.btnDelX, L.btnDelY)) return Zone::Delete;
+        if (hudRects_.add.Contains(fx, fy) || inBtn(L.btnAddX, L.btnAddY)) return Zone::Add;
+        if (hudRects_.act.Contains(fx, fy) || inBtn(L.btnActX, L.btnActY)) return Zone::Activate;
+        return Zone::Look;
+    }
     if (inBtn(L.btnJumpX, L.btnJumpY)) return Zone::Jump;
     if (inBtn(L.btnDelX, L.btnDelY)) return Zone::Delete;
     if (inBtn(L.btnAddX, L.btnAddY)) return Zone::Add;

@@ -169,6 +169,7 @@ void GLApplication::RenderWorld() {
     }
     glEnable(GL_TEXTURE_2D);
     blocksAtlas_.Bind();
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glColor4f(1.f, 1.f, 1.f, 1.f);
     // Draw all region meshes
     for (auto& rm : regionMeshes_) {
