@@ -178,3 +178,19 @@ Vector EntityPlayer::GetLookDirection() const {
     float cp = std::cos(pr);
     return Vector(-std::sin(yr) * cp, std::sin(pr), std::cos(yr) * cp);
 }
+
+void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
+    if (!grid_) return;
+    Vector eye = GetEyePosition();
+    Vector dir = GetLookDirection();
+    const float reach = 6.f;
+    Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
+    GridDataTraceResult tr;
+    grid_->TracePoint(eye, to, tr, this);
+    if (!tr.hit) return;
+    if (deleteMode) {
+        grid_->BreakBlock(tr);
+    } else {
+        grid_->PlaceBlock(tr, placeType);
+    }
+}

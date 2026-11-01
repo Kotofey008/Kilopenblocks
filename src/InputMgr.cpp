@@ -27,11 +27,21 @@ InputMgr::HudLayout InputMgr::ComputeLayout() const {
 }
 
 InputMgr::Zone InputMgr::HitTest(int x, int y) const {
+    float fx = (float)x, fy = (float)y;
+    if (hudRects_.valid) {
+        if (hudRects_.up.Contains(fx, fy) || hudRects_.down.Contains(fx, fy) ||
+            hudRects_.left.Contains(fx, fy) || hudRects_.right.Contains(fx, fy))
+            return Zone::Pad;
+        if (hudRects_.jump.Contains(fx, fy)) return Zone::Jump;
+        if (hudRects_.del.Contains(fx, fy)) return Zone::Delete;
+        if (hudRects_.add.Contains(fx, fy)) return Zone::Add;
+        if (hudRects_.act.Contains(fx, fy)) return Zone::Activate;
+        return Zone::Look;
+    }
     HudLayout L = ComputeLayout();
     auto inBtn = [&](int bx, int by) {
         return x >= bx && x < bx + L.btnS && y >= by && y < by + L.btnS;
     };
-    // pad: circular-ish region
     int dx = x - L.padCx, dy = y - L.padCy;
     if (dx * dx + dy * dy <= (L.padR * 2) * (L.padR * 2))
         return Zone::Pad;
@@ -54,15 +64,21 @@ void InputMgr::TouchPressEvent(unsigned int id, int x, int y) {
     if (z == Zone::Add) placePending_ = true;
     if (z == Zone::Activate) activatePending_ = true;
     if (z == Zone::Pad) {
-        // direction from pad center
-        HudLayout L = ComputeLayout();
-        float pdx = (float)(x - L.padCx) / (float)L.padR;
-        float pdy = (float)(y - L.padCy) / (float)L.padR;
-        // screen Y down → forward is -pdy
-        moveStrafe_ = pdx;
-        moveForward_ = -pdy;
-        if (moveStrafe_ > 1) moveStrafe_ = 1; if (moveStrafe_ < -1) moveStrafe_ = -1;
-        if (moveForward_ > 1) moveForward_ = 1; if (moveForward_ < -1) moveForward_ = -1;
+        if (hudRects_.valid) {
+            moveForward_ = moveStrafe_ = 0.f;
+            if (hudRects_.up.Contains((float)x, (float)y)) moveForward_ = 1.f;
+            if (hudRects_.down.Contains((float)x, (float)y)) moveForward_ = -1.f;
+            if (hudRects_.left.Contains((float)x, (float)y)) moveStrafe_ = -1.f;
+            if (hudRects_.right.Contains((float)x, (float)y)) moveStrafe_ = 1.f;
+        } else {
+            HudLayout L = ComputeLayout();
+            float pdx = (float)(x - L.padCx) / (float)L.padR;
+            float pdy = (float)(y - L.padCy) / (float)L.padR;
+            moveStrafe_ = pdx;
+            moveForward_ = -pdy;
+            if (moveStrafe_ > 1) moveStrafe_ = 1; if (moveStrafe_ < -1) moveStrafe_ = -1;
+            if (moveForward_ > 1) moveForward_ = 1; if (moveForward_ < -1) moveForward_ = -1;
+        }
     }
 }
 
@@ -118,4 +134,10 @@ bool InputMgr::ConsumeActivateAction() {
 
 void InputMgr::EndFrame() {
     // held jump stays; look deltas consumed by Game
+}
+
+bool InputMgr::AnyLookTouch() const {
+    for (int i = 0; i < kMaxTouches; ++i)
+        if (touches_[i].active && touches_[i].zone == Zone::Look) return true;
+    return false;
 }

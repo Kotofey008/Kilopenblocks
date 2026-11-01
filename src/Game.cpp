@@ -15,8 +15,9 @@ Game::Game() {
 Game::~Game() {}
 
 void Game::InitUI() {
-    // Original @ 0x66350 size 1195 — loads UI scene objects, wires messages
+    // Original @ 0x66350 — loads UI scene objects + HUD from assets
     scene_.Load("scenes/start.scene");
+    hudLoaded_ = hud_.LoadAsset("ui/hud.txt");
 }
 
 void Game::InitSceneConnections() {
@@ -52,6 +53,12 @@ void Game::Play(int slot) {
 
 void Game::Update() {
     if (state_ != GameState::Playing) return;
+    // Resolve original HUD layout from ui/hud.txt
+    if (hudLoaded_) {
+        // screen size from input
+        // (SetScreenSize already called by GLApplication)
+        // We need W/H — store last from input layout
+    }
     // Feed input to player
     if (player_) {
         player_->SetYawPitch(
@@ -337,28 +344,12 @@ void Game::SetAnimatedWater(bool on) {
 
 void Game::TryBreakBlock() {
     if (!player_) return;
-    // Ray from eye along look direction
-    Vector eye = player_->GetEyePosition();
-    Vector dir = player_->GetLookDirection();
-    Vector to(eye.x + dir.x * 6.f, eye.y + dir.y * 6.f, eye.z + dir.z * 6.f);
-    GridDataTraceResult tr;
-    grid_.TracePoint(eye, to, tr, nullptr);
-    if (tr.hit) {
-        grid_.BreakBlock(tr);
-        // mesh rebuild will be triggered by MarkModifiedRegions + EnsureRegionMeshes
-    }
+    player_->AddOrDeleteBlock(true, 0);
 }
 
 void Game::TryPlaceBlock(unsigned char blockType) {
     if (!player_) return;
-    Vector eye = player_->GetEyePosition();
-    Vector dir = player_->GetLookDirection();
-    Vector to(eye.x + dir.x * 6.f, eye.y + dir.y * 6.f, eye.z + dir.z * 6.f);
-    GridDataTraceResult tr;
-    grid_.TracePoint(eye, to, tr, nullptr);
-    if (tr.hit) {
-        grid_.PlaceBlock(tr, blockType);
-    }
+    player_->AddOrDeleteBlock(false, blockType);
 }
 
 // Creative palette order (observed SelectPaletteItem indices map to placeable blocks)

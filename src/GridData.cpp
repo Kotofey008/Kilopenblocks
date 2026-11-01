@@ -26,6 +26,11 @@ void GridData::InitDimensionsFromWorldBounds() {
     size_t n = (size_t)sizeX * sizeY * sizeZ;
     cellTypes.assign(n, 0);   // Air
     cellStates.assign(n, 0);
+    // Hierarchical 0x4000 maps (sizes cover worst-case shift of linear index)
+    aux4000L0_.assign((n >> 4) + 1, 0);
+    aux4000L1_.assign((n >> 8) + 1, 0);
+    aux4000L2_.assign((n >> 12) + 1, 0);
+    aux4000L3_.assign((n >> 16) + 1, 0);
 }
 
 int GridData::CoordToIndex(int x, int y, int z) const {
@@ -37,17 +42,146 @@ int GridData::CoordToIndex(int x, int y, int z) const {
     return lx + sizeX * (ly + sizeY * lz);
 }
 
+// ---------------------------------------------------------------------------
+// SetState (0x77380, 617 B) — recovered algorithm
+//
+// Verified control flow:
+//   combined = (states[idx] & 0x4000) | (newState & 0xBFFF)
+//   Write combined into aux map at +0x230 (word per cell)
+//   If bit 0x4000 of newState differs from aux at +0x258:
+//     hierarchical byte-count maps updated at shifts >>4, >>8, >>12, >>16
+//     maps at +0x278, +0x270, +0x268, +0x260 (and symmetric path at +0x250..)
+//     each level: count += (new?1:0) - (old?1:0); propagate if 0↔nonzero
+//   Write newState into aux at +0x258
+//
+// Primary cellStates@+0x78 is also written by SetCell; SetState focuses on
+// the parallel aux structures and hierarchical occupancy of bit 0x4000.
+// ---------------------------------------------------------------------------
+void GridData::UpdateHierarchy4000(int cellIndex, bool bitOn) {
+    // Hierarchical occupancy for STATE_BIT_4000.
+    // Original uses separate byte arrays per shift level; we keep parallel
+    // count arrays sized to the grid (simplified layout, same semantics).
+    if (aux4000L0_.empty()) return;
+    auto bump = [](std::vector<uint8_t>& arr, int i, int delta) -> bool {
+        if (i < 0 || (size_t)i >= arr.size()) return false;
+        int v = (int)arr[i] + delta;
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        bool was = arr[i] != 0;
+        arr[i] = (uint8_t)v;
+        bool now = arr[i] != 0;
+        return was != now; // true if occupancy toggled → propagate
+    };
+    int i4  = cellIndex >> 4;
+    int i8  = cellIndex >> 8;
+    int i12 = cellIndex >> 12;
+    int i16 = cellIndex >> 16;
+    int d = bitOn ? 1 : -1;
+    if (!bump(aux4000L0_, i4, d)) return;
+    if (!bump(aux4000L1_, i8, d)) return;
+    if (!bump(aux4000L2_, i12, d)) return;
+    bump(aux4000L3_, i16, d);
+}
+
+void GridData::SetState(int cellIndex, unsigned short newState) {
+    if (cellIndex < 0 || (size_t)cellIndex >= cellStates.size()) return;
+
+    unsigned short oldStored = cellStates[cellIndex];
+    // Binary: aux230 gets (old & 0x4000) | (new & 0xBFFF)
+    //         aux258 gets full newState
+    //         hierarchical counts track newState's 0x4000 bit
+    // Primary cellStates: store full newState so callers can set/clear 0x4000.
+    // (Binary dual-writes; single-array approximation prefers caller-visible value.)
+    bool oldBit = (oldStored & STATE_BIT_4000) != 0;
+    bool newBit = (newState & STATE_BIT_4000) != 0;
+    if (oldBit != newBit) {
+        UpdateHierarchy4000(cellIndex, newBit);
+    }
+
+    cellStates[cellIndex] = newState;
+    if (((oldStored ^ newState) & (STATE_BIT_2000 | STATE_BIT_3C0 | STATE_BIT_4000)) != 0) {
+        meshesDirty_ = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SetCell (0x77d80, 5910 B) — recovered structure
+//
+// Verified:
+//   1. index = y*stride + z*stride + x  (dims at +0x44,+0x50)
+//   2. types@+0x74; if type unchanged → jump to state-only path (0x78ae8)
+//   3. write type; inspect state bits 0x2000 and 0x3c0 for change flags
+//   4. per-axis dirty markers at +0x66d/+0x74d/+0x82d (column/slice flags)
+//   5. region dirty: region = coords>>4, regionBase@+0x80, stride 0xa4,
+//      set byte at region+0x1f = 1
+//   6. inlined hierarchical 0x4000 updates (same as SetState)
+//   7. ~14 calls to SetState on self + neighbours under fluid/light conditions
+//   8. meshesDirty
+//
+// Neighbour SetState conditions (fluid connectivity / light) not fully
+// decoded from the 24-loop body — when type or fluid-relevant bits change we
+// mark the 6 face-neighbour regions dirty (conservative, evidence-aligned).
+// Full light BFS (AddLight/AddLightUpdate) and UpdateWaterState are separate
+// functions called from higher-level update, not always inline in SetCell.
+// ---------------------------------------------------------------------------
 void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short state) {
     int idx = CoordToIndex(x, y, z);
     if (idx < 0) return;
+
+    unsigned char oldType = cellTypes[idx];
+    unsigned short oldState = cellStates[idx];
+    bool typeChanged = (oldType != type);
+
+    // Type-unchanged path still updates state (binary jz 0x78ae8)
     cellTypes[idx] = type;
-    cellStates[idx] = state;
-    // Original also marks regions modified and updates meshes; not yet reconstructed.
+
+    // State via recovered SetState semantics
+    SetState(idx, state);
+    unsigned short newState = cellStates[idx];
+
+    bool bit2000Changed = ((oldState ^ newState) & STATE_BIT_2000) != 0;
+    bool bit3c0Changed  = ((oldState ^ newState) & STATE_BIT_3C0) != 0;
+    bool bit4000Changed = ((oldState ^ newState) & STATE_BIT_4000) != 0;
+    bool stateRelevant = bit2000Changed || bit3c0Changed || bit4000Changed;
+
+    if (typeChanged || stateRelevant) {
+        // Region dirty flag (region+0x1f = 1)
+        MarkRegionDirty(x, y, z);
+        meshesDirty_ = true;
+
+        // Per-axis dirty markers (+0x66d / +0x74d / +0x82d) — conceptual:
+        // mark column/slice dirty for mesher. Represented via neighbour regions.
+        if (typeChanged || bit2000Changed || bit3c0Changed) {
+            static const int offs[6][3] = {
+                {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}
+            };
+            for (auto& o : offs) {
+                int nx = x + o[0], ny = y + o[1], nz = z + o[2];
+                if (CoordToIndex(nx, ny, nz) >= 0)
+                    MarkRegionDirty(nx, ny, nz);
+            }
+        }
+        MarkModifiedRegions();
+    }
 }
 
-void GridData::SetState(int cellIndex, unsigned short state) {
-    if (cellIndex >= 0 && (size_t)cellIndex < cellStates.size())
-        cellStates[cellIndex] = state;
+void GridData::MarkRegionDirty(int x, int y, int z) {
+    // Region size 16 (verified). Floor-divide with negative handling matching EncodeWorldPos.
+    auto reg = [](int v) -> int {
+        if (v < 0) v += 15;
+        return v >> 4;
+    };
+    RegionKey k{reg(x), reg(y), reg(z)};
+    for (const auto& d : dirtyRegions_)
+        if (d == k) return;
+    dirtyRegions_.push_back(k);
+}
+
+bool GridData::IsRegionDirty(int rx, int ry, int rz) const {
+    RegionKey k{rx, ry, rz};
+    for (const auto& d : dirtyRegions_)
+        if (d == k) return true;
+    return false;
 }
 
 void GridData::FillCells(int x0, int y0, int z0, int x1, int y1, int z1, unsigned char type) {
@@ -124,64 +258,127 @@ void GridData::Invalidate() {
 
 
 
-// Amanatides & Woo style voxel DDA — recovers TracePoint behavior
-void GridData::TracePoint(const Vector& from, const Vector& to,
-                          GridDataTraceResult& result, void* /*entity*/) {
-    result.Clear();
+// ---------------------------------------------------------------------------
+// FindFirstUsedCell (0x79dd0, 2541 B) — recovered structure
+//
+// Verified from disassembly:
+//   1. Build world AABB from integer bounds (esi+0x10/14/18/1c/48)
+//   2. BoxLineSegIntersect (0xb3520) → entry/exit params (t0,t1) as doubles
+//   3. If miss → return cellIndex = -1
+//   4. Compute entry point = from + t0 * (to-from); floor to cell coords
+//   5. Clamp cell coords to [0, dim-1]
+//   6. DDA step loop:
+//        - Map cell → region (>>4), check region flag at +0x1e
+//        - If region active: linear index, if types[idx] != 0 → HIT
+//        - Step along axis with smallest tMax (classic 3D DDA)
+//   7. Return cellIndex + t
+//
+// Current implementation follows this structure with a simple slab AABB clip
+// in place of the full 2269 B BoxLineSegIntersect, and DDA matching the
+// observed step/clamp/type-check pattern. Region +0x1e flag approximated
+// as "always active" until region array is fully mapped.
+// ---------------------------------------------------------------------------
+static bool ClipRayAABB(const Vector& from, const Vector& to,
+                        const Vector& bmin, const Vector& bmax,
+                        float& t0, float& t1) {
+    // Slab method (core of BoxLineSegIntersect for axis-aligned box)
     float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
-    float len = std::sqrt(dx*dx + dy*dy + dz*dz);
-    if (len < 1e-6f) return;
-    dx /= len; dy /= len; dz /= len;
-
-    int x = (int)std::floor(from.x);
-    int y = (int)std::floor(from.y);
-    int z = (int)std::floor(from.z);
-
-    int stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
-    int stepY = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
-    int stepZ = dz > 0 ? 1 : (dz < 0 ? -1 : 0);
-
-    auto frac = [](float v) {
-        float f = v - std::floor(v);
-        return f;
+    t0 = 0.f; t1 = 1.f;
+    auto slab = [&](float p, float d, float minv, float maxv) -> bool {
+        if (std::fabs(d) < 1e-8f) {
+            return p >= minv && p <= maxv;
+        }
+        float inv = 1.f / d;
+        float ta = (minv - p) * inv, tb = (maxv - p) * inv;
+        if (ta > tb) { float tmp = ta; ta = tb; tb = tmp; }
+        if (ta > t0) t0 = ta;
+        if (tb < t1) t1 = tb;
+        return t0 <= t1;
     };
-    float tMaxX = (stepX > 0) ? (1.f - frac(from.x)) / std::fabs(dx)
-                : (stepX < 0) ? (frac(from.x) / std::fabs(dx)) : 1e30f;
-    float tMaxY = (stepY > 0) ? (1.f - frac(from.y)) / std::fabs(dy)
-                : (stepY < 0) ? (frac(from.y) / std::fabs(dy)) : 1e30f;
-    float tMaxZ = (stepZ > 0) ? (1.f - frac(from.z)) / std::fabs(dz)
-                : (stepZ < 0) ? (frac(from.z) / std::fabs(dz)) : 1e30f;
-    if (dx == 0) tMaxX = 1e30f;
-    if (dy == 0) tMaxY = 1e30f;
-    if (dz == 0) tMaxZ = 1e30f;
+    return slab(from.x, dx, bmin.x, bmax.x)
+        && slab(from.y, dy, bmin.y, bmax.y)
+        && slab(from.z, dz, bmin.z, bmax.z)
+        && t1 >= 0.f && t0 <= 1.f;
+}
 
-    float tDeltaX = (dx != 0) ? 1.f / std::fabs(dx) : 1e30f;
-    float tDeltaY = (dy != 0) ? 1.f / std::fabs(dy) : 1e30f;
-    float tDeltaZ = (dz != 0) ? 1.f / std::fabs(dz) : 1e30f;
+// Returns true on hit; writes *outT (0..1 along segment) and *outCellIndex
+bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
+                                 float& outT, int& outCellIndex) {
+    outT = 0.f;
+    outCellIndex = -1;
+    if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) return false;
 
-    float t = 0.f;
+    Vector bmin((float)originX, (float)originY, (float)originZ);
+    Vector bmax((float)(originX + sizeX), (float)(originY + sizeY), (float)(originZ + sizeZ));
+
+    float t0, t1;
+    if (!ClipRayAABB(from, to, bmin, bmax, t0, t1)) return false;
+    if (t0 < 0.f) t0 = 0.f;
+    if (t1 > 1.f) t1 = 1.f;
+
+    float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    // Entry point
+    float ex = from.x + dx * t0;
+    float ey = from.y + dy * t0;
+    float ez = from.z + dz * t0;
+
+    int x = (int)std::floor(ex);
+    int y = (int)std::floor(ey);
+    int z = (int)std::floor(ez);
+    // Clamp to bounds (observed: cmovl dim-1)
+    if (x < originX) x = originX;
+    if (y < originY) y = originY;
+    if (z < originZ) z = originZ;
+    if (x >= originX + sizeX) x = originX + sizeX - 1;
+    if (y >= originY + sizeY) y = originY + sizeY - 1;
+    if (z >= originZ + sizeZ) z = originZ + sizeZ - 1;
+
+    int stepX = dx > 0.f ? 1 : (dx < 0.f ? -1 : 0);
+    int stepY = dy > 0.f ? 1 : (dy < 0.f ? -1 : 0);
+    int stepZ = dz > 0.f ? 1 : (dz < 0.f ? -1 : 0);
+
+    auto frac = [](float v) { return v - std::floor(v); };
+    float tMaxX = 1e30f, tMaxY = 1e30f, tMaxZ = 1e30f;
+    float tDeltaX = 1e30f, tDeltaY = 1e30f, tDeltaZ = 1e30f;
+    // t along full segment; start at t0
+    float t = t0;
+    if (stepX != 0) {
+        float inv = 1.f / std::fabs(dx);
+        tDeltaX = inv; // one cell in param space (segment length normalized later)
+        // distance in segment-param to next X plane from entry
+        float next = (stepX > 0) ? (std::floor(ex) + 1.f - ex) : (ex - std::floor(ex));
+        if (stepX < 0 && frac(ex) == 0.f) next = 1.f;
+        tMaxX = t0 + next * inv * (dx != 0 ? std::fabs(dx)/std::fabs(dx) : 0); // simplify
+        // Use absolute param: t increases by (cell_size / |dir|) along segment
+        // dir is (to-from) so |dir_comp| is |dx|; param step = 1/|dx| for 1 cell
+        tMaxX = t0 + ((stepX > 0) ? (1.f - frac(ex)) : (frac(ex) > 0 ? frac(ex) : 1.f)) / std::fabs(dx);
+        tDeltaX = 1.f / std::fabs(dx);
+    }
+    if (stepY != 0) {
+        tMaxY = t0 + ((stepY > 0) ? (1.f - frac(ey)) : (frac(ey) > 0 ? frac(ey) : 1.f)) / std::fabs(dy);
+        tDeltaY = 1.f / std::fabs(dy);
+    }
+    if (stepZ != 0) {
+        tMaxZ = t0 + ((stepZ > 0) ? (1.f - frac(ez)) : (frac(ez) > 0 ? frac(ez) : 1.f)) / std::fabs(dz);
+        tDeltaZ = 1.f / std::fabs(dz);
+    }
+
     int face = -1;
-    const float maxDist = len;
-
-    for (int i = 0; i < 256 && t <= maxDist; ++i) {
+    for (int i = 0; i < 512 && t <= t1; ++i) {
         int cidx = CoordToIndex(x, y, z);
         if (cidx >= 0) {
-            unsigned char bt = cellTypes[cidx];
-            if (bt != 0) { // non-air
-                result.hit = true;
-                result.cellX = x; result.cellY = y; result.cellZ = z;
-                result.face = face;
-                result.distance = t;
-                result.blockType = bt;
-                result.hitPos = Vector(from.x + dx * t, from.y + dy * t, from.z + dz * t);
-                return;
+            // Region flag check (orig: region[+0x1e] != 0) — approximated always true
+            if (cellTypes[cidx] != 0) {
+                outT = t;
+                outCellIndex = cidx;
+                return true;
             }
         }
-        // step
+        // Step
         if (tMaxX < tMaxY) {
             if (tMaxX < tMaxZ) {
                 t = tMaxX; tMaxX += tDeltaX; x += stepX;
-                face = (stepX > 0) ? 1 : 0; // entered from -X or +X
+                face = (stepX > 0) ? 1 : 0;
             } else {
                 t = tMaxZ; tMaxZ += tDeltaZ; z += stepZ;
                 face = (stepZ > 0) ? 5 : 4;
@@ -195,18 +392,88 @@ void GridData::TracePoint(const Vector& from, const Vector& to,
                 face = (stepZ > 0) ? 5 : 4;
             }
         }
+        // Bounds exit
+        if (x < originX || y < originY || z < originZ ||
+            x >= originX + sizeX || y >= originY + sizeY || z >= originZ + sizeZ)
+            break;
     }
+    (void)face;
+    return false;
 }
 
+// IsHidden (0xa3340, 432 B)
+// Called with region coords (cell>>4). Checks region metadata tables against
+// coordinate ranges and a byte array (values 0xff = sentinel).
+// Exact semantics unresolved (likely leaves-quality / LOD culling).
+// Until region tables at the referenced offsets are mapped, return false
+// (not hidden) so solid blocks are never incorrectly skipped.
+bool GridData::IsHidden(int /*regionCoordA*/, int /*regionCoordB*/) const {
+    return false; // unresolved — see AUDIT
+}
+
+// ---------------------------------------------------------------------------
+// TracePoint (0x7c050) — dual path orchestrator
+// ---------------------------------------------------------------------------
+void GridData::TracePoint(const Vector& from, const Vector& to,
+                          GridDataTraceResult& result, void* /*entity*/) {
+    result.Clear();
+
+    // Path 1: entity tracers at +0xc54/+0xc58
+    // Original: for each tracer, virtual call +0x7c(from,to,result); OR hit flag.
+    // Entity-tracer list ownership/registration not yet recovered — empty.
+
+    // Path 2: FindFirstUsedCell + IsHidden
+    float t = 0.f;
+    int cellIndex = -1;
+    if (!FindFirstUsedCell(from, to, t, cellIndex)) return;
+    if (cellIndex < 0) return;
+
+    // Decode cell coords from index
+    int lx = cellIndex % sizeX;
+    int ly = (cellIndex / sizeX) % sizeY;
+    int lz = cellIndex / (sizeX * sizeY);
+    int cx = originX + lx, cy = originY + ly, cz = originZ + lz;
+
+    // IsHidden filter (region coords = floor_div16)
+    auto reg = [](int v) { return (v < 0) ? (v + 15) >> 4 : v >> 4; };
+    if (IsHidden(reg(cx), reg(cz))) {
+        // Original continues search; for now accept miss (rare with IsHidden=false)
+        return;
+    }
+
+    // Reconstruct face by short backward step from hit (approximate; full face
+    // comes from DDA step axis in FindFirstUsedCell — stored via re-trace below)
+    float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    result.hit = true;
+    result.cellIndex = cellIndex;
+    result.cellX = cx; result.cellY = cy; result.cellZ = cz;
+    result.distance = t;
+    result.blockType = cellTypes[cellIndex];
+    result.hitPos = Vector(from.x + dx * t, from.y + dy * t, from.z + dz * t);
+
+    // Face: determine from which side we entered by checking neighbor along -dir
+    int face = -1;
+    float ax = std::fabs(dx), ay = std::fabs(dy), az = std::fabs(dz);
+    if (ax >= ay && ax >= az) face = (dx > 0) ? 1 : 0;
+    else if (ay >= ax && ay >= az) face = (dy > 0) ? 3 : 2;
+    else face = (dz > 0) ? 5 : 4;
+    result.face = face;
+}
+
+// GetAddingPosition (0x99240, 743 B)
 bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char /*blockType*/,
                                  int& outCellIndex, unsigned char& outFace) {
     if (!tr.hit) return false;
+    if (tr.blockType == 0x4c) return false; // binary reject
+
     int x = tr.cellX, y = tr.cellY, z = tr.cellZ;
-    // place against the hit face (adjacent empty cell)
     switch (tr.face) {
-        case 0: x++; break; case 1: x--; break;
-        case 2: y++; break; case 3: y--; break;
-        case 4: z++; break; case 5: z--; break;
+        case 0: x++; break;
+        case 1: x--; break;
+        case 2: y++; break;
+        case 3: y--; break;
+        case 4: z++; break;
+        case 5: z--; break;
         default: break;
     }
     outCellIndex = CoordToIndex(x, y, z);
@@ -218,29 +485,88 @@ bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char bloc
     int idx = -1; unsigned char face = 0;
     if (!GetAddingPosition(tr, blockType, idx, face)) return false;
     if (idx < 0 || idx >= (int)cellTypes.size()) return false;
-    return cellTypes[idx] == 0; // only into air
+    return cellTypes[idx] == 0;
+}
+
+// ConfigureState (0x997f0, 765 B) — orientation / state bit computation
+// Material table at +0xe8, stride 34 (type*32+type*2).
+// Orientation from dominant look-vector axis:
+//   state 0/1/2/3 based on |look.x| vs |look.z| and signs; bit 0x04 for variants.
+// Special material property bytes at +0x01,+0x05,+0x08 drive liquid/slab paths.
+// GetDirectionMarker, SetLiquidState, FullHeightBlockVariant called for specials.
+unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
+                                        unsigned char blockType,
+                                        const Vector& lookDir) {
+    // Default state 0
+    unsigned short state = 0;
+    // Orientation from dominant horizontal axis (recovered comparisons)
+    float lx = lookDir.x, lz = lookDir.z;
+    float ax = std::fabs(lx), az = std::fabs(lz);
+    if (ax >= az) {
+        // X dominant
+        state = (lx >= 0.f) ? 0 : 1;
+    } else {
+        // Z dominant
+        state = (lz >= 0.f) ? 2 : 3;
+    }
+    // Face-based override observed for some materials (property checks)
+    // Full material table not loaded — orientation-only for now.
+    (void)tr; (void)blockType;
+    return state;
 }
 
 bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType) {
     if (!IsPossibleToAdd(tr, blockType, 0)) return false;
     int idx = -1; unsigned char face = 0;
     GetAddingPosition(tr, blockType, idx, face);
-    // recover x,y,z from index
     int lx = idx % sizeX;
     int ly = (idx / sizeX) % sizeY;
     int lz = idx / (sizeX * sizeY);
-    SetCell(originX + lx, originY + ly, originZ + lz, blockType, 0);
-    MarkModifiedRegions();
+    // lookDir unknown here — use face as proxy for orientation
+    Vector look(0, 0, 1);
+    if (face == 0 || face == 1) look = Vector(face == 0 ? 1.f : -1.f, 0, 0);
+    else if (face == 4 || face == 5) look = Vector(0, 0, face == 4 ? 1.f : -1.f);
+    unsigned short state = ConfigureState(tr, blockType, look);
+    SetCell(originX + lx, originY + ly, originZ + lz, blockType, state);
     return true;
 }
 
 bool GridData::BreakBlock(const GridDataTraceResult& tr) {
     if (!tr.hit) return false;
-    SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0); // air
-    MarkModifiedRegions();
+    // ConfigureAirState (0x99af0) → air + state 0
+    SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0);
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Material::MinWaterHeight @ 0x86b70 / MaxWaterHeight @ 0x86c70
+// matProp03 = material byte +0x03 (base height)
+// matProp01 = material byte +0x01 (class; 0x0a = special liquid)
+// state bits: 0x04, 0x0c used for height variants
+// ---------------------------------------------------------------------------
+int GridData::MinWaterHeight(unsigned char matProp01, unsigned char matProp03, unsigned short state) {
+    if (matProp03 == 0) return 0;
+    if (matProp01 == 0x0a) {
+        // and state, 0x0c; cmp 1; sbb; and 2
+        unsigned s = state & 0x0c;
+        return (s < 1) ? 2 : 0; // sbb eax,eax; and 2 → 2 if below, else 0
+    }
+    // if state & 0x04 → return 0, else return matProp03
+    if (state & 0x04) return 0;
+    return (int)matProp03;
+}
+
+int GridData::MaxWaterHeight(unsigned char matProp01, unsigned char matProp03, unsigned short state) {
+    if (matProp03 == 0) return 0;
+    if (matProp01 == 0x0a) {
+        unsigned s = state & 0x0c;
+        // sbb → 0 or -1; and 2; add 0x0e → 0x0e or 0x10
+        return (s < 1) ? 0x10 : 0x0e;
+    }
+    // if !(state & 0x04) → 0; else 0x10 - matProp03
+    if (!(state & 0x04)) return 0;
+    return 0x10 - (int)matProp03;
+}
 
 // Simplified water tick based on UpdateWaterState @ 0xa1040 + flow direction helpers.
 // Rules: water falls into air below; otherwise spreads horizontally to air neighbors

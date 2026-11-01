@@ -1,6 +1,7 @@
 #include <cstdio>
 #include "GLApplication.h"
 #include "Assets.h"
+#include "UIElement.h"
 #include <android/native_window.h>
 #include <android/log.h>
 #include <EGL/egl.h>
@@ -185,75 +186,67 @@ void GLApplication::RenderHUD(int screenW, int screenH) {
     glDisable(GL_DEPTH_TEST);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrthof(0, (float)screenW, (float)screenH, 0, -1, 1); // top-left origin like touches
+    glOrthof(0, (float)screenW, (float)screenH, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 #endif
-    // Control buttons matching InputMgr layout (original hud_up/down/left/right/jump/delete/add)
-    InputMgr::HudLayout L = game_.GetInput().ComputeLayout();
-    auto quad = [&](int x, int y, int w, int h, uint32_t rgba) {
+    auto quad = [&](float x, float y, float w, float h, uint32_t rgba) {
+#if defined(__ANDROID__)
         float r = ((rgba >> 16) & 0xff) / 255.f;
         float g = ((rgba >> 8) & 0xff) / 255.f;
         float b = (rgba & 0xff) / 255.f;
         float a = ((rgba >> 24) & 0xff) / 255.f;
-#if defined(__ANDROID__)
         glColor4f(r, g, b, a);
-        float x0 = (float)x, y0 = (float)y, x1 = (float)(x+w), y1 = (float)(y+h);
-        const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
+        const GLfloat verts[] = { x,y, x+w,y, x+w,y+h, x,y+h };
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(2, GL_FLOAT, 0, verts);
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         glDisableClientState(GL_VERTEX_ARRAY);
 #else
-        (void)x0; (void)r; (void)g; (void)b; (void)a;
+        (void)x;(void)y;(void)w;(void)h;(void)rgba;
 #endif
     };
-#if defined(__ANDROID__)
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-#endif
-    // D-pad cross
-    int s = L.btnS / 2;
-    quad(L.padCx - s/2, L.padCy - s*2, s, s, 0x88FFFFFF); // up
-    quad(L.padCx - s/2, L.padCy + s, s, s, 0x88FFFFFF);   // down
-    quad(L.padCx - s*2, L.padCy - s/2, s, s, 0x88FFFFFF); // left
-    quad(L.padCx + s, L.padCy - s/2, s, s, 0x88FFFFFF);   // right
-    // Actions
-    quad(L.btnJumpX, L.btnJumpY, L.btnS, L.btnS, 0xAA80FF80); // jump green
-    quad(L.btnDelX, L.btnDelY, L.btnS, L.btnS, 0xAAFF8080);   // delete red
-    quad(L.btnAddX, L.btnAddY, L.btnS, L.btnS, 0xAA8080FF);   // add blue
-    quad(L.btnActX, L.btnActY, L.btnS, L.btnS, 0xAAFFFF80);   // activate
 
-    // Crosshair center
-    int cx = screenW / 2, cy = screenH / 2;
-    quad(cx - 1, cy - 12, 2, 24, 0xFFFFFFFF);
-    quad(cx - 12, cy - 1, 24, 2, 0xFFFFFFFF);
+    if (game_.HudLoaded()) {
+        game_.GetHud().ResolveAll((float)screenW, (float)screenH);
+        auto drawNamed = [&](const char* name, uint32_t col) {
+            UIElement* e = game_.GetHud().Find(name);
+            if (!e || !e->visible) return;
+            quad(e->screenRect.x, e->screenRect.y, e->screenRect.w, e->screenRect.h, col);
+        };
+        // Match original hud_* controls (colors for visibility while UI art incomplete)
+        drawNamed("hud_up", 0x88FFFFFF);
+        drawNamed("hud_down", 0x88FFFFFF);
+        drawNamed("hud_left", 0x88FFFFFF);
+        drawNamed("hud_right", 0x88FFFFFF);
+        drawNamed("hud_jump", 0xAA80FF80);
+        drawNamed("hud_delete", 0xAAFF6060);
+        drawNamed("hud_add", 0xAA6080FF);
+        drawNamed("hud_activate", 0xAAFFFF60);
+        drawNamed("hud_menu", 0xAAFFFFFF);
+    } else {
+        InputMgr::HudLayout L = game_.GetInput().ComputeLayout();
+        int s = L.btnS / 2;
+        quad((float)(L.padCx - s/2), (float)(L.padCy - s*2), (float)s, (float)s, 0x88FFFFFF);
+        quad((float)(L.padCx - s/2), (float)(L.padCy + s), (float)s, (float)s, 0x88FFFFFF);
+        quad((float)(L.padCx - s*2), (float)(L.padCy - s/2), (float)s, (float)s, 0x88FFFFFF);
+        quad((float)(L.padCx + s), (float)(L.padCy - s/2), (float)s, (float)s, 0x88FFFFFF);
+        quad((float)L.btnJumpX, (float)L.btnJumpY, (float)L.btnS, (float)L.btnS, 0xAA80FF80);
+        quad((float)L.btnDelX, (float)L.btnDelY, (float)L.btnS, (float)L.btnS, 0xAAFF8080);
+        quad((float)L.btnAddX, (float)L.btnAddY, (float)L.btnS, (float)L.btnS, 0xAA8080FF);
+    }
+
+    // Crosshair (original hud_crosshair_v/h)
+    float cx = screenW * 0.5f, cy = screenH * 0.5f;
+    quad(cx - 1, cy - 14, 2, 28, 0xFFFFFFFF);
+    quad(cx - 14, cy - 1, 28, 2, 0xFFFFFFFF);
 
 #if defined(__ANDROID__)
     glEnable(GL_TEXTURE_2D);
     glColor4f(1,1,1,1);
-#endif
-    hudMesh_.Clear();
-    unsigned char bt = game_.GetSelectedBlockType();
-    const char* name = "Block";
-    switch (bt) {
-        case 1: name = "Stone"; break; case 2: name = "Brick"; break;
-        case 3: name = "Granite"; break; case 4: name = "Oak Wood"; break;
-        case 6: name = "Planks"; break; case 7: name = "Dirt"; break;
-        case 8: name = "Grass"; break; case 11: name = "Glass"; break;
-        case 17: name = "Torch"; break; case 10: name = "Leaves"; break;
-        default: break;
-    }
-    char line[128];
-    std::snprintf(line, sizeof(line), "Selected: %s", name);
-    hudFont_.AddTextToMesh(hudMesh_, Vector(12, 24, 0), line, 1.5f, 0xFFFFFFFFu);
-    if (hudMesh_.IndexCount() > 0) {
-        hudFont_.GetTexture().Bind();
-        DrawPrimitive(0x0004, hudMesh_.Vertices().data(), hudMesh_.Indices().data(),
-                      hudMesh_.IndexCount(), 0);
-    }
-#if defined(__ANDROID__)
     glEnable(GL_DEPTH_TEST);
 #endif
 }
@@ -274,6 +267,18 @@ void GLApplication::Frame() {
             sh = ANativeWindow_getHeight(mApp->window);
         }
         game_.GetInput().SetScreenSize(sw, sh);
+        if (game_.HudLoaded()) {
+            game_.GetHud().ResolveAll((float)sw, (float)sh);
+            InputMgr::HudRects hr;
+            auto grab = [&](const char* n, UIRect& r) {
+                if (UIElement* e = game_.GetHud().Find(n)) { r = e->screenRect; hr.valid = true; }
+            };
+            grab("hud_up", hr.up); grab("hud_down", hr.down);
+            grab("hud_left", hr.left); grab("hud_right", hr.right);
+            grab("hud_jump", hr.jump); grab("hud_delete", hr.del);
+            grab("hud_add", hr.add); grab("hud_activate", hr.act);
+            game_.GetInput().SyncHudRects(hr);
+        }
     }
     game_.Update();
     clouds_.Update(1.f/60.f);

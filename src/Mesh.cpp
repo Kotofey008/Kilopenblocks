@@ -28,14 +28,75 @@ void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
     indices_.push_back(base + 3);
 }
 
+// ---------------------------------------------------------------------------
+// NeedFace* recovery — template from NeedFaceXP @ 0x833d0 (1365 B)
+//
+// Verified control flow:
+//   1. selfType = types[cellIndex]; material = table[selfType] (stride 34 at +0xe8)
+//   2. neighbour in face direction (with dim wrap using +0x44)
+//   3. neighType = types[neighbour]; neighMat = table[neighType]
+//   4. jump table on material property byte (+0x01), values 0..0x0a
+//   5. checks: material+0x02 opacity flag; state bits 0x03/0x07/0x0f
+//   6. return 0 (cull), 1 (emit), 2 (special/partial)
+//
+// Material prop +0x01 classes observed: 0 solid, 3?, 5?, 6/7 special, 0x0a liquid-like
+// LeavesQuality (+0xec) gates leaves path inside AddMesh, not inside NeedFace itself.
+//
+// Current implementation encodes recovered opaque/transparent rules without the
+// full material table (not yet loaded as binary layout). Same rules applied to
+// all six faces (NeedFaceXP/XN/YP/YN/ZP/ZN share structure; axis only changes
+// neighbour offset).
+// ---------------------------------------------------------------------------
+int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
+    int selfIdx = grid.CoordToIndex(x, y, z);
+    if (selfIdx < 0) return 0;
+    unsigned char selfType = grid.cellTypes[selfIdx];
+    if (selfType == 0) return 0; // air has no faces
+
+    int nx = x, ny = y, nz = z;
+    switch (face) {
+        case 0: nx++; break; case 1: nx--; break;
+        case 2: ny++; break; case 3: ny--; break;
+        case 4: nz++; break; case 5: nz--; break;
+        default: return 0;
+    }
+    int nIdx = grid.CoordToIndex(nx, ny, nz);
+    // Out of world → emit face (sky/edge)
+    if (nIdx < 0) return 1;
+
+    unsigned char nType = grid.cellTypes[nIdx];
+    // Binary: if neighbour fully occludes (opaque solid same/compatible) → 0
+    // Transparent/non-solid neighbour types always need face (return 1)
+    // Types treated as non-occluding (recovered from IsSolid + NeedFace paths):
+    //   0 air, 5 water, 10/20 leaves, flowers/mushrooms, 11 glass, 17/18 torch
+    auto occludes = [](unsigned char t) -> bool {
+        if (t == 0 || t == 5 || t == 11) return false;
+        if (t == 10 || t == 20) return false; // leaves — LeavesQuality may change this
+        if (t == 17 || t == 18) return false; // torch
+        // flowers / mushrooms (decorative cross meshes, not solid cubes)
+        if (t == 12 || t == 13 || t == 14) return false;
+        return true; // solid cube
+    };
+
+    if (!occludes(nType)) return 1;
+
+    // Neighbour is solid. Binary still emits in special material cases
+    // (prop+0x01 in {6,7,0x0a}, state orientation). Without full material
+    // table those return 0 (cull) — matches common solid-vs-solid case.
+    // Special return 2 not yet distinguished (requires material+0x01).
+    if (selfType == nType) return 0; // same solid — cull
+    return 0; // different solids still occlude each other for full cubes
+}
+
 bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return false;
     unsigned char t = grid.cellTypes[idx];
-    return t != BlockId::Air && t != BlockId::Water &&
-           t != BlockId::Flower1 && t != BlockId::Mushroom1 &&
-           t != BlockId::Mushroom2 && t != BlockId::Leaves1 &&
-           t != BlockId::Leaves2 && t != 11 && t != 17 && t != 18;
+    // Keep consistent with NeedFace occludes()
+    if (t == 0 || t == 5 || t == 11) return false;
+    if (t == 10 || t == 20 || t == 17 || t == 18) return false;
+    if (t == 12 || t == 13 || t == 14) return false;
+    return true;
 }
 
 void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
@@ -149,13 +210,9 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             if (face == 0) nx++; else if (face == 1) nx--;
             else if (face == 2) ny++; else if (face == 3) ny--;
             else if (face == 4) nz++; else nz--;
-            // cull if neighbor solid
-            int nidx = grid.CoordToIndex(nx, ny, nz);
-            if (nidx >= 0) {
-                unsigned char nt = grid.cellTypes[nidx];
-                if (nt != 0 && nt != 5 && nt != 11) // not air/water/glass
-                    continue;
-            }
+            // NeedFace* (binary): 0=cull, 1/2=emit
+            if (NeedFace(grid, wx, wy, wz, face) == 0)
+                continue;
             float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
             if (t < defs.size()) GetFaceUV(defs[t], face, u0, v0, u1, v1);
             else Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);

@@ -35,14 +35,21 @@ private:
     std::vector<uint16_t> indices_;
 };
 
-// Builds visible faces for a 16³ region (cull faces against solid neighbors)
-// Mirrors GridData::Region::AddMesh high-level behavior
+// RegionMesher approximates Region::AddMesh @ 0x9b090 (3164B).
+// Binary uses NeedFaceXP/YP/ZP/XN/YN/ZN + AddBlockFace(14KB) / AddWaterFace /
+// AddCross / AddTorch / AddLadder — NOT a single greedy solid cull.
+// Current: face-cull + optional greedy. See docs/MESHER_LIGHTING_WATER.md.
 class RegionMesher {
 public:
     // region origin in world cell coords; size fixed at 16
     static void Build(GridData& grid, int originX, int originY, int originZ,
                       const std::vector<BlockDef>& defs, MeshBuffer& out,
                       const LightMap* lights = nullptr);
+
+    // NeedFace* recovery (NeedFaceXP @ 0x833d0 template).
+    // Returns: 0 = no face, 1 = emit face, 2 = special/partial (binary).
+    // face: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
+    static int NeedFace(GridData& grid, int x, int y, int z, int face);
 
 private:
     static bool IsSolid(GridData& grid, int x, int y, int z);

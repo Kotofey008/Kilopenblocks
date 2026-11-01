@@ -72,6 +72,8 @@ public:
     void SetMoveInput(float forward, float strafe, bool jump);
     Vector GetEyePosition() const;
     Vector GetLookDirection() const;
+    // Original EntityPlayer::AddOrDeleteBlock @ 0x5cfb0
+    void AddOrDeleteBlock(bool deleteMode, unsigned char placeType);
 
     enum class Mode { Walking = 0, Flying = 1, Spectator = 2 };
 

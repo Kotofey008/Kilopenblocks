@@ -1,3 +1,4 @@
+#include "UIElement.h"
 #pragma once
 
 // Original UI (hud.txt): D-pad hud_up/down/left/right, hud_jump, hud_delete, hud_add, hud_activate
@@ -30,6 +31,17 @@ public:
 
     void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
     void EndFrame();
+    // Driven from UIDocument hud_* buttons (original layout)
+    void SetMoveFromHud(float forward, float strafe) { moveForward_ = forward; moveStrafe_ = strafe; }
+    void SetJumpHeld(bool j) { jump_ = j; }
+    void QueueBreak() { breakPending_ = true; }
+    void QueuePlace() { placePending_ = true; }
+    bool AnyLookTouch() const;
+    struct HudRects {
+        UIRect up, down, left, right, jump, del, add, act;
+        bool valid = false;
+    };
+    void SyncHudRects(const HudRects& r) { hudRects_ = r; }
 
     // Layout helpers for HUD hit-testing (normalized bottom-left origin for draw)
     struct HudLayout {
@@ -62,6 +74,7 @@ private:
     bool breakPending_ = false;
     bool placePending_ = false;
     bool activatePending_ = false;
+    HudRects hudRects_;
 
     Zone HitTest(int x, int y) const;
 };

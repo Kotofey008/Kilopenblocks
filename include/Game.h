@@ -6,6 +6,7 @@
 #include "Entity.h"
 #include "Camera.h"
 #include "InputMgr.h"
+#include "UIElement.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -134,6 +135,8 @@ public:
     EntityPlayer* GetLocalPlayer() { return playerSet_.GetLocalPlayer(); }
     Camera& GetCamera() { return camera_; }
     InputMgr& GetInput() { return input_; }
+    UIDocument& GetHud() { return hud_; }
+    bool HudLoaded() const { return hudLoaded_; }
     Scene& GetScene() { return scene_; }
     GameState GetState() const { return state_; }
     TerrainType GetTerrainType() const { return terrainType_; }
@@ -159,6 +162,8 @@ private:
     EntityPlayer* player_ = nullptr;
     Camera camera_;
     InputMgr input_;
+    UIDocument hud_;
+    bool hudLoaded_ = false;
 
     void ParseAndRunCommand(const std::string& cmd);
 };
