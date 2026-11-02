@@ -29,9 +29,17 @@ public:
 
     void SetPosition(const Vector& p) { position_ = p; }
     void SetYawPitch(float yaw, float pitch);
+    // Set orthonormal basis + eye (from EntityPlayer::UpdateCameraTransform).
+    // right/up/forward are world-space unit vectors; view looks along +forward.
+    void SetBasis(const Vector& right, const Vector& up, const Vector& forward);
     Vector GetPosition() const { return position_; }
+    Vector GetForward() const { return forward_; }
+    Vector GetRight() const { return right_; }
+    Vector GetUp() const { return up_; }
 
-    // Build view/projection matrices (for GL use)
+    // Build view/projection matrices (for GL use).
+    // View matches binary intent of Camera::GetViewMatrix @ 0x50400 which copies
+    // SceneObject::GetInvWorldTM — here built from basis + position.
     Matrix4 GetViewMatrix() const;
     Matrix4 GetProjectionMatrix() const;
 
@@ -45,4 +53,9 @@ private:
     int renderOrder_ = 0;
     Vector position_{0, 0, 0};
     float yaw_ = 0.f, pitch_ = 0.f;
+    // Cached basis (updated by SetYawPitch / SetBasis)
+    Vector right_{1, 0, 0};
+    Vector up_{0, 1, 0};
+    Vector forward_{0, 0, 1};
+    void RebuildBasisFromAngles();
 };

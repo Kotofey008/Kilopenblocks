@@ -61,8 +61,13 @@ public:
     Matrix4 GetTransform(int index = 0) override;
 
     void UpdateMode();
-    void UpdateRotation();
-    void UpdateCamera();
+    // Original EntityPlayer::UpdateRotation @ 0x5b4a0
+    // Applies look deltas, clamps pitch to ±90°, wraps yaw to (-180, 180] via ±360.
+    void UpdateRotation(float lookDeltaYaw, float lookDeltaPitch);
+    // Original EntityPlayer::UpdateCameraTransform @ 0x5b580
+    // Builds eye position + orthonormal basis via GetRotationVectors and drives Camera.
+    void UpdateCameraTransform(class Camera& camera);
+    void UpdateCamera(); // thin alias kept for call sites
 
     void SetYawPitch(float yaw, float pitch);
     float GetYaw() const { return yaw_; }
@@ -72,12 +77,14 @@ public:
     void SetMoveInput(float forward, float strafe, bool jump);
     Vector GetEyePosition() const;
     Vector GetLookDirection() const;
+    void GetBasis(Vector& outRight, Vector& outUp, Vector& outForward) const;
     // Original EntityPlayer::AddOrDeleteBlock @ 0x5cfb0
     void AddOrDeleteBlock(bool deleteMode, unsigned char placeType);
 
     enum class Mode { Walking = 0, Flying = 1, Spectator = 2 };
 
 private:
+    // Binary layout: pitch @ +0xc0 (±90), yaw @ +0xc4 (wrap 360) — degrees.
     float yaw_ = 0.f;
     float pitch_ = 0.f;
     float eyeHeight_ = 1.62f;
@@ -90,6 +97,12 @@ private:
     float gravity_ = -20.f;
     float jumpSpeed_ = 8.f;
 };
+
+// Original free function @ 0xb7190 (501 B)
+// GetRotationVectors(Vector& right, Vector& up, Vector& forward, float yawDeg, float pitchDeg)
+// Converts degrees→radians (×π/180), builds Y-up FPS basis.
+void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
+                        float yawDegrees, float pitchDegrees);
 
 class EntitySet {
 public:

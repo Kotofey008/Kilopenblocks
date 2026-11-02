@@ -59,23 +59,23 @@ void Game::Update() {
         // (SetScreenSize already called by GLApplication)
         // We need W/H — store last from input layout
     }
-    // Feed input to player
+    // Feed input to player — match binary order:
+    //   UpdateRotation (apply look deltas + clamp/wrap)
+    //   FixedUpdate / movement
+    //   UpdateCameraTransform (GetRotationVectors → Camera basis + eye)
     if (player_) {
-        player_->SetYawPitch(
-            player_->GetYaw() + input_.GetLookDeltaX(),
-            player_->GetPitch() - input_.GetLookDeltaY());
+        // Screen Y grows downward → invert lookDY for pitch (binary look controller)
+        player_->UpdateRotation(input_.GetLookDeltaX(), -input_.GetLookDeltaY());
         input_.ConsumeLookDelta();
         player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
         if (input_.ConsumeBreakAction()) TryBreakBlock();
         if (input_.ConsumePlaceAction()) TryPlaceBlock(GetSelectedBlockType());
         player_->FixedUpdate();
         player_->FixedPostUpdate();
-        fluidAnim.Update(1.f/60.f);
+        fluidAnim.Update(1.f / 60.f);
         input_.EndFrame();
-        // Camera is hard-locked to player eye (first-person)
-        Vector eye = player_->GetEyePosition();
-        camera_.SetPosition(eye);
-        camera_.SetYawPitch(player_->GetYaw(), player_->GetPitch());
+        // First-person: camera locked to player eye + rotation basis
+        player_->UpdateCameraTransform(camera_);
     }
     UpdateTime();
     UpdateSkyBox();
@@ -118,8 +118,7 @@ void Game::SpawnPlayer() {
     // Attach camera immediately so first frame is not at origin
     camera_.SetPerspective(70.f, 1.777f, 0.1f);
     camera_.SetFarPlane(256.f);
-    camera_.SetPosition(player_->GetEyePosition());
-    camera_.SetYawPitch(player_->GetYaw(), player_->GetPitch());
+    player_->UpdateCameraTransform(camera_);
 }
 
 void Game::OnForeground() {}

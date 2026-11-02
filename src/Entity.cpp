@@ -1,4 +1,5 @@
 #include "Entity.h"
+#include "Camera.h"
 #include "TreeBuilder.h" // BlockId
 #include <cmath>
 #include <algorithm>
@@ -103,8 +104,9 @@ void EntityPlayer::Init() {
 
 void EntityPlayer::SetYawPitch(float yaw, float pitch) {
     yaw_ = yaw;
-    if (pitch > 89.f) pitch = 89.f;
-    if (pitch < -89.f) pitch = -89.f;
+    // Match binary clamps at 0x5b4e4 / 0x5b531: ±90 degrees (constants @ 0x107e40/44)
+    if (pitch > 90.f) pitch = 90.f;
+    if (pitch < -90.f) pitch = -90.f;
     pitch_ = pitch;
 }
 
@@ -118,12 +120,91 @@ void EntityPlayer::UpdateMode() {
     // original switches walk/fly; keep simple
 }
 
-void EntityPlayer::UpdateRotation() {
-    // yaw/pitch already set from input; original may smooth
+// ---------------------------------------------------------------------------
+// GetRotationVectors @ 0xb7190 (501 B) — CONFIRMED structure
+//
+// Args: (Vector& right, Vector& up, Vector& forward, float yawDeg, float pitchDeg)
+// Converts degrees→radians via ×π / 180 (constants at 0x107e00 / 0x107dfc),
+// then builds Y-up FPS basis. Forward at (yaw=0,pitch=0) = +Z.
+// ---------------------------------------------------------------------------
+void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
+                        float yawDegrees, float pitchDegrees) {
+    const float kPi = 3.14159265358979323846f;
+    const float kDeg2Rad = kPi / 180.f;
+    float yr = yawDegrees * kDeg2Rad;
+    float pr = pitchDegrees * kDeg2Rad;
+    float cy = std::cos(yr), sy = std::sin(yr);
+    float cp = std::cos(pr), sp = std::sin(pr);
+
+    // Forward
+    outForward.x = -sy * cp;
+    outForward.y =  sp;
+    outForward.z =  cy * cp;
+
+    // Right = normalize(cross(forward, worldUp))
+    outRight.x = -outForward.z;
+    outRight.y = 0.f;
+    outRight.z =  outForward.x;
+    float rlen = std::sqrt(outRight.x * outRight.x + outRight.z * outRight.z);
+    if (rlen > 1e-6f) {
+        outRight.x /= rlen;
+        outRight.z /= rlen;
+    } else {
+        outRight.x = cy;
+        outRight.y = 0.f;
+        outRight.z = sy;
+    }
+
+    // Up = cross(right, forward)
+    outUp.x = outRight.y * outForward.z - outRight.z * outForward.y;
+    outUp.y = outRight.z * outForward.x - outRight.x * outForward.z;
+    outUp.z = outRight.x * outForward.y - outRight.y * outForward.x;
+}
+
+// ---------------------------------------------------------------------------
+// EntityPlayer::UpdateRotation @ 0x5b4a0 (214 B)
+//
+// Binary:
+//   pitch (this+0xc0) += inputPitchDelta; clamp to [-90, +90]
+//   yaw   (this+0xc4) += inputYawDelta;   wrap via ±360 into (-180, 180]
+// Input deltas come from the look controller (edx+0x254 yaw, +0x258 pitch).
+// ---------------------------------------------------------------------------
+void EntityPlayer::UpdateRotation(float lookDeltaYaw, float lookDeltaPitch) {
+    pitch_ += lookDeltaPitch;
+    if (pitch_ > 90.f) pitch_ = 90.f;
+    if (pitch_ < -90.f) pitch_ = -90.f;
+
+    yaw_ += lookDeltaYaw;
+    // Binary wraps with constants 360 / -180 @ 0x107e48 / 0x107e4c
+    while (yaw_ > 180.f) yaw_ -= 360.f;
+    while (yaw_ <= -180.f) yaw_ += 360.f;
+}
+
+// ---------------------------------------------------------------------------
+// EntityPlayer::UpdateCameraTransform @ 0x5b580 (1262 B) — structure recovered
+//
+// Binary flow (CONFIRMED from pdf):
+//   1. GetRotationVectors(right, up, forward, yaw, pitch)
+//   2. Eye = feet + (0, eyeHeight, 0)  (eye height field on player)
+//   3. Build / orthonormalize basis (several sqrt paths for edge cases)
+//   4. Write transform into camera / scene-object world matrix
+//
+// Reconstruction maps this onto Camera::SetPosition + SetBasis. Full
+// SceneObject hierarchy / InvWorldTM path is not present in this port.
+// ---------------------------------------------------------------------------
+void EntityPlayer::UpdateCameraTransform(Camera& camera) {
+    Vector right, up, forward;
+    GetRotationVectors(right, up, forward, yaw_, pitch_);
+    Vector eye = GetEyePosition();
+    // Set angles first (rebuilds basis), then overwrite basis with the
+    // GetRotationVectors result so both stay consistent.
+    camera.SetYawPitch(yaw_, pitch_);
+    camera.SetPosition(eye);
+    camera.SetBasis(right, up, forward);
 }
 
 void EntityPlayer::UpdateCamera() {
-    // Camera follows player eye position — implemented by caller using GetTransform
+    // Legacy no-arg stub; real work is UpdateCameraTransform(Camera&).
 }
 
 void EntityPlayer::FixedUpdate() {
@@ -166,6 +247,8 @@ void EntityPlayer::FixedPostUpdate() {
 }
 
 Matrix4 EntityPlayer::GetTransform(int) {
+    // Original returns full world TM; approximate with eye translation.
+    // Rotation is applied to the Camera via UpdateCameraTransform.
     Vector eye = position_;
     eye.y += eyeHeight_;
     return Matrix4::Translation(eye);
@@ -174,11 +257,15 @@ Matrix4 EntityPlayer::GetTransform(int) {
 Vector EntityPlayer::GetEyePosition() const {
     return Vector(position_.x, position_.y + eyeHeight_, position_.z);
 }
+
 Vector EntityPlayer::GetLookDirection() const {
-    float yr = yaw_ * 3.14159265f / 180.f;
-    float pr = pitch_ * 3.14159265f / 180.f;
-    float cp = std::cos(pr);
-    return Vector(-std::sin(yr) * cp, std::sin(pr), std::cos(yr) * cp);
+    Vector r, u, f;
+    GetRotationVectors(r, u, f, yaw_, pitch_);
+    return f;
+}
+
+void EntityPlayer::GetBasis(Vector& outRight, Vector& outUp, Vector& outForward) const {
+    GetRotationVectors(outRight, outUp, outForward, yaw_, pitch_);
 }
 
 void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
