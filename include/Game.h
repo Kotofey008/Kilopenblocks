@@ -7,6 +7,7 @@
 #include "Camera.h"
 #include "InputMgr.h"
 #include "UIElement.h"
+#include "Font.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -138,6 +139,7 @@ public:
     InputMgr& GetInput() { return input_; }
     UIDocument& GetHud() { return hud_; }
     UIDocument& GetMenu() { return menu_; }
+    FontResource& GetFonts() { return fonts_; }
     bool HudLoaded() const { return hudLoaded_; }
     bool MenuLoaded() const { return menuLoaded_; }
     bool IsMenuOpen() const { return menuOpen_; }
@@ -182,6 +184,7 @@ private:
     InputMgr input_;
     UIDocument hud_;
     UIDocument menu_;
+    FontResource fonts_;
     bool hudLoaded_ = false;
     bool menuLoaded_ = false;
     bool menuOpen_ = false;

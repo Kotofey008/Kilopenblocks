@@ -188,11 +188,12 @@ void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
     outForward.y =  sp;
     outForward.z =  cy * cp;
 
-    // Right = normalize(cross(worldUp, forward)) — RH Y-up: look +Z → right +X
-    // (Previously used cross(forward, worldUp) which yielded -X and inverted strafe.)
-    outRight.x =  outForward.z;
+    // CONFIRMED (0xb7190 / recovered notes): right = normalize(cross(forward, worldUp))
+    // At (yaw=0,pitch=0): forward=+Z, right=(-1,0,0), up=(0,1,0).
+    // Do NOT flip this — wrong cross order inverts up and flips the view vertically.
+    outRight.x = -outForward.z;
     outRight.y = 0.f;
-    outRight.z = -outForward.x;
+    outRight.z =  outForward.x;
     float rlen = std::sqrt(outRight.x * outRight.x + outRight.z * outRight.z);
     if (rlen > 1e-6f) {
         outRight.x /= rlen;
@@ -203,7 +204,7 @@ void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
         outRight.z = sy;
     }
 
-    // Up = cross(right, forward)
+    // up = cross(right, forward)
     outUp.x = outRight.y * outForward.z - outRight.z * outForward.y;
     outUp.y = outRight.z * outForward.x - outRight.x * outForward.z;
     outUp.z = outRight.x * outForward.y - outRight.y * outForward.x;
@@ -286,11 +287,13 @@ void EntityPlayer::FixedUpdate() {
 
     // 3) Horizontal — MaximumSpeed + Acceleration / Deceleration
     //    Confirmed in SimplePlayer::Update: load edi+0 (max), edi+4 (accel), edi+8 (decel)
-    // Same basis as GetRotationVectors (forward + right * strafe)
-    Vector right, up, forward;
-    GetRotationVectors(right, up, forward, yaw_, 0.f); // horizontal only
-    float ix = forward.x * moveForward_ + right.x * moveStrafe_;
-    float iz = forward.z * moveForward_ + right.z * moveStrafe_;
+    // Horizontal intent in yaw frame (matches original algebraic form):
+    //   at yaw=0: forward→+Z, +strafe→+X. With GetRotationVectors right=-X at yaw=0,
+    //   this equals forward*fwd + (-right)*strafe.
+    float yawRad = yaw_ * 3.14159265f / 180.f;
+    float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
+    float ix = (-sinY) * moveForward_ + (cosY) * moveStrafe_;
+    float iz = ( cosY) * moveForward_ + (sinY) * moveStrafe_;
     float ilen = std::sqrt(ix * ix + iz * iz);
     float inputMag = ilen;
     if (ilen > 1.f) { ix /= ilen; iz /= ilen; inputMag = 1.f; }
@@ -355,7 +358,10 @@ void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
     if (deleteMode) {
         grid_->BreakBlock(tr);
     } else {
-        grid_->PlaceBlock(tr, placeType);
+        // IsPossibleToAdd (0x99530): rejects if target cell non-empty OR any
+        // registered entity AABB intersects the destination cell (vtable+0x80).
+        // Player AABB = position with size_ extents (feet origin, Y-up).
+        grid_->PlaceBlock(tr, placeType, &position_, &size_);
     }
 }
 

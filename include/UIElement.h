@@ -1,4 +1,6 @@
 #pragma once
+#include "Font.h"
+#include "Mesh.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -11,18 +13,29 @@ struct UIRect {
     }
 };
 
+// Style recovered from hud.txt State[0].Default/Pressed + UIElement::DrawBackground @ 0xf3b60
+// Colors are AARRGGBB (as in $buttonDefaultFrameColor = 78DCDCDC)
+struct UIStyle {
+    uint32_t backgroundColor = 0;
+    uint32_t textColor = 0xFFDCDCDC;
+    uint32_t textShadowColor = 0x641E1E1E;
+    float frame0Width = 0; // outer frame
+    float frame1Width = 0; // inner frame
+    uint32_t frame1Color = 0x78DCDCDC;
+};
+
 class UIElement {
 public:
     enum class Type { Element = 0, SpriteButton = 1, TextureView = 2, Slider = 3 };
 
     std::string name;
     std::string parentName;
-    std::string text; // "/Label/visible text" or plain
+    std::string text;
     std::string fontName = "Sans";
     Type type = Type::Element;
     bool visible = true;
     bool hitTest = true;
-    float xAlign = 0.f, yAlign = 0.f; // 0 left/top, 0.5 center, 1 right/bottom
+    float xAlign = 0.f, yAlign = 0.f;
     float posX = 0, posY = 0;
     float sizeW = 0, sizeH = 0;
     UIRect screenRect;
@@ -30,9 +43,12 @@ public:
     std::vector<UIElement*> children;
     bool pressed = false;
 
+    UIStyle styleDefault;
+    UIStyle stylePressed;
+
     void ResolveLayout(float screenW, float screenH);
-    // Visible caption after last '/' in Text="/Id/Caption"
     std::string DisplayText() const;
+    const UIStyle& CurrentStyle() const { return pressed ? stylePressed : styleDefault; }
 };
 
 class UIDocument {
@@ -48,11 +64,17 @@ public:
     std::vector<UIElement>& All() { return elements_; }
     float GetVar(const std::string& name, float def = 0.f) const;
     void SetVar(const std::string& name, float v) { vars_[name] = v; }
+    uint32_t GetColorVar(const std::string& name, uint32_t def = 0) const;
     bool Loaded() const { return !elements_.empty(); }
+
+    // Original draw path stand-in for UIElement::Draw → DrawBackground + DrawText
+    // (full 4.7KB DrawBackground not ported; frame+fill+text matches observed style fields)
+    void Draw(float screenW, float screenH, FontResource& fonts) const;
 
 private:
     std::vector<UIElement> elements_;
     std::vector<UIElement*> roots_;
     std::map<std::string, float> vars_;
+    std::map<std::string, uint32_t> colorVars_;
     void ParseVars(const std::string& text);
 };

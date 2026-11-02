@@ -244,77 +244,18 @@ void GLApplication::RenderWorld() {
 
 
 void GLApplication::RenderHUD(int screenW, int screenH) {
-#if defined(__ANDROID__)
-    glDisable(GL_DEPTH_TEST);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrthof(0, (float)screenW, (float)screenH, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glDisable(GL_TEXTURE_2D);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-#endif
-    auto quad = [&](float x, float y, float w, float h, uint32_t rgba) {
-#if defined(__ANDROID__)
-        float r = ((rgba >> 16) & 0xff) / 255.f;
-        float g = ((rgba >> 8) & 0xff) / 255.f;
-        float b = (rgba & 0xff) / 255.f;
-        float a = ((rgba >> 24) & 0xff) / 255.f;
-        glColor4f(r, g, b, a);
-        const GLfloat verts[] = { x,y, x+w,y, x+w,y+h, x,y+h };
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glVertexPointer(2, GL_FLOAT, 0, verts);
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-        glDisableClientState(GL_VERTEX_ARRAY);
-#else
-        (void)x;(void)y;(void)w;(void)h;(void)rgba;
-#endif
-    };
-
-    auto drawEl = [&](UIElement* e, uint32_t col) {
-        if (!e || !e->visible || e->screenRect.w < 1.f) return;
-        // translucent fill + brighter border (stand-in for State frames until UI atlas ported)
-        quad(e->screenRect.x, e->screenRect.y, e->screenRect.w, e->screenRect.h, col);
-        uint32_t border = 0xCCFFFFFF;
-        float x = e->screenRect.x, y = e->screenRect.y, w = e->screenRect.w, h = e->screenRect.h;
-        float t = 2.f;
-        quad(x, y, w, t, border);
-        quad(x, y + h - t, w, t, border);
-        quad(x, y, t, h, border);
-        quad(x + w - t, y, t, h, border);
-    };
-
-    if (!game_.IsMenuOpen() && game_.HudLoaded()) {
-        game_.GetHud().ResolveAll((float)screenW, (float)screenH);
-        drawEl(game_.GetHud().Find("hud_up"), 0x66FFFFFF);
-        drawEl(game_.GetHud().Find("hud_down"), 0x66FFFFFF);
-        drawEl(game_.GetHud().Find("hud_left"), 0x66FFFFFF);
-        drawEl(game_.GetHud().Find("hud_right"), 0x66FFFFFF);
-        drawEl(game_.GetHud().Find("hud_jump"), 0x8880FF80);
-        drawEl(game_.GetHud().Find("hud_delete"), 0x88FF6060);
-        drawEl(game_.GetHud().Find("hud_add"), 0x886080FF);
-        drawEl(game_.GetHud().Find("hud_activate"), 0x88FFFF60);
-        drawEl(game_.GetHud().Find("hud_menu"), 0x88FFFFFF);
-        // Crosshair only in play HUD
-        float cx = screenW * 0.5f, cy = screenH * 0.5f;
-        quad(cx - 1, cy - 14, 2, 28, 0xFFFFFFFF);
-        quad(cx - 14, cy - 1, 28, 2, 0xFFFFFFFF);
-    } else if (game_.IsMenuOpen() && game_.MenuLoaded()) {
-        game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
-        // Draw visible menu_* interactive elements as panels
-        for (auto& e : game_.GetMenu().All()) {
-            if (!e.visible || !e.hitTest) continue;
-            if (e.screenRect.w < 8.f || e.screenRect.h < 8.f) continue;
-            drawEl(&e, 0xAA404050);
+    // Original chain: Scene::RenderUI → UISceneObject::RenderUI → UIElement::Draw
+    //   → DrawBackground (styles from hud.txt) + DrawText (Font "Sans")
+    // No substitute widgets — document styles + font glyph atlas only.
+    if (game_.IsMenuOpen()) {
+        if (game_.MenuLoaded()) {
+            game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
+            game_.GetMenu().Draw((float)screenW, (float)screenH, game_.GetFonts());
         }
+    } else if (game_.HudLoaded()) {
+        game_.GetHud().ResolveAll((float)screenW, (float)screenH);
+        game_.GetHud().Draw((float)screenW, (float)screenH, game_.GetFonts());
     }
-
-#if defined(__ANDROID__)
-    glEnable(GL_TEXTURE_2D);
-    glColor4f(1,1,1,1);
-    glEnable(GL_DEPTH_TEST);
-#endif
 }
 
 void GLApplication::Frame() {

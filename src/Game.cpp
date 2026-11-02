@@ -21,6 +21,10 @@ void Game::InitUI() {
     ApplySceneConfigs();
     hudLoaded_ = hud_.LoadAsset("ui/hud.txt");
     menuLoaded_ = menu_.LoadAsset("ui/menu.txt");
+    // Game::LoadFont — Sans sizes used by UI (font/font_N.txt)
+    fonts_.FindOrLoad("Sans", 16);
+    fonts_.FindOrLoad("Sans", 20);
+    fonts_.FindOrLoad("Sans", 24);
     if (menuLoaded_) {
         menu_.SetAllVisible(false); // menu starts hidden (Visible:Bool=0 on menu_ui)
     }
@@ -490,26 +494,17 @@ void Game::TryPlaceBlock(unsigned char blockType) {
     player_->AddOrDeleteBlock(false, blockType);
 }
 
-// Creative palette order (observed SelectPaletteItem indices map to placeable blocks)
-static const unsigned char kPaletteBlocks[] = {
-    1,  // Stone
-    2,  // Brick
-    3,  // Granite
-    4,  // Oak Wood
-    6,  // Oak Planks
-    7,  // Dirt
-    8,  // Grass
-    11, // Glass
-    17, // Torch
-    10, // Leaves
-};
-static const int kPaletteCount = sizeof(kPaletteBlocks)/sizeof(kPaletteBlocks[0]);
-
+// Palette selection index is S-Index (blocks.txt column) stored in Material+0x20.
+// Binary path: SelectPaletteItem → EntityPlayerSet.SelectMaterial → MtlSelIndexToCell.
+// menu_mtl_N selects absolute palette slot; page offsets handled by SelectPalettePage.
 unsigned char Game::GetSelectedBlockType() const {
-    int idx = paletteItem_;
-    if (idx < 0) idx = 0;
-    if (idx >= kPaletteCount) idx = idx % kPaletteCount;
-    return kPaletteBlocks[idx];
+    // Combined index: page base + item (SelectPaletteItem adds page base at +0xdac)
+    int sel = paletteItem_;
+    if (sel < 0) sel = 0;
+    unsigned char cell = grid_.MtlSelIndexToCell(sel);
+    if (cell != 0) return cell;
+    // Fallback: if materials not loaded or S-Index -1 (air/water headers), place stone
+    return 1;
 }
 
 bool Game::SaveWorld(int slot) {

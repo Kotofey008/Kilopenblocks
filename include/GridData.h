@@ -117,9 +117,14 @@ public:
     bool IsHidden(int regionCoordA, int regionCoordB) const;
     void TracePoint(const Vector& from, const Vector& to, GridDataTraceResult& result, void* entity);
     bool GetAddingPosition(const GridDataTraceResult& tr, unsigned char blockType, int& outCellIndex, unsigned char& outFace);
-    bool IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char blockType, int flags);
+    bool IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char blockType, int flags,
+                         const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
+    // Material S-Index (+0x20 short) → cell type; binary MtlSelIndexToCell @ 0x98ed0
+    unsigned char MtlSelIndexToCell(int selIndex) const;
+    int CellToMtlSelIndex(unsigned char cellType) const;
     unsigned short ConfigureState(const GridDataTraceResult& tr, unsigned char blockType, const Vector& lookDir);
-    bool PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType);
+    bool PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
+                    const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
     bool BreakBlock(const GridDataTraceResult& tr);
     void GetCellSelectionBox(int, Vector&, Vector&);
     void ActivateCell(int, const Vector&);

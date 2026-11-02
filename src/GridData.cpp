@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstdint>
 #include <vector>
 #include "GridData.h"
 #include <sstream>
@@ -541,11 +542,57 @@ bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char /*
     return outCellIndex >= 0;
 }
 
-bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char blockType, int /*flags*/) {
+bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char blockType, int /*flags*/,
+                               const Vector* playerPos, const Vector* playerSize) {
     int idx = -1; unsigned char face = 0;
     if (!GetAddingPosition(tr, blockType, idx, face)) return false;
     if (idx < 0 || idx >= (int)cellTypes.size()) return false;
-    return cellTypes[idx] == 0;
+    if (cellTypes[idx] != 0) return false;
+
+    // Entity list walk @ 0x99630: virtual Intersects(cellX,cellY,cellZ) on each entity.
+    // With a single local player, reject if the destination cell AABB overlaps player AABB.
+    // Player AABB: feet at position, size = (w,h,d); cell is unit cube [x,x+1)×[y,y+1)×[z,z+1).
+    if (playerPos && playerSize) {
+        int lx = idx % sizeX;
+        int ly = (idx / sizeX) % sizeY;
+        int lz = idx / (sizeX * sizeY);
+        float bx0 = (float)(originX + lx);
+        float by0 = (float)(originY + ly);
+        float bz0 = (float)(originZ + lz);
+        float bx1 = bx0 + 1.f, by1 = by0 + 1.f, bz1 = bz0 + 1.f;
+        float hw = playerSize->x * 0.5f;
+        float hd = playerSize->z * 0.5f;
+        float px0 = playerPos->x - hw;
+        float px1 = playerPos->x + hw;
+        float py0 = playerPos->y;
+        float py1 = playerPos->y + playerSize->y;
+        float pz0 = playerPos->z - hd;
+        float pz1 = playerPos->z + hd;
+        bool overlap = !(px1 <= bx0 || px0 >= bx1 ||
+                         py1 <= by0 || py0 >= by1 ||
+                         pz1 <= bz0 || pz0 >= bz1);
+        if (overlap) return false;
+    }
+    return true;
+}
+
+unsigned char GridData::MtlSelIndexToCell(int selIndex) const {
+    // 0x98ed0: scan materials[0..count), compare int16 at +0x20 with selIndex; return type index
+    if (materials.empty()) return 0;
+    for (int i = 0; i < (int)materials.size(); ++i) {
+        const Material& m = materials[i];
+        int16_t si = (int16_t)(m.raw[0x20] | (m.raw[0x21] << 8));
+        if (si == (int16_t)selIndex)
+            return (unsigned char)i;
+    }
+    return 0;
+}
+
+int GridData::CellToMtlSelIndex(unsigned char cellType) const {
+    // 0x98f10: materials[cell].+0x20 as int16
+    if (cellType >= materials.size()) return -1;
+    const Material& m = materials[cellType];
+    return (int)(int16_t)(m.raw[0x20] | (m.raw[0x21] << 8));
 }
 
 // ConfigureState (0x997f0, 765 B) — orientation / state bit computation
@@ -575,8 +622,9 @@ unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
     return state;
 }
 
-bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType) {
-    if (!IsPossibleToAdd(tr, blockType, 0)) return false;
+bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
+                          const Vector* playerPos, const Vector* playerSize) {
+    if (!IsPossibleToAdd(tr, blockType, 0, playerPos, playerSize)) return false;
     int idx = -1; unsigned char face = 0;
     GetAddingPosition(tr, blockType, idx, face);
     int lx = idx % sizeX;
@@ -659,6 +707,12 @@ bool GridData::LoadMaterials(const char* path) {
         m.raw[0x01] = (uint8_t)cls;
         m.raw[0x02] = (col != 0) ? 0 : 1;
         m.raw[0x03] = (uint8_t)(bh & 0xff);
+        // +0x20/+0x21: S-Index as int16 (MtlSelIndexToCell / CellToMtlSelIndex)
+        {
+            int16_t si = (int16_t)sIndex;
+            m.raw[0x20] = (uint8_t)(si & 0xff);
+            m.raw[0x21] = (uint8_t)((si >> 8) & 0xff);
+        }
         // UV faces order in material table: XP YP ZP XN YN ZN (binary +0x0c..+0x17)
         m.raw[0x0c] = (uint8_t)(uxp & 0xff);
         m.raw[0x0d] = (uint8_t)(uyp & 0xff);
