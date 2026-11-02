@@ -68,14 +68,36 @@ struct SceneCameraConfig {
 // EntityPlayerSet::ParamSet — binary ctor @ 0x5e000 (8 floats / 32 B)
 // Defaults: speed=3, accel=9, decel=18, step=0.501, small=0.0626, grav=-9.81, limit=-50, jump=5
 struct PlayerParamSet {
-    float maximumSpeed = 3.f;
-    float acceleration = 9.f;
-    float deceleration = 18.f;
-    float stepSize = 0.501f;
-    float smallStepSize = 0.062625f;
-    float gravity = -9.81f;
-    float gravityLimit = -50.f;
-    float jump = 5.f;
+    // Explicit ctor required for C++11 (NDK): default member initializers
+    // make the type a non-aggregate, so PlayerParamSet{a,b,...} needs a ctor.
+    // Defaults match binary ParamSet::ParamSet @ 0x5e000.
+    PlayerParamSet(
+        float maxSpeed = 3.f,
+        float accel = 9.f,
+        float decel = 18.f,
+        float step = 0.501f,
+        float smallStep = 0.062625f,
+        float grav = -9.81f,
+        float gravLimit = -50.f,
+        float jumpSpeed = 5.f)
+        : maximumSpeed(maxSpeed)
+        , acceleration(accel)
+        , deceleration(decel)
+        , stepSize(step)
+        , smallStepSize(smallStep)
+        , gravity(grav)
+        , gravityLimit(gravLimit)
+        , jump(jumpSpeed)
+    {}
+
+    float maximumSpeed;
+    float acceleration;
+    float deceleration;
+    float stepSize;
+    float smallStepSize;
+    float gravity;
+    float gravityLimit;
+    float jump;
 };
 
 // ParamSet index == EntityPlayer mode @ +0xa4 (UpdateMode @ 0x5b040):
