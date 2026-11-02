@@ -11,8 +11,11 @@ std::vector<BlockDef> LoadBlockDefsFromText(const std::string& text) {
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty()) continue;
-        // skip BOM
-        if ((unsigned char)line[0] == 0xEF) continue;
+        // UTF-8 BOM on first line — strip, do not drop the line
+        if (line.size() >= 3 && (unsigned char)line[0] == 0xEF
+            && (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+            line = line.substr(3);
+        if (line.empty()) continue;
         if (line[0] == '#') continue;
         if (line.find("Index") != std::string::npos && line.find("Uxp") != std::string::npos)
             continue;

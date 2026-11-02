@@ -224,8 +224,19 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             if (NeedFace(grid, wx, wy, wz, face) == 0)
                 continue;
             float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-            if (t < defs.size()) GetFaceUV(defs[t], face, u0, v0, u1, v1);
-            else Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
+            // Prefer GridData::Material UV (LoadMaterials from blocks.txt).
+            // Material face order is XP,YP,ZP,XN,YN,ZN — map from EmitFace order
+            // 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z.
+            static const int kFaceToMat[6] = { 0, 3, 1, 4, 2, 5 };
+            const Material* mat = grid.GetMaterial((int)t);
+            if (mat) {
+                int mi = kFaceToMat[face];
+                Texture::TileUV((int)mat->uFace(mi), (int)mat->vFace(mi), u0, v0, u1, v1);
+            } else if (t < defs.size()) {
+                GetFaceUV(defs[t], face, u0, v0, u1, v1);
+            } else {
+                Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
+            }
             uint32_t col = 0xFFFFFFFFu;
             if (lights) {
                 col = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));

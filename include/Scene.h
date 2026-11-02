@@ -146,11 +146,59 @@ struct SceneGlobalsConfig {
     std::string texAtlas0;
 };
 
+
+// GridModel section — SetProperties @ 0xa53a0; LoadResources → LoadTextureEffects + LoadTextures
+// Property names from .rodata: BlocksTextureFileName, WaterTextureFileName, LavaTextureFileName,
+//   MtlDescFileName, WaterPlaneColor, LavaPlaneColor, WaterFlowSpeed, LavaFlowSpeed,
+//   UseProceduralTextures, WaterPaletteFileName, LavaPaletteFileName
+struct SceneGridModelConfig {
+    bool present = false;
+    int id = 0;
+    int cameraObjectId = 1;
+    std::string blocksTextureFileName = "textures/blocks.png";
+    std::string waterTextureFileName = "textures/water.png";
+    std::string lavaTextureFileName = "textures/lava.png";
+    std::string mtlDescFileName = "scenes/blocks.txt";
+    // Color as 0..1 RGBA (scene Color = A R G B with A first)
+    float waterPlaneR = 232.f/255.f, waterPlaneG = 144.f/255.f, waterPlaneB = 5.f/255.f, waterPlaneA = 64.f/255.f;
+    float lavaPlaneR = 0.f, lavaPlaneG = 50.f/255.f, lavaPlaneB = 204.f/255.f, lavaPlaneA = 204.f/255.f;
+    float waterFlowSpeed = 0.625f;  // start.scene; drives FluidAnim UV scroll
+    float lavaFlowSpeed = 0.15f;
+    bool useProceduralTextures = true;
+    std::string waterPaletteFileName = "textures/water_pal.png";
+    std::string lavaPaletteFileName = "textures/lava_pal.png";
+};
+
+
+// SkyBox — SetProperties @ 0xddea0; windows drive dayFactor in SetTimeOfDay @ 0xde770
+struct SceneSkyBoxConfig {
+    bool present = false;
+    int id = 0;
+    float sunriseBegin = 0.208333f;
+    float sunriseEnd   = 0.270833f;
+    float sunsetBegin  = 0.729167f;
+    float sunsetEnd    = 0.791667f;
+    // Colors 0..1 (scene Color = A R G B)
+    float dayLowerR = 1.f, dayLowerG = 207.f/255.f, dayLowerB = 167.f/255.f;
+    float dayUpperR = 1.f, dayUpperG = 168.f/255.f, dayUpperB = 115.f/255.f;
+    float nightLowerR = 19.f/255.f, nightLowerG = 12.f/255.f, nightLowerB = 9.f/255.f;
+    float nightUpperR = 10.f/255.f, nightUpperG = 6.f/255.f, nightUpperB = 4.f/255.f;
+    bool horizon = true;
+    std::string sunTextureFileName = "textures/sun.png";
+    std::string moonTextureFileName = "textures/moon.png";
+    float sunScale = 3.f;
+    float moonScale = 3.f;
+    int numStars = 600;
+    int starsSeed = 1;
+};
+
 class Scene {
 public:
     SceneGlobalsConfig globals;
     SceneCameraConfig camera;
     SceneEntityPlayerSetConfig playerSet;
+    SceneGridModelConfig gridModel;
+    SceneSkyBoxConfig skyBox;
 
     std::vector<SceneObject*> objects;
     GridData* grid = nullptr;

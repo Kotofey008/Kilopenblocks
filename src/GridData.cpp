@@ -1,6 +1,8 @@
 #include <cstdio>
 #include <vector>
 #include "GridData.h"
+#include <sstream>
+#include "Assets.h"
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -614,17 +616,29 @@ bool GridData::InitMaterials() {
 
 bool GridData::LoadMaterials(const char* path) {
     if (materials.empty()) InitMaterials();
-    FILE* fp = std::fopen(path, "r");
-    if (!fp) return false;
-    char line[1024];
-    while (std::fgets(line, sizeof(line), fp)) {
-        // skip comments and empty
-        char* p = line;
+    // Android assets require AAssetManager — never fopen relative paths.
+    std::string text;
+    if (!Assets::ReadText(path, text)) {
+        // Fallback: try as filesystem path (host tools)
+        FILE* fp = std::fopen(path, "r");
+        if (!fp) return false;
+        char buf[1024];
+        while (std::fgets(buf, sizeof(buf), fp)) text += buf;
+        std::fclose(fp);
+    }
+    std::istringstream in(text);
+    std::string line;
+    int loaded = 0;
+    while (std::getline(in, line)) {
+        if (!line.empty() && (unsigned char)line[0] == 0xEF) {
+            // UTF-8 BOM on first line
+            if (line.size() >= 3) line = line.substr(3);
+        }
+        const char* p = line.c_str();
         while (*p == ' ' || *p == '\t') ++p;
         if (*p == '#' || *p == '\0' || *p == '\n' || *p == '\r') continue;
-        // Parse whitespace-separated integers matching blocks.txt columns.
-        // Full column→field mapping still partial; recover key fields used by
-        // NeedFace / IsFlowAllowed / water height / UVs.
+        if (std::strstr(p, "Index") && std::strstr(p, "Uxp")) continue;
+
         int idx = -1, sIndex = -1;
         int uxp=0,vxp=0,uyp=0,vyp=0,uzp=0,vzp=0,uxn=0,vxn=0,uyn=0,vyn=0,uzn=0,vzn=0;
         int bh=0, bmt=0, mbi=0, sau=0, col=0, all=0, uvr=0;
@@ -634,24 +648,18 @@ bool GridData::LoadMaterials(const char* path) {
             &idx, &sIndex,
             &uxp,&vxp,&uyp,&vyp,&uzp,&vzp,&uxn,&vxn,&uyn,&vyn,&uzn,&vzn,
             &bh,&bmt,&mbi,&sau,&col,&all,&uvr,&xt,&yt,&zt,&w,&h,&l,&ftl,&ftw);
-        if (n < 2 || idx < 0 || idx >= (int)materials.size()) continue;
+        // Need at least Index + S-Index + 12 UV ints
+        if (n < 14 || idx < 0 || idx >= (int)materials.size()) continue;
         Material& m = materials[idx];
         m.initDefault(idx);
-        // prop01: type class. Binary validates S-Index-like values in 0..0x0a.
-        // Hypothesis: MBI or clamped S-Index feeds prop01. Observed:
-        //   water MBI=3, leaves S-Index=6, glass S-Index=7, torch BMT=2.
-        // Prefer S-Index when in 0..10, else BMT, else MBI.
         int cls = sIndex;
         if (cls < 0 || cls > 0x0a) cls = bmt;
         if (cls < 0 || cls > 0x0a) cls = mbi;
         if (cls < 0 || cls > 0x0a) cls = 0;
         m.raw[0x01] = (uint8_t)cls;
-        // prop02: opacity — solid cubes often 0 with further checks; non-solids non-zero
-        // Hypothesis from NeedFace: prop02==0 triggers deeper neighbour checks.
-        // Col==1 is collision/solid in blocks.txt for stone etc.
-        m.raw[0x02] = (col != 0) ? 0 : 1; // tentative
-        m.raw[0x03] = (uint8_t)(bh & 0xff); // water base height column BH
-        // UV faces: XP YP ZP XN YN ZN
+        m.raw[0x02] = (col != 0) ? 0 : 1;
+        m.raw[0x03] = (uint8_t)(bh & 0xff);
+        // UV faces order in material table: XP YP ZP XN YN ZN (binary +0x0c..+0x17)
         m.raw[0x0c] = (uint8_t)(uxp & 0xff);
         m.raw[0x0d] = (uint8_t)(uyp & 0xff);
         m.raw[0x0e] = (uint8_t)(uzp & 0xff);
@@ -664,17 +672,13 @@ bool GridData::LoadMaterials(const char* path) {
         m.raw[0x15] = (uint8_t)(vxn & 0xff);
         m.raw[0x16] = (uint8_t)(vyn & 0xff);
         m.raw[0x17] = (uint8_t)(vzn & 0xff);
-        // All flag → raw[0x07] style transparency hint (leaves All=1)
         m.raw[0x07] = (all != 0) ? 1 : 0;
-        // Default flow perms: non-solid (Col==0) allow all dirs
         uint8_t perm = (col == 0) ? 0x0f : 0x00;
         for (int f = 0; f < 6; ++f)
             m.raw[0x1b + f] = perm;
-        // UNRESOLVED: exact mapping of BMT/MBI/SAU/FTL/FTW → remaining bytes
-        // UNRESOLVED: prop02 encoding (current is hypothesis)
+        ++loaded;
     }
-    std::fclose(fp);
-    return true;
+    return loaded > 0;
 }
 
 const Material* GridData::GetMaterial(int type) const {

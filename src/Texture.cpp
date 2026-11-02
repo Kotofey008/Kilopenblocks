@@ -20,11 +20,14 @@ Texture::~Texture() {
 
 void Texture::TileUV(int tileU, int tileV, float& u0, float& v0, float& u1, float& v1) {
     const float inv = 1.f / (float)kAtlasTiles;
-    // blocks.png: row 0 at top of image; GL V=0 at bottom → flip V
-    u0 = tileU * inv;
+    // glTexImage2D places the first memory row at V=0 (bottom).
+    // Our PNG decoder stores file-top as memory row 0, so atlas tileV=0 (top of
+    // blocks.png) lives at the BOTTOM of the GL texture → low V, not high V.
+    // Previous "flip V" mapped tileV=0 to V≈1 (top of GL = bottom of PNG = white).
+    u0 = (float)tileU * inv;
     u1 = u0 + inv;
-    v1 = 1.f - tileV * inv;       // top of tile in GL space
-    v0 = v1 - inv;                // bottom of tile
+    v0 = (float)tileV * inv;
+    v1 = v0 + inv;
 }
 
 void GetFaceUV(const BlockDef& def, int face, float& u0, float& v0, float& u1, float& v1) {

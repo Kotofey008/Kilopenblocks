@@ -139,6 +139,11 @@ public:
     UIDocument& GetHud() { return hud_; }
     bool HudLoaded() const { return hudLoaded_; }
     Scene& GetScene() { return scene_; }
+    const SceneGridModelConfig& GetGridModelConfig() const { return scene_.gridModel; }
+    bool UseProceduralTextures() const { return useProceduralTextures_; }
+    void GetWaterPlaneColor(float& r, float& g, float& b, float& a) const {
+        r = waterPlaneR_; g = waterPlaneG_; b = waterPlaneB_; a = waterPlaneA_;
+    }
     GameState GetState() const { return state_; }
     TerrainType GetTerrainType() const { return terrainType_; }
 
@@ -160,6 +165,10 @@ private:
     float timeOfDay_ = 0.5f;
     float sensitivity_ = 1.f;
     float timeMultiplier_ = 1.f; // Globals.TimeMultiplier from start.scene
+    // GridModel plane colors + procedural flag (from start.scene)
+    float waterPlaneR_ = 0.f, waterPlaneG_ = 0.f, waterPlaneB_ = 0.f, waterPlaneA_ = 0.f;
+    float lavaPlaneR_ = 0.f, lavaPlaneG_ = 0.f, lavaPlaneB_ = 0.f, lavaPlaneA_ = 0.f;
+    bool useProceduralTextures_ = true;
     EntityPlayerSet playerSet_;
     EntityPlayer* player_ = nullptr;
     Camera camera_;

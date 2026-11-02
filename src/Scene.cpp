@@ -72,6 +72,8 @@ bool Scene::Load(const std::string& path) {
     globals = SceneGlobalsConfig{};
     camera = SceneCameraConfig{};
     playerSet = SceneEntityPlayerSetConfig{};
+    gridModel = SceneGridModelConfig{};
+    skyBox = SceneSkyBoxConfig{};
     // Defaults aligned with binary ParamSet ctor + start.scene non-zero sets
     playerSet.paramSets[0] = PlayerParamSet{};
     playerSet.paramSets[1] = PlayerParamSet{2.f, 9.f, 9.f, 0.501f, 0.062625f, -4.9f, -2.f, 3.f};
@@ -103,6 +105,10 @@ bool Scene::Load(const std::string& path) {
                 camera.present = true;
             } else if (section == "EntityPlayerSet") {
                 playerSet.present = true;
+            } else if (section == "GridModel") {
+                gridModel.present = true;
+            } else if (section == "SkyBox") {
+                skyBox.present = true;
             }
             continue;
         }
@@ -176,6 +182,51 @@ bool Scene::Load(const std::string& path) {
                     else if (field == "Jump") ps.jump = parseFloat(val);
                 }
             }
+
+        } else if (section == "GridModel") {
+            gridModel.present = true;
+            if (key == "ID") gridModel.id = parseInt(val);
+            else if (key == "Camera") gridModel.cameraObjectId = parseInt(val);
+            else if (key == "BlocksTextureFileName") gridModel.blocksTextureFileName = val;
+            else if (key == "WaterTextureFileName") gridModel.waterTextureFileName = val;
+            else if (key == "LavaTextureFileName") gridModel.lavaTextureFileName = val;
+            else if (key == "MtlDescFileName") gridModel.mtlDescFileName = val;
+            else if (key == "WaterPlaneColor") {
+                parseColor255(val, gridModel.waterPlaneR, gridModel.waterPlaneG,
+                              gridModel.waterPlaneB, gridModel.waterPlaneA);
+            } else if (key == "LavaPlaneColor") {
+                parseColor255(val, gridModel.lavaPlaneR, gridModel.lavaPlaneG,
+                              gridModel.lavaPlaneB, gridModel.lavaPlaneA);
+            } else if (key == "WaterFlowSpeed") gridModel.waterFlowSpeed = parseFloat(val);
+            else if (key == "LavaFlowSpeed") gridModel.lavaFlowSpeed = parseFloat(val);
+            else if (key == "UseProceduralTextures") gridModel.useProceduralTextures = parseBool(val);
+            else if (key == "WaterPaletteFileName") gridModel.waterPaletteFileName = val;
+            else if (key == "LavaPaletteFileName") gridModel.lavaPaletteFileName = val;
+
+
+        } else if (section == "SkyBox") {
+            skyBox.present = true;
+            if (key == "ID") skyBox.id = parseInt(val);
+            else if (key == "SunriseBegin") skyBox.sunriseBegin = parseFloat(val);
+            else if (key == "SunriseEnd") skyBox.sunriseEnd = parseFloat(val);
+            else if (key == "SunsetBegin") skyBox.sunsetBegin = parseFloat(val);
+            else if (key == "SunsetEnd") skyBox.sunsetEnd = parseFloat(val);
+            else if (key == "DaySkyLowerColor") {
+                float a; parseColor255(val, skyBox.dayLowerR, skyBox.dayLowerG, skyBox.dayLowerB, a);
+            } else if (key == "DaySkyUpperColor") {
+                float a; parseColor255(val, skyBox.dayUpperR, skyBox.dayUpperG, skyBox.dayUpperB, a);
+            } else if (key == "NightSkyLowerColor") {
+                float a; parseColor255(val, skyBox.nightLowerR, skyBox.nightLowerG, skyBox.nightLowerB, a);
+            } else if (key == "NightSkyUpperColor") {
+                float a; parseColor255(val, skyBox.nightUpperR, skyBox.nightUpperG, skyBox.nightUpperB, a);
+            } else if (key == "Horizon") skyBox.horizon = parseBool(val);
+            else if (key == "SunTextureFileName") skyBox.sunTextureFileName = val;
+            else if (key == "MoonTextureFileName") skyBox.moonTextureFileName = val;
+            else if (key == "SunScale") skyBox.sunScale = parseFloat(val);
+            else if (key == "MoonScale") skyBox.moonScale = parseFloat(val);
+            else if (key == "NumStars") skyBox.numStars = parseInt(val);
+            else if (key == "StarsSeed") skyBox.starsSeed = parseInt(val);
+
         } else if (section == "UISceneObject" && currentUI) {
             if (key == "ID") currentUI->id = parseInt(val);
             else if (key == "Name") currentUI->name = val;
@@ -198,6 +249,20 @@ bool Scene::Load(const std::string& path) {
               << " eyeH=" << playerSet.EyeHeightFromBBox()
               << ", world [" << globals.worldSizeMin.x << ".." << globals.worldSizeMax.x << "]"
               << std::endl;
+    if (skyBox.present) {
+        std::cout << "  SkyBox sunrise=" << skyBox.sunriseBegin << ".." << skyBox.sunriseEnd
+                  << " sunset=" << skyBox.sunsetBegin << ".." << skyBox.sunsetEnd
+                  << " stars=" << skyBox.numStars << " seed=" << skyBox.starsSeed
+                  << std::endl;
+    }
+    if (gridModel.present) {
+        std::cout << "  GridModel blocks=" << gridModel.blocksTextureFileName
+                  << " mtl=" << gridModel.mtlDescFileName
+                  << " waterFlow=" << gridModel.waterFlowSpeed
+                  << " lavaFlow=" << gridModel.lavaFlowSpeed
+                  << " procedural=" << (gridModel.useProceduralTextures ? 1 : 0)
+                  << std::endl;
+    }
     if (playerSet.present) {
         for (int i = 0; i < 4; ++i) {
             const auto& p = playerSet.paramSets[i];

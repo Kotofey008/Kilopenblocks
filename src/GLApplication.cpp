@@ -63,18 +63,57 @@ void GLApplication::OnCreateGLContext() {
     eglSwapBuffers(mDisplay, mSurface);
 
     Assets::Init(mApp);
-    blockDefs_ = LoadBlockDefs("scenes/blocks.txt");
-    LOGI("blockDefs=%d", (int)blockDefs_.size());
-    if (!blocksAtlas_.LoadPNGAsset("textures/blocks.png"))
-        LOGE("blocks.png FAILED");
-    else
-        LOGI("blocks atlas %ux%u gl=%u", blocksAtlas_.Width(), blocksAtlas_.Height(), blocksAtlas_.Valid()?1u:0u);
 
+    // Parse start.scene first so GridModel paths drive texture/material load
+    // (binary: GridModel::SetProperties then LoadResources → LoadTextures/Effects)
     game_.InitUI();
+
+    {
+        const SceneGridModelConfig& gm = game_.GetGridModelConfig();
+        const char* mtl = gm.present && !gm.mtlDescFileName.empty()
+            ? gm.mtlDescFileName.c_str() : "scenes/blocks.txt";
+        const char* blocksTex = gm.present && !gm.blocksTextureFileName.empty()
+            ? gm.blocksTextureFileName.c_str() : "textures/blocks.png";
+
+        blockDefs_ = LoadBlockDefs(mtl);
+        LOGI("blockDefs=%d from %s", (int)blockDefs_.size(), mtl);
+
+        if (!blocksAtlas_.LoadPNGAsset(blocksTex))
+            LOGE("blocks atlas FAILED path=%s", blocksTex);
+        else
+            LOGI("blocks atlas %ux%u path=%s", blocksAtlas_.Width(), blocksAtlas_.Height(), blocksTex);
+
+        // Water/lava source textures + palettes (GridModel::LoadTextures / LoadTextureEffects).
+        // Full WaterTextureEffect procedural rewrite is not reconstructed; we load the PNGs
+        // so paths from start.scene are honored and assets are available to the GL path.
+        if (gm.present) {
+            if (!gm.waterTextureFileName.empty()) {
+                if (!waterTex_.LoadPNGAsset(gm.waterTextureFileName.c_str()))
+                    LOGE("water tex FAILED %s", gm.waterTextureFileName.c_str());
+            }
+            if (!gm.lavaTextureFileName.empty()) {
+                if (!lavaTex_.LoadPNGAsset(gm.lavaTextureFileName.c_str()))
+                    LOGE("lava tex FAILED %s", gm.lavaTextureFileName.c_str());
+            }
+            if (gm.useProceduralTextures) {
+                if (!gm.waterPaletteFileName.empty())
+                    waterPal_.LoadPNGAsset(gm.waterPaletteFileName.c_str());
+                if (!gm.lavaPaletteFileName.empty())
+                    lavaPal_.LoadPNGAsset(gm.lavaPaletteFileName.c_str());
+                LOGI("procedural textures flag=1 pal water=%d lava=%d",
+                     waterPal_.Valid() ? 1 : 0, lavaPal_.Valid() ? 1 : 0);
+            }
+        }
+    }
+
     game_.SelectTerrainType(Game::TerrainType::Earth);
     game_.Play(0);
     clouds_.LoadResources("textures/clouds.png");
+    // SkyBox from start.scene (windows, colors, scales, star counts, texture paths)
+    if (game_.GetScene().skyBox.present)
+        skyBox_.ApplyConfig(game_.GetScene().skyBox);
     skyBox_.LoadResources();
+    skyBox_.EnsureStarsMesh();
     hudFont_.Load(nullptr, nullptr);
     worldReady_ = true;
     lightMap_.Init(game_.GetGrid());
@@ -149,10 +188,25 @@ void GLApplication::RenderWorld() {
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(view.m);
 
-    // Sun / moon billboards
+    // Stars (night) + sun/moon billboards — positions follow camera eye
     {
-        MeshBuffer sunM, moonM;
         Vector eye = game_.GetCamera().GetPosition();
+        if (skyBox_.StarsVisible()) {
+            skyBox_.EnsureStarsMesh();
+            const MeshBuffer& sm = skyBox_.StarsMesh();
+            if (sm.IndexCount() > 0) {
+                glDisable(GL_TEXTURE_2D);
+                glColor4f(1.f, 1.f, 1.f, 1.f);
+                // Translate star mesh with eye so sky is centered on viewer
+                glMatrixMode(GL_MODELVIEW);
+                glPushMatrix();
+                glTranslatef(eye.x, eye.y, eye.z);
+                DrawPrimitive(0x0004, sm.Vertices().data(), sm.Indices().data(), sm.IndexCount(), 0);
+                glPopMatrix();
+                glEnable(GL_TEXTURE_2D);
+            }
+        }
+        MeshBuffer sunM, moonM;
         skyBox_.BuildSunMoonMeshes(eye, 200.f, sunM, moonM);
         if (sunM.IndexCount() > 0) {
             skyBox_.SunTexture().Bind();

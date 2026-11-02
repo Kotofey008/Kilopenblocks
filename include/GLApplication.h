@@ -42,6 +42,10 @@ private:
     std::vector<RegionMesh> regionMeshes_;
     bool worldReady_ = false;
     Texture blocksAtlas_;
+    Texture waterTex_;   // GridModel WaterTextureFileName
+    Texture lavaTex_;    // GridModel LavaTextureFileName
+    Texture waterPal_;   // GridModel WaterPaletteFileName
+    Texture lavaPal_;    // GridModel LavaPaletteFileName
     LightMap lightMap_;
     Clouds clouds_;
     SkyBox skyBox_;

@@ -3,33 +3,64 @@
 #include "Texture.h"
 #include "Vector.h"
 #include <cmath>
+#include <string>
 
-// SkyBox::SetTimeOfDay / GetTimeOfDay; Game::UpdateTimeOfDay / UpdateSkyBox
-// Assets: sun.png, moon.png; strings SunriseBegin/End, SunsetBegin/End
+struct SceneSkyBoxConfig;
 
 class SkyBox {
 public:
     void LoadResources();
-    void SetTimeOfDay(float t); // 0..1, 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
-    float GetTimeOfDay() const { return timeOfDay_; }
+    void ApplyConfig(const SceneSkyBoxConfig& cfg);
 
-    // Sky clear color from time
-    void GetSkyColor(float& r, float& g, float& b) const;
-    // Sun/moon direction on unit sphere (for lighting + billboard)
+    void SetTimeOfDay(float t);
+    float GetTimeOfDay() const { return timeOfDay_; }
+    float GetDayFactor() const { return dayFactor_; }
+
     Vector GetSunDirection() const;
     Vector GetMoonDirection() const;
-    float GetSunIntensity() const; // 0 at night
+    float GetSunIntensity() const;
     float GetAmbientScale() const;
+
+    void GetSkyColor(float& r, float& g, float& b) const;
+    void GetSkyUpperColor(float& r, float& g, float& b) const;
+    void GetSkyLowerColor(float& r, float& g, float& b) const;
+
+    void BuildSunMoonMeshes(const Vector& eye, float dist,
+                            MeshBuffer& sunMesh, MeshBuffer& moonMesh);
+    void EnsureStarsMesh();
+    const MeshBuffer& StarsMesh() const { return starsMesh_; }
+    bool StarsVisible() const { return dayFactor_ < 0.35f && numStars_ > 0; }
 
     Texture& SunTexture() { return sunTex_; }
     Texture& MoonTexture() { return moonTex_; }
-    // Billboard quads in world space given camera eye
-    void BuildSunMoonMeshes(const Vector& eye, float dist, MeshBuffer& sunMesh, MeshBuffer& moonMesh);
+    float SunScale() const { return sunScale_; }
+    float MoonScale() const { return moonScale_; }
 
 private:
     float timeOfDay_ = 0.5f;
+    float dayFactor_ = 1.f;
+
+    float sunriseBegin_ = 0.208333f;
+    float sunriseEnd_   = 0.270833f;
+    float sunsetBegin_  = 0.729167f;
+    float sunsetEnd_    = 0.791667f;
+
+    float dayLowerR_ = 1.f, dayLowerG_ = 207.f/255.f, dayLowerB_ = 167.f/255.f;
+    float dayUpperR_ = 1.f, dayUpperG_ = 168.f/255.f, dayUpperB_ = 115.f/255.f;
+    float nightLowerR_ = 19.f/255.f, nightLowerG_ = 12.f/255.f, nightLowerB_ = 9.f/255.f;
+    float nightUpperR_ = 10.f/255.f, nightUpperG_ = 6.f/255.f, nightUpperB_ = 4.f/255.f;
+
+    bool horizon_ = true;
+    std::string sunTexPath_ = "textures/sun.png";
+    std::string moonTexPath_ = "textures/moon.png";
+    float sunScale_ = 3.f;
+    float moonScale_ = 3.f;
+    int numStars_ = 600;
+    int starsSeed_ = 1;
+
     Texture sunTex_, moonTex_;
-    // recovered string constants as defaults
-    float sunriseBegin_ = 0.22f, sunriseEnd_ = 0.28f;
-    float sunsetBegin_  = 0.72f, sunsetEnd_  = 0.78f;
+    MeshBuffer starsMesh_;
+    bool starsBuilt_ = false;
+
+    void RecomputeDayFactor();
 };

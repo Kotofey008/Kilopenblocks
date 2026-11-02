@@ -36,6 +36,21 @@ void Game::ApplySceneConfigs() {
                                 cc.viewportX1 - cc.viewportX0,
                                 cc.viewportY1 - cc.viewportY0);
     }
+    // GridModel → materials path, fluid flow speeds (LoadTextures paths applied in GLApplication)
+    if (scene_.gridModel.present) {
+        const SceneGridModelConfig& gm = scene_.gridModel;
+        fluidAnim.SetFlowSpeeds(gm.waterFlowSpeed, gm.lavaFlowSpeed);
+        // MtlDescFileName → GridData::LoadMaterials (binary GridModel owns this path)
+        if (!gm.mtlDescFileName.empty()) {
+            grid_.LoadMaterials(gm.mtlDescFileName.c_str());
+        }
+        // Plane colors stored for render path; full underwater plane mesh not yet restored
+        waterPlaneR_ = gm.waterPlaneR; waterPlaneG_ = gm.waterPlaneG;
+        waterPlaneB_ = gm.waterPlaneB; waterPlaneA_ = gm.waterPlaneA;
+        lavaPlaneR_ = gm.lavaPlaneR; lavaPlaneG_ = gm.lavaPlaneG;
+        lavaPlaneB_ = gm.lavaPlaneB; lavaPlaneA_ = gm.lavaPlaneA;
+        useProceduralTextures_ = gm.useProceduralTextures;
+    }
     timeMultiplier_ = scene_.globals.timeMultiplier;
     if (timeMultiplier_ < 0.01f) timeMultiplier_ = 0.01f;
 }

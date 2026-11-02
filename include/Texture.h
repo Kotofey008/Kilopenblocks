@@ -42,13 +42,22 @@ struct FluidAnim {
     float waterOffsetU = 0.f;
     float waterOffsetV = 0.f;
     float lavaOffsetU = 0.f;
+    // From GridModel WaterFlowSpeed / LavaFlowSpeed (start.scene defaults)
+    float waterFlowSpeed = 0.625f;
+    float lavaFlowSpeed = 0.15f;
     bool enabled = true;
+    void SetFlowSpeeds(float water, float lava) {
+        waterFlowSpeed = water;
+        lavaFlowSpeed = lava;
+    }
     void Update(float dt) {
         if (!enabled) return;
-        // modest scroll matching typical voxel fluid (not exact binary rate)
-        waterOffsetU += dt * 0.05f;
-        waterOffsetV += dt * 0.03f;
-        lavaOffsetU  += dt * 0.02f;
+        // UV offsets advanced by GridModel WaterFlowSpeed / LavaFlowSpeed (scene units/sec).
+        // Exact binary mapping of speed→atlas UV is not fully recovered; values from
+        // start.scene replace previous hardcodes so they control animation rate.
+        waterOffsetU += dt * waterFlowSpeed;
+        waterOffsetV += dt * waterFlowSpeed * 0.6f;
+        lavaOffsetU  += dt * lavaFlowSpeed;
         if (waterOffsetU > 1.f) waterOffsetU -= 1.f;
         if (waterOffsetV > 1.f) waterOffsetV -= 1.f;
         if (lavaOffsetU > 1.f) lavaOffsetU -= 1.f;
