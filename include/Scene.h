@@ -4,28 +4,35 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cstdint>
 
 // Observed: LoadSceneObjects(char const*, vector<SceneObject*>&, Properties&, Scene*)
-// Scene objects have ID, Name, Position, Rotation, Scale, Visible, UpdateOrder, RenderOrder, etc.
-// Specializations: UISceneObject (loads .txt UI defs), GridModel, Camera, SimplePlayer, ...
+// Specializations: UISceneObject, GridModel, Camera, EntityPlayerSet, SkyBox, Clouds
 
 struct Properties {
-    // key-value store used by SetProperties/GetProperties; exact type TBD
     std::map<std::string, std::string> values;
+    bool Has(const std::string& key) const { return values.count(key) != 0; }
+    const std::string& Get(const std::string& key, const std::string& def = "") const {
+        auto it = values.find(key);
+        return it != values.end() ? it->second : def;
+    }
 };
 
 class SceneObject {
 public:
-    enum class Kind { Base = 0, UI = 1, GridModel = 2, Camera = 3 };
+    enum class Kind {
+        Base = 0, UI = 1, GridModel = 2, Camera = 3,
+        EntityPlayerSet = 4, SkyBox = 5, Clouds = 6
+    };
     virtual Kind GetKind() const { return Kind::Base; }
     int id = 0;
     std::string name;
     Vector position;
-    // Quaternion rotation; simplified for now
-    Vector scale{1,1,1};
+    Vector scale{1, 1, 1};
     bool visible = true;
     int updateOrder = 0;
     int renderOrder = 0;
+    Properties props;
     virtual ~SceneObject() = default;
     virtual void LoadResources() {}
     virtual void FreeResources() {}
@@ -39,18 +46,103 @@ public:
 class UISceneObject : public SceneObject {
 public:
     Kind GetKind() const override { return Kind::UI; }
-    std::string fileName; // e.g. "Screen/ui/menu.txt"
-    // ElementClickedMessage etc. as string commands that call into Game
+    std::string fileName;
+};
+
+// Camera section — binary SetProperties @ 0x4eeb0 uses FieldOfView, NearPlane, FarPlane, ...
+struct SceneCameraConfig {
+    bool present = false;
+    int id = 0;
+    Vector position{0.5f, 65.5f, 0.5f};
+    bool perspective = true;
+    float fieldOfView = 90.f;
+    float nearPlane = 0.025f;
+    float farPlane = 350.f;
+    float viewportX0 = 0.f, viewportY0 = 0.f, viewportX1 = 1.f, viewportY1 = 1.f;
+    bool sizeFromViewport = true;
+    bool clearColor = true;
+    bool clearDepth = true;
+    float clearR = 0.f, clearG = 0.f, clearB = 0.f, clearA = 1.f;
+};
+
+// EntityPlayerSet::ParamSet — binary ctor @ 0x5e000 (8 floats / 32 B)
+// Defaults: speed=3, accel=9, decel=18, step=0.501, small=0.0626, grav=-9.81, limit=-50, jump=5
+struct PlayerParamSet {
+    float maximumSpeed = 3.f;
+    float acceleration = 9.f;
+    float deceleration = 18.f;
+    float stepSize = 0.501f;
+    float smallStepSize = 0.062625f;
+    float gravity = -9.81f;
+    float gravityLimit = -50.f;
+    float jump = 5.f;
+};
+
+// ParamSet index == EntityPlayer mode @ +0xa4 (UpdateMode @ 0x5b040):
+//   [0] walk, [1] swim (IsUnderwater), [2] ladder (OnLadder), [3] fly (SetFlying)
+enum class PlayerParamMode : int {
+    Walk = 0, Swim = 1, Ladder = 2, Fly = 3, Count = 4
+};
+
+struct SceneEntityPlayerSetConfig {
+    bool present = false;
+    int id = 0;
+    int cameraObjectId = 1;
+    int gridModelObjectId = 5;
+    Vector localBBoxMin{-0.245f, -1.5f, -0.245f};
+    Vector localBBoxMax{0.245f, 0.25f, 0.245f};
+    Vector collisionBBoxMin{-0.245f, -1.5f, -0.245f};
+    Vector collisionBBoxMax{0.245f, 0.25f, 0.245f};
+    float operationDistance = 8.f;
+    int operationTime = 300;
+    float touchSensitivity = 0.33f;
+    bool flipXRotation = false;
+    bool flipYRotation = false;
+    int dxThreshold = 200;
+    int dyThreshold = 200;
+    PlayerParamSet paramSets[4];
+
+    // Feet at local Min.y, head at Max.y → eye height from feet ≈ span
+    float EyeHeightFromBBox() const {
+        return localBBoxMax.y - localBBoxMin.y;
+    }
+    float BodyWidth() const {
+        return localBBoxMax.x - localBBoxMin.x;
+    }
+    float BodyHeight() const {
+        return localBBoxMax.y - localBBoxMin.y;
+    }
+};
+
+struct SceneGlobalsConfig {
+    float timeMultiplier = 1.f;
+    int maxTimestep = 200;
+    Vector worldSizeMin{-576.f, -64.f, -576.f};
+    Vector worldSizeMax{576.f, 192.f, 576.f};
+    float clearR = 1.f, clearG = 1.f, clearB = 180.f / 255.f, clearA = 140.f / 255.f;
+    bool hasClearColor = false;
+    std::string texAtlas0;
 };
 
 class Scene {
 public:
-    Vector worldSizeMin{-576, -64, -576};
-    Vector worldSizeMax{576, 192, 576};
-    float timeMultiplier = 1.f;
-    // camera, grid, objects
-    std::vector<SceneObject*> objects;
-    GridData* grid = nullptr; // owned by GridModel typically
+    SceneGlobalsConfig globals;
+    SceneCameraConfig camera;
+    SceneEntityPlayerSetConfig playerSet;
 
-    bool Load(const std::string& path); // loads start.scene style
+    std::vector<SceneObject*> objects;
+    GridData* grid = nullptr;
+
+    // Mobile-safe active world (XZ). Full scene bounds stay in globals.
+    static constexpr float kMobileWorldHalfExtent = 64.f;
+    static constexpr float kMobileWorldMinY = -16.f;
+    static constexpr float kMobileWorldMaxY = 96.f;
+
+    bool Load(const std::string& path);
+    void ApplyGlobalsToGrid(GridData& g, bool mobileClamp) const;
+
+    // Convenience for older call sites
+    Vector WorldSizeMin() const { return globals.worldSizeMin; }
+    Vector WorldSizeMax() const { return globals.worldSizeMax; }
+    float TimeMultiplier() const { return globals.timeMultiplier; }
 };

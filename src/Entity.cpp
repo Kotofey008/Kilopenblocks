@@ -91,15 +91,37 @@ void Entity::Move(const Vector& delta) {
 // --- EntityPlayer ---
 
 EntityPlayer::EntityPlayer(EntityPlayerSet* set) : Entity(set) {
-    size_ = Vector(0.6f, 1.8f, 0.6f);
+    // Defaults match binary ParamSet ctor @ 0x5e000 / start.scene until ApplyPlayerSetConfig
+    size_ = Vector(0.49f, 1.75f, 0.49f);
+    paramSets_[0] = PlayerParamSet{};
+    paramSets_[1] = PlayerParamSet{2.f, 9.f, 9.f, 0.501f, 0.062625f, -4.9f, -2.f, 3.f};
+    paramSets_[2] = PlayerParamSet{2.f, 9.f, 18.f, 0.501f, 0.062625f, 0.f, 0.f, 5.f};
+    paramSets_[3] = PlayerParamSet{6.f, 18.f, 18.f, 0.501f, 0.062625f, -9.81f, -50.f, 5.f};
 }
 
 EntityPlayer::~EntityPlayer() {}
 
 void EntityPlayer::Init() {
     Entity::Init();
-    eyeHeight_ = 1.62f;
-    mode_ = Mode::Walking;
+    mode_ = Mode::Walk;
+    horizSpeed_ = 0.f;
+}
+
+void EntityPlayer::ApplyPlayerSetConfig(const SceneEntityPlayerSetConfig& cfg) {
+    for (int i = 0; i < 4; ++i)
+        paramSets_[i] = cfg.paramSets[i];
+    operationDistance_ = cfg.operationDistance;
+    eyeHeight_ = cfg.EyeHeightFromBBox();
+    // size_ = full AABB extents (width, height, depth)
+    size_ = Vector(cfg.BodyWidth(), cfg.BodyHeight(), cfg.BodyWidth());
+    flipX_ = cfg.flipXRotation;
+    flipY_ = cfg.flipYRotation;
+}
+
+const PlayerParamSet& EntityPlayer::CurrentParamSet() const {
+    int i = (int)mode_;
+    if (i < 0 || i >= 4) i = 0;
+    return paramSets_[i];
 }
 
 void EntityPlayer::SetYawPitch(float yaw, float pitch) {
@@ -117,7 +139,32 @@ void EntityPlayer::SetMoveInput(float forward, float strafe, bool jump) {
 }
 
 void EntityPlayer::UpdateMode() {
-    // original switches walk/fly; keep simple
+    // EntityPlayer::UpdateMode @ 0x5b040 — confirmed control flow:
+    //   if EntityPlayerSet.flying → mode = 3 (Fly)
+    //   else if mode was Fly → mode = 0, then re-evaluate environment
+    //   else if OnLadder(...) → mode = 2
+    //   else mode = IsUnderwater(eye/body) ? 1 : 0
+    auto* pset = static_cast<EntityPlayerSet*>(set_);
+    if (pset && pset->GetFlying()) {
+        mode_ = Mode::Fly;
+        return;
+    }
+    if (mode_ == Mode::Fly)
+        mode_ = Mode::Walk;
+
+    if (!grid_) {
+        mode_ = Mode::Walk;
+        return;
+    }
+    // OnLadder(feet, size, offset) — binary; our OnLadder is stub → false
+    if (grid_->OnLadder(position_, size_, Vector(0, 0, 0))) {
+        mode_ = Mode::Ladder;
+        return;
+    }
+    // Sample near eye / chest (binary adds bbox extents to set origin)
+    Vector sample = position_;
+    sample.y += eyeHeight_ * 0.5f;
+    mode_ = grid_->IsUnderwater(sample) ? Mode::Swim : Mode::Walk;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,35 +256,60 @@ void EntityPlayer::UpdateCamera() {
 }
 
 void EntityPlayer::FixedUpdate() {
-    // Gravity
-    if (mode_ == Mode::Walking) {
-        if (!onGround_)
-            velocity_.y += gravity_ * (1.f / 60.f);
-        else if (jumpPressed_) {
-            velocity_.y = jumpSpeed_;
+    // 1) Resolve mode → selects ParamSets[mode] (binary UpdateMode then physics)
+    UpdateMode();
+    const PlayerParamSet& ps = CurrentParamSet();
+    const float dt = 1.f / 60.f;
+
+    // 2) Vertical — gravity / jump / fly from ParamSet
+    //    Binary SimplePlayer::Update reads edi+0x14 gravity, +0x18 limit, +0x1c jump
+    if (mode_ == Mode::Fly) {
+        // ParamSets[3] in scene still has gravity -9.81; fly control is free vertical
+        // from look pitch when forward held (prior RE behaviour; full SimplePlayer path TBD)
+        velocity_.y = moveForward_ * std::sin(pitch_ * 3.14159265f / 180.f) * ps.maximumSpeed;
+    } else if (mode_ == Mode::Ladder) {
+        // Ladder set has gravity 0; climb with forward/strafe as vertical intent
+        velocity_.y = moveForward_ * ps.maximumSpeed;
+    } else {
+        if (!onGround_) {
+            velocity_.y += ps.gravity * dt;
+            if (velocity_.y < ps.gravityLimit)
+                velocity_.y = ps.gravityLimit;
+        } else if (jumpPressed_) {
+            velocity_.y = ps.jump;
             onGround_ = false;
         } else {
             velocity_.y = std::min(velocity_.y, 0.f);
         }
-    } else {
-        // flying: vertical from pitch/input
-        velocity_.y = moveForward_ * std::sin(pitch_ * 3.14159265f / 180.f) * flySpeed_;
     }
 
+    // 3) Horizontal — MaximumSpeed + Acceleration / Deceleration
+    //    Confirmed in SimplePlayer::Update: load edi+0 (max), edi+4 (accel), edi+8 (decel)
     float yawRad = yaw_ * 3.14159265f / 180.f;
-    float speed = (mode_ == Mode::Flying) ? flySpeed_ : walkSpeed_;
     float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
-    // Match GetLookDirection XZ: (-sin, cos)
-    float fx = (-sinY) * moveForward_ + (cosY) * moveStrafe_;
-    float fz = ( cosY) * moveForward_ + (sinY) * moveStrafe_;
-    // normalize horizontal
-    float len = std::sqrt(fx*fx + fz*fz);
-    if (len > 1.f) { fx /= len; fz /= len; }
+    float ix = (-sinY) * moveForward_ + (cosY) * moveStrafe_;
+    float iz = ( cosY) * moveForward_ + (sinY) * moveStrafe_;
+    float ilen = std::sqrt(ix * ix + iz * iz);
+    float inputMag = ilen;
+    if (ilen > 1.f) { ix /= ilen; iz /= ilen; inputMag = 1.f; }
+    else if (ilen > 1e-6f) { ix /= ilen; iz /= ilen; }
+
+    if (inputMag > 1e-4f) {
+        horizSpeed_ += ps.acceleration * dt;
+        if (horizSpeed_ > ps.maximumSpeed)
+            horizSpeed_ = ps.maximumSpeed;
+    } else {
+        horizSpeed_ -= ps.deceleration * dt;
+        if (horizSpeed_ < 0.f) horizSpeed_ = 0.f;
+    }
 
     Vector delta;
-    delta.x = fx * speed * (1.f / 60.f);
-    delta.z = fz * speed * (1.f / 60.f);
-    delta.y = velocity_.y * (1.f / 60.f);
+    delta.x = ix * horizSpeed_ * dt;
+    delta.z = iz * horizSpeed_ * dt;
+    delta.y = velocity_.y * dt;
+
+    // StepSize / SmallStepSize: used in SimplePlayer collision step-up (edi+0xc/+0x10).
+    // Not applied here — Entity::Move has no step-climb path yet (UNKNOWN coupling).
 
     Move(delta);
     jumpPressed_ = false;
@@ -273,7 +345,7 @@ void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
     if (!grid_) return;
     Vector eye = GetEyePosition();
     Vector dir = GetLookDirection();
-    const float reach = 6.f;
+    const float reach = operationDistance_; // start.scene OperationDistance (default 8)
     Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
     GridDataTraceResult tr;
     grid_->TracePoint(eye, to, tr, this);
@@ -283,4 +355,24 @@ void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
     } else {
         grid_->PlaceBlock(tr, placeType);
     }
+}
+
+// --- EntityPlayerSet ---
+
+EntityPlayerSet::EntityPlayerSet() {
+    // Binary ParamSet defaults; overwritten by Scene::Load EntityPlayerSet section
+    config_.paramSets[0] = PlayerParamSet{};
+    config_.paramSets[1] = PlayerParamSet{2.f, 9.f, 9.f, 0.501f, 0.062625f, -4.9f, -2.f, 3.f};
+    config_.paramSets[2] = PlayerParamSet{2.f, 9.f, 18.f, 0.501f, 0.062625f, 0.f, 0.f, 5.f};
+    config_.paramSets[3] = PlayerParamSet{6.f, 18.f, 18.f, 0.501f, 0.062625f, -9.81f, -50.f, 5.f};
+}
+
+void EntityPlayerSet::SetConfig(const SceneEntityPlayerSetConfig& cfg) {
+    config_ = cfg;
+    ApplyToLocalPlayer();
+}
+
+void EntityPlayerSet::ApplyToLocalPlayer() {
+    if (local_)
+        local_->ApplyPlayerSetConfig(config_);
 }

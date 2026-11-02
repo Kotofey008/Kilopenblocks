@@ -56,6 +56,7 @@ public:
 
     // Lifecycle
     void InitUI();
+    void ApplySceneConfigs(); // push Globals/Camera/EntityPlayerSet into runtime systems
     void InitSceneConnections();
     void Play(int slot);
     void Update();
@@ -158,6 +159,7 @@ private:
     int palettePage_ = 0;
     float timeOfDay_ = 0.5f;
     float sensitivity_ = 1.f;
+    float timeMultiplier_ = 1.f; // Globals.TimeMultiplier from start.scene
     EntityPlayerSet playerSet_;
     EntityPlayer* player_ = nullptr;
     Camera camera_;

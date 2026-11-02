@@ -108,7 +108,10 @@ public:
     void FillCells(int x0, int y0, int z0, int x1, int y1, int z1, unsigned char type, unsigned short state);
     void FillState(int x0, int y0, int z0, int x1, int y1, int z1, unsigned short state);
 
-    bool IsUnderwater(const Vector& pos);
+    // Binary IsUnderwater @ 0x7b350 — fluid at position. Partial recovery: water-type cell.
+    bool IsUnderwater(const Vector& pos) const;
+    // Binary OnLadder @ 0x7b090 — not fully recovered; returns false until ladder mats wired.
+    bool OnLadder(const Vector& feet, const Vector& bodySize, const Vector& offset) const;
     // Trace / interaction (binary-recovered)
     bool FindFirstUsedCell(const Vector& from, const Vector& to, float& outT, int& outCellIndex);
     bool IsHidden(int regionCoordA, int regionCoordB) const;

@@ -17,7 +17,27 @@ Game::~Game() {}
 void Game::InitUI() {
     // Original @ 0x66350 — loads UI scene objects + HUD from assets
     scene_.Load("scenes/start.scene");
+    ApplySceneConfigs();
     hudLoaded_ = hud_.LoadAsset("ui/hud.txt");
+}
+
+void Game::ApplySceneConfigs() {
+    // EntityPlayerSet → player set + look sensitivity
+    if (scene_.playerSet.present) {
+        playerSet_.SetConfig(scene_.playerSet);
+        input_.SetTouchSensitivity(scene_.playerSet.touchSensitivity);
+    }
+    // Camera projection (pose still follows player each frame)
+    if (scene_.camera.present) {
+        const SceneCameraConfig& cc = scene_.camera;
+        camera_.SetPerspective(cc.fieldOfView, 1.777f, cc.nearPlane);
+        camera_.SetFarPlane(cc.farPlane);
+        camera_.SetViewportRect(cc.viewportX0, cc.viewportY0,
+                                cc.viewportX1 - cc.viewportX0,
+                                cc.viewportY1 - cc.viewportY0);
+    }
+    timeMultiplier_ = scene_.globals.timeMultiplier;
+    if (timeMultiplier_ < 0.01f) timeMultiplier_ = 0.01f;
 }
 
 void Game::InitSceneConnections() {
@@ -27,10 +47,8 @@ void Game::InitSceneConnections() {
 void Game::Play(int slot) {
     // Original @ 0x6c720 size 2679 — major entry: load/create world, spawn player
     state_ = GameState::Loading;
-    // Mobile-safe bounds: full ±576 scene is ~1GB and will ANR/OOM before first frame
-    grid_.worldMin = Vector(-64.f, -16.f, -64.f);
-    grid_.worldMax = Vector( 64.f,  96.f,  64.f);
-    grid_.InitDimensionsFromWorldBounds();
+    // Globals.WorldSize* with mobile XZ clamp (keep scene values in scene_.globals)
+    scene_.ApplyGlobalsToGrid(grid_, /*mobileClamp=*/true);
     switch (terrainType_) {
         case TerrainType::Earth:
             genEarth_.Init(grid_, (int64_t)slot * 0x1234ABCD);
@@ -64,8 +82,13 @@ void Game::Update() {
     //   FixedUpdate / movement
     //   UpdateCameraTransform (GetRotationVectors → Camera basis + eye)
     if (player_) {
-        // Screen Y grows downward → invert lookDY for pitch (binary look controller)
-        player_->UpdateRotation(input_.GetLookDeltaX(), -input_.GetLookDeltaY());
+        // Screen Y grows downward → invert lookDY for pitch (binary look controller).
+        // FlipX/YRotation from EntityPlayerSet scene section.
+        float ldx = input_.GetLookDeltaX();
+        float ldy = -input_.GetLookDeltaY();
+        if (scene_.playerSet.flipXRotation) ldx = -ldx;
+        if (scene_.playerSet.flipYRotation) ldy = -ldy;
+        player_->UpdateRotation(ldx, ldy);
         input_.ConsumeLookDelta();
         player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
         if (input_.ConsumeBreakAction()) TryBreakBlock();
@@ -113,11 +136,18 @@ void Game::SpawnPlayer() {
         playerSet_.SetLocalPlayer(player_);
     }
     player_->SetGrid(&grid_);
+    // Push EntityPlayerSet config (ParamSets, BBox, reach, eye height) onto player
+    playerSet_.ApplyToLocalPlayer();
     player_->SetPosition(Vector((float)x + 0.5f, (float)y, (float)z + 0.5f));
     player_->Init();
-    // Attach camera immediately so first frame is not at origin
-    camera_.SetPerspective(70.f, 1.777f, 0.1f);
-    camera_.SetFarPlane(256.f);
+    // Camera projection from start.scene Camera section (not hard-coded 70/0.1/256)
+    if (scene_.camera.present) {
+        camera_.SetPerspective(scene_.camera.fieldOfView, 1.777f, scene_.camera.nearPlane);
+        camera_.SetFarPlane(scene_.camera.farPlane);
+    } else {
+        camera_.SetPerspective(90.f, 1.777f, 0.025f);
+        camera_.SetFarPlane(350.f);
+    }
     player_->UpdateCameraTransform(camera_);
 }
 
@@ -152,7 +182,11 @@ void Game::ApplyGameSettings() {}
 void Game::UpdateTimeOfDay() { /* driven by UpdateTime each frame */ }
 void Game::UpdateSensitivity() {}
 void Game::UpdateSkyBox() { /* SkyBox owned by GLApplication */ }
-void Game::UpdateTime() { timeOfDay_ = std::fmod(timeOfDay_ + 0.0001f, 1.f); }
+void Game::UpdateTime() {
+    // Globals.TimeMultiplier scales day cycle (scene default 1)
+    float step = 0.0001f * timeMultiplier_;
+    timeOfDay_ = std::fmod(timeOfDay_ + step, 1.f);
+}
 
 void Game::SelectPaletteItem(int index) { paletteItem_ = index; }
 void Game::SelectPalettePage(int page, int) { palettePage_ = page; }

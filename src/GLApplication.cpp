@@ -131,9 +131,16 @@ void GLApplication::RenderWorld() {
     glEnable(GL_DEPTH_TEST);
     glColor4f(1.f, 1.f, 1.f, 1.f);
 
-    // Load projection / modelview from Camera
+    // Projection from start.scene Camera (FOV/near/far set in Game::ApplySceneConfigs /
+    // SpawnPlayer); only refresh aspect from current window size.
     Camera& cam = game_.GetCamera();
-    cam.SetPerspective(70.f, (float)w / (float)h, 0.1f);
+    {
+        float fov = cam.GetFieldOfView();
+        float nearP = cam.GetNearPlane();
+        if (fov < 1.f) fov = 90.f;
+        if (nearP < 1e-4f) nearP = 0.025f;
+        cam.SetPerspective(fov, (float)w / (float)h, nearP);
+    }
     Matrix4 proj = cam.GetProjectionMatrix();
     Matrix4 view = cam.GetViewMatrix();
 

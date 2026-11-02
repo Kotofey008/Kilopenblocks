@@ -1,13 +1,10 @@
 #pragma once
 #include "Vector.h"
 #include "GridData.h"
+#include "Scene.h"
 #include <cstdint>
 
 class EntitySet;
-
-// Base Entity — methods recovered from symbols:
-// Entity(EntitySet*), Init, Update, FixedUpdate, FixedPostUpdate
-// Move(Vector const&), CheckGround(), GetTransform(int), Load/Save(Stream)
 
 class Entity {
 public:
@@ -21,11 +18,8 @@ public:
     virtual void Load(class Stream& s, int version);
     virtual void Save(class Stream& s);
 
-    // Move with collision against GridData (observed size 649)
     virtual void Move(const Vector& delta);
-    // Ground check (size 191)
     virtual bool CheckGround();
-
     virtual Matrix4 GetTransform(int index = 0);
 
     void SetPosition(const Vector& p) { position_ = p; }
@@ -42,7 +36,8 @@ protected:
     GridData* grid_ = nullptr;
     Vector position_{0, 0, 0};
     Vector velocity_{0, 0, 0};
-    Vector size_{0.6f, 1.8f, 0.6f}; // approximate player AABB
+    // AABB size from LocalBBox (width, height, depth)
+    Vector size_{0.49f, 1.75f, 0.49f};
     bool onGround_ = false;
     int id_ = 0;
     static int g_FreeEntityID;
@@ -61,46 +56,47 @@ public:
     Matrix4 GetTransform(int index = 0) override;
 
     void UpdateMode();
-    // Original EntityPlayer::UpdateRotation @ 0x5b4a0
-    // Applies look deltas, clamps pitch to ±90°, wraps yaw to (-180, 180] via ±360.
     void UpdateRotation(float lookDeltaYaw, float lookDeltaPitch);
-    // Original EntityPlayer::UpdateCameraTransform @ 0x5b580
-    // Builds eye position + orthonormal basis via GetRotationVectors and drives Camera.
     void UpdateCameraTransform(class Camera& camera);
-    void UpdateCamera(); // thin alias kept for call sites
+    void UpdateCamera();
 
     void SetYawPitch(float yaw, float pitch);
     float GetYaw() const { return yaw_; }
     float GetPitch() const { return pitch_; }
 
-    // Input-driven motion (set each frame from InputMgr)
     void SetMoveInput(float forward, float strafe, bool jump);
     Vector GetEyePosition() const;
     Vector GetLookDirection() const;
     void GetBasis(Vector& outRight, Vector& outUp, Vector& outForward) const;
-    // Original EntityPlayer::AddOrDeleteBlock @ 0x5cfb0
     void AddOrDeleteBlock(bool deleteMode, unsigned char placeType);
 
-    enum class Mode { Walking = 0, Flying = 1, Spectator = 2 };
+    // Apply Scene EntityPlayerSet config (ParamSets, BBox, reach, eye height)
+    void ApplyPlayerSetConfig(const SceneEntityPlayerSetConfig& cfg);
+
+    float GetOperationDistance() const { return operationDistance_; }
+    float GetEyeHeight() const { return eyeHeight_; }
+    const PlayerParamSet& CurrentParamSet() const;
+
+    // Binary mode @ +0xa4 (UpdateMode @ 0x5b040): 0 walk, 1 swim, 2 ladder, 3 fly.
+    // ParamSets[i] is selected by this index — NOT "sprint".
+    enum class Mode { Walk = 0, Swim = 1, Ladder = 2, Fly = 3 };
 
 private:
-    // Binary layout: pitch @ +0xc0 (±90), yaw @ +0xc4 (wrap 360) — degrees.
     float yaw_ = 0.f;
     float pitch_ = 0.f;
-    float eyeHeight_ = 1.62f;
+    float eyeHeight_ = 1.75f;
     float moveForward_ = 0.f;
     float moveStrafe_ = 0.f;
     bool jumpPressed_ = false;
-    Mode mode_ = Mode::Walking;
-    float walkSpeed_ = 6.5f;
-    float flySpeed_ = 8.f;
-    float gravity_ = -20.f;
-    float jumpSpeed_ = 8.f;
+    Mode mode_ = Mode::Walk;
+    float operationDistance_ = 8.f;
+    // Horizontal velocity for accel/decel (SimplePlayer::Update uses ParamSet accel)
+    float horizSpeed_ = 0.f;
+    PlayerParamSet paramSets_[4];
+    bool flipX_ = false;
+    bool flipY_ = false;
 };
 
-// Original free function @ 0xb7190 (501 B)
-// GetRotationVectors(Vector& right, Vector& up, Vector& forward, float yawDeg, float pitchDeg)
-// Converts degrees→radians (×π/180), builds Y-up FPS basis.
 void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
                         float yawDegrees, float pitchDegrees);
 
@@ -109,10 +105,34 @@ public:
     virtual ~EntitySet() = default;
 };
 
+// Mirrors binary EntityPlayerSet: owns ParamSets, camera link, local player, touch params
 class EntityPlayerSet : public EntitySet {
 public:
+    EntityPlayerSet();
+
     EntityPlayer* GetLocalPlayer() const { return local_; }
     void SetLocalPlayer(EntityPlayer* p) { local_ = p; }
+
+    void SetConfig(const SceneEntityPlayerSetConfig& cfg);
+    const SceneEntityPlayerSetConfig& GetConfig() const { return config_; }
+
+    void ApplyToLocalPlayer();
+
+    // Binary GetFlying / SetFlying @ 0x5e1d0 / 0x5e1e0 — drives mode 3 in UpdateMode
+    bool GetFlying() const { return flying_; }
+    void SetFlying(bool f) { flying_ = f; }
+
+    float GetTouchSensitivity() const { return config_.touchSensitivity; }
+    float GetOperationDistance() const { return config_.operationDistance; }
+    int GetOperationTimeMs() const { return config_.operationTime; }
+    int GetDxThreshold() const { return config_.dxThreshold; }
+    int GetDyThreshold() const { return config_.dyThreshold; }
+    const PlayerParamSet& GetParamSet(int i) const {
+        return config_.paramSets[(i >= 0 && i < 4) ? i : 0];
+    }
+
 private:
     EntityPlayer* local_ = nullptr;
+    SceneEntityPlayerSetConfig config_;
+    bool flying_ = false;
 };

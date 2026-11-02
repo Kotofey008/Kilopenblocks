@@ -254,7 +254,18 @@ void GridData::FillState(int x0, int y0, int z0, int x1, int y1, int z1, unsigne
     }
 }
 
-bool GridData::IsUnderwater(const Vector&) { return false; } // TBD
+bool GridData::IsUnderwater(const Vector& pos) const {
+    int bx = (int)std::floor(pos.x);
+    int by = (int)std::floor(pos.y);
+    int bz = (int)std::floor(pos.z);
+    int idx = CoordToIndex(bx, by, bz);
+    if (idx < 0) return false;
+    return cellTypes[idx] == 5; // BlockId::Water — partial vs binary state mask 0x3fc0
+}
+
+bool GridData::OnLadder(const Vector&, const Vector&, const Vector&) const {
+    return false; // OnLadder @ 0x7b090 not fully recovered
+}
 
 void GridData::GetCellSelectionBox(int, Vector&, Vector&) {}
 void GridData::ActivateCell(int, const Vector&) {}

@@ -21,6 +21,14 @@ public:
     float GetLookDeltaY() const { return lookDY_; }
     void ConsumeLookDelta() { lookDX_ = lookDY_ = 0.f; }
 
+    // start.scene EntityPlayerSet.TouchSensitivity (binary default path via Screen)
+    void SetTouchSensitivity(float s) {
+        if (s < 0.01f) s = 0.01f;
+        if (s > 5.f) s = 5.f;
+        sensitivity_ = s;
+    }
+    float GetTouchSensitivity() const { return sensitivity_; }
+
     float GetMoveForward() const { return moveForward_; }
     float GetMoveStrafe() const { return moveStrafe_; }
     bool GetJump() const { return jump_; }
@@ -68,7 +76,7 @@ private:
     float lookDX_ = 0.f, lookDY_ = 0.f;
     float moveForward_ = 0.f, moveStrafe_ = 0.f;
     bool jump_ = false;
-    float sensitivity_ = 0.15f;
+    float sensitivity_ = 0.33f; // start.scene TouchSensitivity default
     int screenW_ = 800, screenH_ = 480;
 
     bool breakPending_ = false;
