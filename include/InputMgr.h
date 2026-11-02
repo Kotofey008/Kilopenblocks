@@ -55,6 +55,9 @@ public:
     bool MenuMode() const { return menuMode_; }
     void SetMenuMode(bool m) { menuMode_ = m; }
 
+    // True while any active touch holds this discrete HUD button (e.g. "hud_up")
+    bool IsHudButtonHeld(const char* name) const;
+
 private:
     enum class Zone { None, Look, HudButton };
 

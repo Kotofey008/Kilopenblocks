@@ -319,7 +319,50 @@ void Game::ShowMessage(const char* text, MessagePriority) {
     if (text) std::cout << "[MSG] " << text << std::endl;
 }
 void Game::UpdateScreenMessages() {}
-void Game::UpdateHUDUI() {}
+void Game::UpdateHUDUI() {
+    // Sync UIElement::pressed / selected from input + palette state.
+    // Original: UI state machine drives State[0]/State[1] for DrawBackground.
+    // Here we set the flags; Draw uses CurrentStyle() (Default/Pressed/Selected*).
+
+    // --- HUD: pressed from held discrete buttons ---
+    if (hudLoaded_ && !menuOpen_) {
+        static const char* kHudBtns[] = {
+            "hud_up", "hud_down", "hud_left", "hud_right",
+            "hud_jump", "hud_delete", "hud_add", "hud_activate", "hud_menu"
+        };
+        for (const char* n : kHudBtns) {
+            if (UIElement* e = hud_.Find(n))
+                e->pressed = input_.IsHudButtonHeld(n);
+        }
+    } else if (hudLoaded_) {
+        for (auto& e : hud_.All()) e.pressed = false;
+    }
+
+    // --- Menu / palette: selected slot + page tab ---
+    if (!menuLoaded_) return;
+
+    const int selSlot = paletteItem_ % 9;   // 0..8 within page
+    const int selPage = palettePage_;       // menu_mtl_set_N
+
+    for (auto& e : menu_.All()) {
+        e.pressed = false;
+        e.selected = false;
+
+        // menu_mtl_0..8 → selected when slot matches current palette item
+        if (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10) {
+            int slot = e.name[9] - '0';
+            if (slot >= 0 && slot <= 8)
+                e.selected = (slot == selSlot);
+            continue;
+        }
+        // menu_mtl_set_0..6 → selected page tab (State[1] fill)
+        if (e.name.compare(0, 13, "menu_mtl_set_") == 0) {
+            int page = std::atoi(e.name.c_str() + 13);
+            e.selected = (page == selPage);
+            continue;
+        }
+    }
+}
 void Game::SetUINeedFastResponse() {}
 void Game::FinishScreenshot() {}
 void Game::ShowProgressScreen(const char* msg) { ShowMessage(msg, MessagePriority::Normal); }

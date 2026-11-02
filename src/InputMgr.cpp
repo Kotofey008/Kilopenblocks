@@ -118,6 +118,15 @@ bool InputMgr::ConsumePlaceAction() {
 bool InputMgr::ConsumeActivateAction() {
     bool v = activatePending_; activatePending_ = false; return v;
 }
+
+bool InputMgr::IsHudButtonHeld(const char* name) const {
+    if (!name) return false;
+    for (int i = 0; i < kMaxTouches; ++i) {
+        if (!touches_[i].active || !touches_[i].button) continue;
+        if (std::strcmp(touches_[i].button, name) == 0) return true;
+    }
+    return false;
+}
 bool InputMgr::ConsumeMenuAction() {
     bool v = menuPending_; menuPending_ = false; return v;
 }

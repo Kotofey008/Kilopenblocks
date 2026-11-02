@@ -141,10 +141,24 @@ bool UIDocument::LoadFromText(const std::string& text) {
             cur->styleDefault.frame0Width = GetVar("buttonFrame0Width", 4);
             cur->styleDefault.frame1Width = GetVar("buttonFrame1Width", 2);
             cur->styleDefault.frame1Color = GetColorVar("buttonDefaultFrameColor", 0x78DCDCDC);
+            cur->styleDefault.frame2Width = 0;
+            cur->styleDefault.frame2Color = GetColorVar("selectionFrameColor", 0xFF4080FF);
             cur->stylePressed = cur->styleDefault;
             cur->stylePressed.backgroundColor = GetColorVar("buttonPressedBackgroundColor", 0x64FAFAFA);
             cur->stylePressed.textColor = GetColorVar("buttonPressedTextColor", 0xFFFFFFFF);
             cur->stylePressed.frame1Color = GetColorVar("buttonPressedFrameColor", 0xFFDCDCDC);
+            // State[1] starts from State[0] colors but zero frames until menu.txt
+            // sets BackgroundFrame[*] (menu_mtl_* has frame2; menu_mtl_set_* only fill).
+            cur->styleSelected = cur->styleDefault;
+            cur->styleSelected.frame0Width = 0;
+            cur->styleSelected.frame1Width = 0;
+            cur->styleSelected.frame2Width = 0;
+            cur->styleSelected.backgroundColor = 0;
+            cur->styleSelectedPressed = cur->stylePressed;
+            cur->styleSelectedPressed.frame0Width = 0;
+            cur->styleSelectedPressed.frame1Width = 0;
+            cur->styleSelectedPressed.frame2Width = 0;
+            cur->styleSelectedPressed.backgroundColor = 0;
             if (line == "UISpriteButton") cur->type = UIElement::Type::SpriteButton;
             else if (line == "UITextureView") cur->type = UIElement::Type::TextureView;
             else if (line == "UISliderElement") cur->type = UIElement::Type::Slider;
@@ -170,7 +184,7 @@ bool UIDocument::LoadFromText(const std::string& text) {
         else if (key == "YAlign") cur->yAlign = std::strtof(val.c_str(), nullptr);
         else if (key == "Size") parseSizeOrPos(val, *this, cur->sizeW, cur->sizeH);
         else if (key == "Position") parseSizeOrPos(val, *this, cur->posX, cur->posY);
-        // State styles
+        // ---- State[0] Default ----
         else if (key.find("State[0].Default.BackgroundColor") != std::string::npos)
             cur->styleDefault.backgroundColor = parseColorOrVar(val, *this);
         else if (key.find("State[0].Default.TextColor") != std::string::npos)
@@ -183,6 +197,11 @@ bool UIDocument::LoadFromText(const std::string& text) {
             cur->styleDefault.frame1Width = parseFloatOrVar(val, *this);
         else if (key.find("State[0].Default.BackgroundFrame[1].Color") != std::string::npos)
             cur->styleDefault.frame1Color = parseColorOrVar(val, *this);
+        else if (key.find("State[0].Default.BackgroundFrame[2].Width") != std::string::npos)
+            cur->styleDefault.frame2Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[0].Default.BackgroundFrame[2].Color") != std::string::npos)
+            cur->styleDefault.frame2Color = parseColorOrVar(val, *this);
+        // ---- State[0] Pressed ----
         else if (key.find("State[0].Pressed.BackgroundColor") != std::string::npos)
             cur->stylePressed.backgroundColor = parseColorOrVar(val, *this);
         else if (key.find("State[0].Pressed.TextColor") != std::string::npos)
@@ -195,6 +214,44 @@ bool UIDocument::LoadFromText(const std::string& text) {
             cur->stylePressed.frame1Width = parseFloatOrVar(val, *this);
         else if (key.find("State[0].Pressed.BackgroundFrame[1].Color") != std::string::npos)
             cur->stylePressed.frame1Color = parseColorOrVar(val, *this);
+        else if (key.find("State[0].Pressed.BackgroundFrame[2].Width") != std::string::npos)
+            cur->stylePressed.frame2Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[0].Pressed.BackgroundFrame[2].Color") != std::string::npos)
+            cur->stylePressed.frame2Color = parseColorOrVar(val, *this);
+        // ---- State[1] Default (selected) ----
+        else if (key.find("State[1].Default.BackgroundColor") != std::string::npos)
+            cur->styleSelected.backgroundColor = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Default.TextColor") != std::string::npos)
+            cur->styleSelected.textColor = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Default.TextShadowColor") != std::string::npos)
+            cur->styleSelected.textShadowColor = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Default.BackgroundFrame[0].Width") != std::string::npos)
+            cur->styleSelected.frame0Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[1].Default.BackgroundFrame[1].Width") != std::string::npos)
+            cur->styleSelected.frame1Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[1].Default.BackgroundFrame[1].Color") != std::string::npos)
+            cur->styleSelected.frame1Color = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Default.BackgroundFrame[2].Width") != std::string::npos)
+            cur->styleSelected.frame2Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[1].Default.BackgroundFrame[2].Color") != std::string::npos)
+            cur->styleSelected.frame2Color = parseColorOrVar(val, *this);
+        // ---- State[1] Pressed (selected + touch) ----
+        else if (key.find("State[1].Pressed.BackgroundColor") != std::string::npos)
+            cur->styleSelectedPressed.backgroundColor = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Pressed.TextColor") != std::string::npos)
+            cur->styleSelectedPressed.textColor = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Pressed.TextShadowColor") != std::string::npos)
+            cur->styleSelectedPressed.textShadowColor = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Pressed.BackgroundFrame[0].Width") != std::string::npos)
+            cur->styleSelectedPressed.frame0Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[1].Pressed.BackgroundFrame[1].Width") != std::string::npos)
+            cur->styleSelectedPressed.frame1Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[1].Pressed.BackgroundFrame[1].Color") != std::string::npos)
+            cur->styleSelectedPressed.frame1Color = parseColorOrVar(val, *this);
+        else if (key.find("State[1].Pressed.BackgroundFrame[2].Width") != std::string::npos)
+            cur->styleSelectedPressed.frame2Width = parseFloatOrVar(val, *this);
+        else if (key.find("State[1].Pressed.BackgroundFrame[2].Color") != std::string::npos)
+            cur->styleSelectedPressed.frame2Color = parseColorOrVar(val, *this);
     }
 
     std::map<std::string, UIElement*> byName;
@@ -425,6 +482,18 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
             drawQuad(x, y + h - f1, w, f1, fcol);
             drawQuad(x, y, f1, h, fcol);
             drawQuad(x + w - f1, y, f1, h, fcol);
+        }
+
+        // Selection frame (State[1] BackgroundFrame[2] — $selectionFrameColor on menu_mtl_*)
+        // Drawn outside the button edge so it reads as a highlight ring.
+        float f2 = st.frame2Width;
+        uint32_t f2col = st.frame2Color;
+        if (f2 > 0.f && (((f2col >> 24) & 0xff) > 0)) {
+            float ox = x - f2, oy = y - f2, ow = w + f2 * 2.f, oh = h + f2 * 2.f;
+            drawQuad(ox, oy, ow, f2, f2col);
+            drawQuad(ox, oy + oh - f2, ow, f2, f2col);
+            drawQuad(ox, oy, f2, oh, f2col);
+            drawQuad(ox + ow - f2, oy, f2, oh, f2col);
         }
 
         // DrawText (ASCII labels; unicode arrows may be absent from font atlas)

@@ -13,8 +13,11 @@ struct UIRect {
     }
 };
 
-// Style recovered from hud.txt State[0].Default/Pressed + UIElement::DrawBackground @ 0xf3b60
-// Colors are AARRGGBB (as in $buttonDefaultFrameColor = 78DCDCDC)
+// Style recovered from hud.txt / menu.txt:
+//   State[0].Default / State[0].Pressed  — normal + touch
+//   State[1].Default / State[1].Pressed  — selected (palette slot / page tab)
+// Colors AARRGGBB. BackgroundFrame[2] = selection ring
+// ($selectionFrameColor = FF4080FF on menu_mtl_*).
 struct UIStyle {
     uint32_t backgroundColor = 0;
     uint32_t textColor = 0xFFDCDCDC;
@@ -22,6 +25,8 @@ struct UIStyle {
     float frame0Width = 0; // outer frame
     float frame1Width = 0; // inner frame
     uint32_t frame1Color = 0x78DCDCDC;
+    float frame2Width = 0; // selection frame (State[1] on menu_mtl_*)
+    uint32_t frame2Color = 0xFF4080FF;
 };
 
 class UIElement {
@@ -42,13 +47,20 @@ public:
     UIElement* parent = nullptr;
     std::vector<UIElement*> children;
     bool pressed = false;
+    bool selected = false; // State[1] — palette slot / page tab
 
-    UIStyle styleDefault;
-    UIStyle stylePressed;
+    UIStyle styleDefault;          // State[0].Default
+    UIStyle stylePressed;          // State[0].Pressed
+    UIStyle styleSelected;         // State[1].Default
+    UIStyle styleSelectedPressed;  // State[1].Pressed
 
     void ResolveLayout(float screenW, float screenH);
     std::string DisplayText() const;
-    const UIStyle& CurrentStyle() const { return pressed ? stylePressed : styleDefault; }
+    const UIStyle& CurrentStyle() const {
+        if (selected)
+            return pressed ? styleSelectedPressed : styleSelected;
+        return pressed ? stylePressed : styleDefault;
+    }
 };
 
 class UIDocument {
