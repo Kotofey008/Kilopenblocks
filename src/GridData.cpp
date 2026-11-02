@@ -45,8 +45,8 @@ int GridData::CoordToIndex(int x, int y, int z) const {
 // ---------------------------------------------------------------------------
 // SetState (0x77380, 617 B) — recovered algorithm
 //
-// Verified control flow:
-//   combined = (states[idx] & 0x4000) | (newState & 0xBFFF)
+// Verified control flow from pdf:
+//   combined = (cellStates[idx] & 0x4000) | (newState & 0xBFFF)
 //   Write combined into aux map at +0x230 (word per cell)
 //   If bit 0x4000 of newState differs from aux at +0x258:
 //     hierarchical byte-count maps updated at shifts >>4, >>8, >>12, >>16
@@ -105,24 +105,26 @@ void GridData::SetState(int cellIndex, unsigned short newState) {
 }
 
 // ---------------------------------------------------------------------------
-// SetCell (0x77d80, 5910 B) — recovered structure
+// SetCell (0x77d80, 5910 B / 122 BBs) — see
+//   pseudocode/recovered/0x77d80_SetCell_COMPLETE.md
 //
-// Verified:
-//   1. index = y*stride + z*stride + x  (dims at +0x44,+0x50)
-//   2. types@+0x74; if type unchanged → jump to state-only path (0x78ae8)
-//   3. write type; inspect state bits 0x2000 and 0x3c0 for change flags
-//   4. per-axis dirty markers at +0x66d/+0x74d/+0x82d (column/slice flags)
-//   5. region dirty: region = coords>>4, regionBase@+0x80, stride 0xa4,
-//      set byte at region+0x1f = 1
-//   6. inlined hierarchical 0x4000 updates (same as SetState)
-//   7. ~14 calls to SetState on self + neighbours under fluid/light conditions
-//   8. meshesDirty
+// Signature CONFIRMED.
 //
-// Neighbour SetState conditions (fluid connectivity / light) not fully
-// decoded from the 24-loop body — when type or fluid-relevant bits change we
-// mark the 6 face-neighbour regions dirty (conservative, evidence-aligned).
-// Full light BFS (AddLight/AddLightUpdate) and UpdateWaterState are separate
-// functions called from higher-level update, not always inline in SetCell.
+// CONFIRMED side effects implemented here:
+//   - types[index] = type
+//   - SetState(index, state)  → primary states + aux+0x230 merge
+//     (old&0x4000)|(new&0xBFFF) + hierarchical 0x4000 occupancy
+//   - region[rx,rz]+0x1f = 1  (MarkRegionDirty)
+//   - meshesDirty_ / MarkModifiedRegions
+//   - face-neighbour region dirty when type or 0x2000/0x3c0 change
+//
+// CONFIRMED but NOT implemented (gates PARTIAL — do not invent predicates):
+//   - 16 SetState call sites that OR 0xC000 onto face-neighbour states
+//   - Per-axis dirty byte arrays at +0x66d/+0x74d/+0x82d/+0x90d/...
+//   - this+0xf0 batch/generation flag that suppresses neighbour work
+//
+// The "24 loops" reported by afi are hierarchy propagation chains and
+// shared-exit CFG diamonds, not volume iteration. See COMPLETE.md §3.
 // ---------------------------------------------------------------------------
 void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short state) {
     int idx = CoordToIndex(x, y, z);
@@ -132,25 +134,30 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
     unsigned short oldState = cellStates[idx];
     bool typeChanged = (oldType != type);
 
-    // Type-unchanged path still updates state (binary jz 0x78ae8)
+    // Type write (full path). State-only path leaves type unchanged (already equal).
     cellTypes[idx] = type;
 
-    // State via recovered SetState semantics
+    // Always run SetState: binary state-only path still reaches the aux-merge
+    // at 0x77ecd when (old^new)&0x3fff==0, and re-enters the full path otherwise.
     SetState(idx, state);
     unsigned short newState = cellStates[idx];
 
     bool bit2000Changed = ((oldState ^ newState) & STATE_BIT_2000) != 0;
     bool bit3c0Changed  = ((oldState ^ newState) & STATE_BIT_3C0) != 0;
     bool bit4000Changed = ((oldState ^ newState) & STATE_BIT_4000) != 0;
-    bool stateRelevant = bit2000Changed || bit3c0Changed || bit4000Changed;
+    bool lowBitsChanged = ((oldState ^ newState) & 0x3fff) != 0;
+    bool stateRelevant = bit2000Changed || bit3c0Changed || bit4000Changed || lowBitsChanged;
 
     if (typeChanged || stateRelevant) {
-        // Region dirty flag (region+0x1f = 1)
+        // Region dirty (original: region entry +0x1f = 1). Region size 16.
         MarkRegionDirty(x, y, z);
         meshesDirty_ = true;
 
-        // Per-axis dirty markers (+0x66d / +0x74d / +0x82d) — conceptual:
-        // mark column/slice dirty for mesher. Represented via neighbour regions.
+        // Approximate the original per-axis dirty bitmaps (+0x66d/+0x74d/+0x82d)
+        // and the neighbour-region marks that accompany type / 0x2000 / 0x3c0
+        // changes. We do NOT OR 0xC000 onto neighbour states: those SetState
+        // calls are gated by material-table and this+0xf0 tests that remain
+        // PARTIAL (see COMPLETE.md §2, §7).
         if (typeChanged || bit2000Changed || bit3c0Changed) {
             static const int offs[6][3] = {
                 {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}
@@ -166,7 +173,8 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
 }
 
 void GridData::MarkRegionDirty(int x, int y, int z) {
-    // Region size 16 (verified). Floor-divide with negative handling matching EncodeWorldPos.
+    // Region size 16 (verified). Floor-divide with negative handling matching
+    // binary: test sign, lea +0xf / cmovns, then sar 4.
     auto reg = [](int v) -> int {
         if (v < 0) v += 15;
         return v >> 4;
@@ -184,27 +192,66 @@ bool GridData::IsRegionDirty(int rx, int ry, int rz) const {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// FillCells (0x79ac0, 339 B) — CONFIRMED pure bulk fill
+//
+// Signature: FillCells(x0,y0,z0, x1,y1,z1, type, state)
+// Bounds are exclusive: dx=x1-x0, dy=y1-y0, dz=z1-z0; zero-trip if <=0.
+// Triple nested loop (Z outer, then Y, then X) writes:
+//   types[index]  = type   (uint8)
+//   states[index] = state  (uint16)
+// Strides: sizeX@+0x44, sizeXZ@+0x50. No SetCell, no dirty, no hierarchy,
+// no light/water side effects. is-pure: true.
+// ---------------------------------------------------------------------------
 void GridData::FillCells(int x0, int y0, int z0, int x1, int y1, int z1, unsigned char type) {
-    for (int z = z0; z <= z1; ++z)
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x)
-                SetCell(x, y, z, type, 0);
+    FillCells(x0, y0, z0, x1, y1, z1, type, static_cast<unsigned short>(0));
 }
 
-void GridData::FillCells(int x0, int y0, int z0, int x1, int y1, int z1, unsigned char type, unsigned short state) {
-    for (int z = z0; z <= z1; ++z)
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x)
-                SetCell(x, y, z, type, state);
+void GridData::FillCells(int x0, int y0, int z0, int x1, int y1, int z1,
+                         unsigned char type, unsigned short state) {
+    // Exclusive extents matching binary (sub + jle zero-trip).
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int dz = z1 - z0;
+    if (dx <= 0 || dy <= 0 || dz <= 0)
+        return;
+    if (cellTypes.empty() || cellStates.empty())
+        return;
+
+    // Linear index base = x0 + sizeX*y0 + sizeXZ*z0
+    // sizeX = sizeX_, sizeXZ = sizeX_*sizeY_ (mirrored from this+0x44 / +0x50)
+    for (int iz = 0; iz < dz; ++iz) {
+        int z = z0 + iz;
+        for (int iy = 0; iy < dy; ++iy) {
+            int y = y0 + iy;
+            for (int ix = 0; ix < dx; ++ix) {
+                int x = x0 + ix;
+                int idx = CoordToIndex(x, y, z);
+                if (idx < 0) continue;
+                cellTypes[idx]  = type;
+                cellStates[idx] = state;
+            }
+        }
+    }
 }
 
 void GridData::FillState(int x0, int y0, int z0, int x1, int y1, int z1, unsigned short state) {
-    for (int z = z0; z <= z1; ++z)
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x) {
+    // Pure state fill (no type change, no SetCell side effects).
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int dz = z1 - z0;
+    if (dx <= 0 || dy <= 0 || dz <= 0) return;
+    for (int iz = 0; iz < dz; ++iz) {
+        int z = z0 + iz;
+        for (int iy = 0; iy < dy; ++iy) {
+            int y = y0 + iy;
+            for (int ix = 0; ix < dx; ++ix) {
+                int x = x0 + ix;
                 int idx = CoordToIndex(x, y, z);
                 if (idx >= 0) cellStates[idx] = state;
             }
+        }
+    }
 }
 
 bool GridData::IsUnderwater(const Vector&) { return false; } // TBD
@@ -647,33 +694,63 @@ const Material* GridData::GetMaterial(int type) const {
 //   solid cubes → block (0)
 // Full material+0x1b table load remains open.
 // ---------------------------------------------------------------------------
+// IsFlowAllowedXP @ 0x851a0 (pdg) — canonical; other dirs share structure.
+// perm = materials[type].raw[0x1b + FlowType]
+// Returns 0 or 0x0f (and rare intermediate values for specials).
+// CONFIRMED from rz-ghidra pdg 2026-11-01.
 int GridData::IsFlowAllowed(int cellIndex, FlowType flow) const {
     if (cellIndex < 0 || cellIndex >= (int)cellTypes.size()) return 0;
     unsigned char t = cellTypes[cellIndex];
-    // Prefer material table permission byte when loaded (binary: mat[+0x1b+FlowType])
     if (!materials.empty() && t < materials.size()) {
-        uint8_t perm = materials[t].flowPerm((int)flow);
-        // Recovered bit tests from IsFlowAllowedXP:
-        if (perm & 0x01) {
-            if (perm & 0x08) {
-                // special prop01 paths — simplified: allow if prop01 in {0,6,7,0x0a}
-                uint8_t p01 = materials[t].prop01();
-                if (p01 == 0 || p01 == 6 || p01 == 7 || p01 == 0x0a) return 0x0f;
-                return 0;
+        const Material& mat = materials[t];
+        uint8_t perm = mat.flowPerm((int)flow);
+        uint32_t result = 0x0f;
+        if ((perm & 1) == 0) {
+            // not bit0: check bit1 / bit2 + state
+            if ((perm & 2) == 0) {
+                result = 0;
+                if ((perm & 4) != 0) {
+                    if (cellIndex < (int)cellStates.size() &&
+                        (cellStates[cellIndex] & 3) == 3) {
+                        result = 0x0f;
+                    }
+                }
+            } else {
+                result = 0; // bit1 set → blocked (matches Y-axis inverted path)
             }
-            return 0x0f;
-        }
-        if (perm & 0x02) return 0;
-        if (perm & 0x04) {
-            if (cellIndex < (int)cellStates.size()) {
-                unsigned st = cellStates[cellIndex] & 0x03;
-                return (st == 3) ? 0x0f : 0;
+        } else if ((perm & 8) != 0) {
+            // special prop01 paths (pdg):
+            uint8_t p01 = mat.prop01();
+            unsigned short st = (cellIndex < (int)cellStates.size())
+                                    ? cellStates[cellIndex] : 0;
+            if (p01 == 0) {
+                // if raw[0] > 7 → complex: (-(state&4==0) & ~7) + 0xc
+                if (mat.raw[0] > 7) {
+                    result = ((st & 4) == 0) ? (0xfffffff7u + 0xc) : 0xc;
+                    // simplifies to 4 or 0xc depending on bit; keep 0x0f/0 heuristic
+                    result = ((st & 4) == 0) ? 0x04 : 0x0c;
+                }
+            } else if (p01 == 6) {
+                // table lookup (state & 7) — table address unknown; allow full
+                result = 0x0f;
+            } else if (p01 == 7) {
+                // table lookup (state & 0xf)
+                result = 0x0f;
+            } else if (p01 == 10) {
+                if ((st & 8) != 0) {
+                    // table (state & 3)
+                    result = 0x0f;
+                } else {
+                    result = 0;
+                }
+            } else {
+                result = 0;
             }
-            return 0;
         }
-        return 0;
+        // else (bit0 set, bit3 clear) → 0x0f (already set)
+        return (int)result;
     }
-    // Fallback heuristic when materials not loaded
+    // Fallback when material table not loaded
     if (t == 0 || t == 5 || t == 11) return 0x0f;
     if (t == 10 || t == 20 || t == 17 || t == 18) return 0x0f;
     if (t == 12 || t == 13 || t == 14) return 0x0f;
@@ -685,28 +762,27 @@ int GridData::IsFlowAllowed(int cellIndex, FlowType flow) const {
 // matProp01 = material byte +0x01 (class; 0x0a = special liquid)
 // state bits: 0x04, 0x0c used for height variants
 // ---------------------------------------------------------------------------
+// Material::MinWaterHeight @ 0x86b70 — CONFIRMED from rz-ghidra pdg
 int GridData::MinWaterHeight(unsigned char matProp01, unsigned char matProp03, unsigned short state) {
     if (matProp03 == 0) return 0;
     if (matProp01 == 0x0a) {
-        // and state, 0x0c; cmp 1; sbb; and 2
-        unsigned s = state & 0x0c;
-        return (s < 1) ? 2 : 0; // sbb eax,eax; and 2 → 2 if below, else 0
+        // return -((state & 0xc) == 0) & 2;  → 2 if (state&0xc)==0 else 0
+        return ((state & 0x0c) == 0) ? 2 : 0;
     }
-    // if state & 0x04 → return 0, else return matProp03
     if (state & 0x04) return 0;
     return (int)matProp03;
 }
 
+// Material::MaxWaterHeight @ 0x86c70 — CONFIRMED from rz-ghidra pdg
 int GridData::MaxWaterHeight(unsigned char matProp01, unsigned char matProp03, unsigned short state) {
     if (matProp03 == 0) return 0;
     if (matProp01 == 0x0a) {
-        unsigned s = state & 0x0c;
-        // sbb → 0 or -1; and 2; add 0x0e → 0x0e or 0x10
-        return (s < 1) ? 0x10 : 0x0e;
+        // (-((state&0xc)==0) & 2) + 0xe  → 0x10 or 0x0e
+        return ((state & 0x0c) == 0) ? 0x10 : 0x0e;
     }
-    // if !(state & 0x04) → 0; else 0x10 - matProp03
-    if (!(state & 0x04)) return 0;
-    return 0x10 - (int)matProp03;
+    // default 0x10; if (state & 4) then 0x10 - prop03
+    if (state & 0x04) return 0x10 - (int)matProp03;
+    return 0x10;
 }
 
 // Simplified water tick based on UpdateWaterState @ 0xa1040 + flow direction helpers.
