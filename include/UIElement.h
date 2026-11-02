@@ -4,9 +4,6 @@
 #include <map>
 #include <cstdint>
 
-// UIElement hierarchy recovered from symbols + assets/ui/hud.txt
-// Layout uses XAlign/YAlign (0=left/top, 1=right/bottom) and Position offsets.
-
 struct UIRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool Contains(float px, float py) const {
@@ -20,38 +17,42 @@ public:
 
     std::string name;
     std::string parentName;
-    std::string text;
+    std::string text; // "/Label/visible text" or plain
     std::string fontName = "Sans";
     Type type = Type::Element;
     bool visible = true;
     bool hitTest = true;
-    int xAlign = 0, yAlign = 0; // 0 left/top, 1 right/bottom
+    float xAlign = 0.f, yAlign = 0.f; // 0 left/top, 0.5 center, 1 right/bottom
     float posX = 0, posY = 0;
     float sizeW = 0, sizeH = 0;
-    UIRect screenRect; // resolved each frame
+    UIRect screenRect;
     UIElement* parent = nullptr;
     std::vector<UIElement*> children;
+    bool pressed = false;
 
     void ResolveLayout(float screenW, float screenH);
+    // Visible caption after last '/' in Text="/Id/Caption"
+    std::string DisplayText() const;
 };
 
 class UIDocument {
 public:
     bool LoadFromText(const std::string& text);
-    bool LoadAsset(const char* assetPath); // e.g. "ui/hud.txt"
+    bool LoadAsset(const char* assetPath);
     void ResolveAll(float screenW, float screenH);
+    void SetVisiblePrefix(const std::string& prefix, bool visible);
+    void SetAllVisible(bool visible);
     UIElement* Find(const char* name);
-    UIElement* HitTest(float x, float y); // topmost visible with hitTest
+    UIElement* HitTest(float x, float y);
     const std::vector<UIElement*>& Roots() const { return roots_; }
     std::vector<UIElement>& All() { return elements_; }
-
-    // Variables from ;$name = value lines
     float GetVar(const std::string& name, float def = 0.f) const;
+    void SetVar(const std::string& name, float v) { vars_[name] = v; }
+    bool Loaded() const { return !elements_.empty(); }
 
 private:
     std::vector<UIElement> elements_;
     std::vector<UIElement*> roots_;
     std::map<std::string, float> vars_;
-    std::map<std::string, float> vars2_; // for "W H" pairs store W as name, H as name#h
     void ParseVars(const std::string& text);
 };

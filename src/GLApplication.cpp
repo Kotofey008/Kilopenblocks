@@ -272,39 +272,43 @@ void GLApplication::RenderHUD(int screenW, int screenH) {
 #endif
     };
 
-    if (game_.HudLoaded()) {
-        game_.GetHud().ResolveAll((float)screenW, (float)screenH);
-        auto drawNamed = [&](const char* name, uint32_t col) {
-            UIElement* e = game_.GetHud().Find(name);
-            if (!e || !e->visible) return;
-            quad(e->screenRect.x, e->screenRect.y, e->screenRect.w, e->screenRect.h, col);
-        };
-        // Match original hud_* controls (colors for visibility while UI art incomplete)
-        drawNamed("hud_up", 0x88FFFFFF);
-        drawNamed("hud_down", 0x88FFFFFF);
-        drawNamed("hud_left", 0x88FFFFFF);
-        drawNamed("hud_right", 0x88FFFFFF);
-        drawNamed("hud_jump", 0xAA80FF80);
-        drawNamed("hud_delete", 0xAAFF6060);
-        drawNamed("hud_add", 0xAA6080FF);
-        drawNamed("hud_activate", 0xAAFFFF60);
-        drawNamed("hud_menu", 0xAAFFFFFF);
-    } else {
-        InputMgr::HudLayout L = game_.GetInput().ComputeLayout();
-        int s = L.btnS / 2;
-        quad((float)(L.padCx - s/2), (float)(L.padCy - s*2), (float)s, (float)s, 0x88FFFFFF);
-        quad((float)(L.padCx - s/2), (float)(L.padCy + s), (float)s, (float)s, 0x88FFFFFF);
-        quad((float)(L.padCx - s*2), (float)(L.padCy - s/2), (float)s, (float)s, 0x88FFFFFF);
-        quad((float)(L.padCx + s), (float)(L.padCy - s/2), (float)s, (float)s, 0x88FFFFFF);
-        quad((float)L.btnJumpX, (float)L.btnJumpY, (float)L.btnS, (float)L.btnS, 0xAA80FF80);
-        quad((float)L.btnDelX, (float)L.btnDelY, (float)L.btnS, (float)L.btnS, 0xAAFF8080);
-        quad((float)L.btnAddX, (float)L.btnAddY, (float)L.btnS, (float)L.btnS, 0xAA8080FF);
-    }
+    auto drawEl = [&](UIElement* e, uint32_t col) {
+        if (!e || !e->visible || e->screenRect.w < 1.f) return;
+        // translucent fill + brighter border (stand-in for State frames until UI atlas ported)
+        quad(e->screenRect.x, e->screenRect.y, e->screenRect.w, e->screenRect.h, col);
+        uint32_t border = 0xCCFFFFFF;
+        float x = e->screenRect.x, y = e->screenRect.y, w = e->screenRect.w, h = e->screenRect.h;
+        float t = 2.f;
+        quad(x, y, w, t, border);
+        quad(x, y + h - t, w, t, border);
+        quad(x, y, t, h, border);
+        quad(x + w - t, y, t, h, border);
+    };
 
-    // Crosshair (original hud_crosshair_v/h)
-    float cx = screenW * 0.5f, cy = screenH * 0.5f;
-    quad(cx - 1, cy - 14, 2, 28, 0xFFFFFFFF);
-    quad(cx - 14, cy - 1, 28, 2, 0xFFFFFFFF);
+    if (!game_.IsMenuOpen() && game_.HudLoaded()) {
+        game_.GetHud().ResolveAll((float)screenW, (float)screenH);
+        drawEl(game_.GetHud().Find("hud_up"), 0x66FFFFFF);
+        drawEl(game_.GetHud().Find("hud_down"), 0x66FFFFFF);
+        drawEl(game_.GetHud().Find("hud_left"), 0x66FFFFFF);
+        drawEl(game_.GetHud().Find("hud_right"), 0x66FFFFFF);
+        drawEl(game_.GetHud().Find("hud_jump"), 0x8880FF80);
+        drawEl(game_.GetHud().Find("hud_delete"), 0x88FF6060);
+        drawEl(game_.GetHud().Find("hud_add"), 0x886080FF);
+        drawEl(game_.GetHud().Find("hud_activate"), 0x88FFFF60);
+        drawEl(game_.GetHud().Find("hud_menu"), 0x88FFFFFF);
+        // Crosshair only in play HUD
+        float cx = screenW * 0.5f, cy = screenH * 0.5f;
+        quad(cx - 1, cy - 14, 2, 28, 0xFFFFFFFF);
+        quad(cx - 14, cy - 1, 28, 2, 0xFFFFFFFF);
+    } else if (game_.IsMenuOpen() && game_.MenuLoaded()) {
+        game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
+        // Draw visible menu_* interactive elements as panels
+        for (auto& e : game_.GetMenu().All()) {
+            if (!e.visible || !e.hitTest) continue;
+            if (e.screenRect.w < 8.f || e.screenRect.h < 8.f) continue;
+            drawEl(&e, 0xAA404050);
+        }
+    }
 
 #if defined(__ANDROID__)
     glEnable(GL_TEXTURE_2D);
@@ -329,16 +333,19 @@ void GLApplication::Frame() {
             sh = ANativeWindow_getHeight(mApp->window);
         }
         game_.GetInput().SetScreenSize(sw, sh);
-        if (game_.HudLoaded()) {
+        if (game_.HudLoaded() && !game_.IsMenuOpen()) {
             game_.GetHud().ResolveAll((float)sw, (float)sh);
             InputMgr::HudRects hr;
             auto grab = [&](const char* n, UIRect& r) {
-                if (UIElement* e = game_.GetHud().Find(n)) { r = e->screenRect; hr.valid = true; }
+                if (UIElement* e = game_.GetHud().Find(n)) {
+                    if (e->visible) { r = e->screenRect; hr.valid = true; }
+                }
             };
             grab("hud_up", hr.up); grab("hud_down", hr.down);
             grab("hud_left", hr.left); grab("hud_right", hr.right);
             grab("hud_jump", hr.jump); grab("hud_delete", hr.del);
             grab("hud_add", hr.add); grab("hud_activate", hr.act);
+            grab("hud_menu", hr.menu);
             game_.GetInput().SyncHudRects(hr);
         }
     }

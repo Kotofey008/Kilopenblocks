@@ -188,10 +188,11 @@ void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
     outForward.y =  sp;
     outForward.z =  cy * cp;
 
-    // Right = normalize(cross(forward, worldUp))
-    outRight.x = -outForward.z;
+    // Right = normalize(cross(worldUp, forward)) — RH Y-up: look +Z → right +X
+    // (Previously used cross(forward, worldUp) which yielded -X and inverted strafe.)
+    outRight.x =  outForward.z;
     outRight.y = 0.f;
-    outRight.z =  outForward.x;
+    outRight.z = -outForward.x;
     float rlen = std::sqrt(outRight.x * outRight.x + outRight.z * outRight.z);
     if (rlen > 1e-6f) {
         outRight.x /= rlen;
@@ -285,10 +286,11 @@ void EntityPlayer::FixedUpdate() {
 
     // 3) Horizontal — MaximumSpeed + Acceleration / Deceleration
     //    Confirmed in SimplePlayer::Update: load edi+0 (max), edi+4 (accel), edi+8 (decel)
-    float yawRad = yaw_ * 3.14159265f / 180.f;
-    float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
-    float ix = (-sinY) * moveForward_ + (cosY) * moveStrafe_;
-    float iz = ( cosY) * moveForward_ + (sinY) * moveStrafe_;
+    // Same basis as GetRotationVectors (forward + right * strafe)
+    Vector right, up, forward;
+    GetRotationVectors(right, up, forward, yaw_, 0.f); // horizontal only
+    float ix = forward.x * moveForward_ + right.x * moveStrafe_;
+    float iz = forward.z * moveForward_ + right.z * moveStrafe_;
     float ilen = std::sqrt(ix * ix + iz * iz);
     float inputMag = ilen;
     if (ilen > 1.f) { ix /= ilen; iz /= ilen; inputMag = 1.f; }

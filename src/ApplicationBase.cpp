@@ -93,8 +93,10 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event) {
             int id = AMotionEvent_getPointerId(event, idx);
             int x = (int)AMotionEvent_getX(event, idx);
             int y = (int)AMotionEvent_getY(event, idx);
-            if (masked == AMOTION_EVENT_ACTION_DOWN || masked == AMOTION_EVENT_ACTION_POINTER_DOWN)
+            if (masked == AMOTION_EVENT_ACTION_DOWN || masked == AMOTION_EVENT_ACTION_POINTER_DOWN) {
                 in.TouchPressEvent((unsigned)id, x, y);
+                g_glApp->GetGame().HandleTouchPress(x, y);
+            }
             else if (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP
                      || masked == AMOTION_EVENT_ACTION_CANCEL)
                 in.TouchReleaseEvent((unsigned)id, x, y);

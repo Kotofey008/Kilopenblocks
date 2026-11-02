@@ -1,59 +1,40 @@
 #include "InputMgr.h"
-#include <cmath>
-#include <cstdlib>
+#include <cstring>
 
 InputMgr::InputMgr() {}
 
-InputMgr::HudLayout InputMgr::ComputeLayout() const {
-    HudLayout L{};
-    int s = screenH_ / 6; // button size ~ like original 110 on 480
-    if (s < 64) s = 64;
-    if (s > 140) s = 140;
-    L.btnS = s;
-    // D-pad bottom-left
-    L.padR = s;
-    L.padCx = s + s / 2;
-    L.padCy = screenH_ - (s + s / 2);
-    // Action cluster bottom-right
-    L.btnJumpX = screenW_ - 2 * s - s / 4;
-    L.btnJumpY = screenH_ - 2 * s - s / 4;
-    L.btnDelX = screenW_ - 3 * s - s / 2;
-    L.btnDelY = screenH_ - s - s / 4;
-    L.btnAddX = screenW_ - s - s / 4;
-    L.btnAddY = screenH_ - s - s / 4;
-    L.btnActX = screenW_ - 2 * s - s / 4;
-    L.btnActY = screenH_ - 3 * s - s / 2;
-    return L;
+const char* InputMgr::HitHudButton(int x, int y) const {
+    if (!hudRects_.valid) return nullptr;
+    float fx = (float)x, fy = (float)y;
+    if (hudRects_.up.Contains(fx, fy)) return "hud_up";
+    if (hudRects_.down.Contains(fx, fy)) return "hud_down";
+    if (hudRects_.left.Contains(fx, fy)) return "hud_left";
+    if (hudRects_.right.Contains(fx, fy)) return "hud_right";
+    if (hudRects_.jump.Contains(fx, fy)) return "hud_jump";
+    if (hudRects_.del.Contains(fx, fy)) return "hud_delete";
+    if (hudRects_.add.Contains(fx, fy)) return "hud_add";
+    if (hudRects_.act.Contains(fx, fy)) return "hud_activate";
+    if (hudRects_.menu.Contains(fx, fy)) return "hud_menu";
+    return nullptr;
 }
 
-InputMgr::Zone InputMgr::HitTest(int x, int y) const {
-    float fx = (float)x, fy = (float)y;
-    // Always reserve large bottom-left for movement (even if HUD rects exist).
-    // This prevents "everything is look / cannot move" when hud_* rects are wrong.
-    HudLayout L = ComputeLayout();
-    int dx = x - L.padCx, dy = y - L.padCy;
-    int padR2 = (L.padR * 2 + L.btnS / 2);
-    if (dx * dx + dy * dy <= padR2 * padR2)
-        return Zone::Pad;
-    // Bottom-left quadrant fallback for movement
-    if (x < screenW_ / 3 && y > screenH_ * 2 / 3)
-        return Zone::Pad;
-
-    auto inBtn = [&](int bx, int by) {
-        return x >= bx && x < bx + L.btnS && y >= by && y < by + L.btnS;
-    };
-    if (hudRects_.valid) {
-        if (hudRects_.jump.Contains(fx, fy) || inBtn(L.btnJumpX, L.btnJumpY)) return Zone::Jump;
-        if (hudRects_.del.Contains(fx, fy) || inBtn(L.btnDelX, L.btnDelY)) return Zone::Delete;
-        if (hudRects_.add.Contains(fx, fy) || inBtn(L.btnAddX, L.btnAddY)) return Zone::Add;
-        if (hudRects_.act.Contains(fx, fy) || inBtn(L.btnActX, L.btnActY)) return Zone::Activate;
-        return Zone::Look;
+void InputMgr::RecomputeHeldMovement() {
+    moveForward_ = 0.f;
+    moveStrafe_ = 0.f;
+    jump_ = false;
+    for (int i = 0; i < kMaxTouches; ++i) {
+        if (!touches_[i].active || !touches_[i].button) continue;
+        const char* b = touches_[i].button;
+        if (std::strcmp(b, "hud_up") == 0) moveForward_ += 1.f;
+        else if (std::strcmp(b, "hud_down") == 0) moveForward_ -= 1.f;
+        else if (std::strcmp(b, "hud_left") == 0) moveStrafe_ -= 1.f;
+        else if (std::strcmp(b, "hud_right") == 0) moveStrafe_ += 1.f;
+        else if (std::strcmp(b, "hud_jump") == 0) jump_ = true;
     }
-    if (inBtn(L.btnJumpX, L.btnJumpY)) return Zone::Jump;
-    if (inBtn(L.btnDelX, L.btnDelY)) return Zone::Delete;
-    if (inBtn(L.btnAddX, L.btnAddY)) return Zone::Add;
-    if (inBtn(L.btnActX, L.btnActY)) return Zone::Activate;
-    return Zone::Look;
+    if (moveForward_ > 1.f) moveForward_ = 1.f;
+    if (moveForward_ < -1.f) moveForward_ = -1.f;
+    if (moveStrafe_ > 1.f) moveStrafe_ = 1.f;
+    if (moveStrafe_ < -1.f) moveStrafe_ = -1.f;
 }
 
 void InputMgr::TouchPressEvent(unsigned int id, int x, int y) {
@@ -61,29 +42,26 @@ void InputMgr::TouchPressEvent(unsigned int id, int x, int y) {
     touches_[id].active = true;
     touches_[id].x = touches_[id].startX = x;
     touches_[id].y = touches_[id].startY = y;
-    Zone z = HitTest(x, y);
-    touches_[id].zone = z;
-    if (z == Zone::Jump) jump_ = true;
-    if (z == Zone::Delete) breakPending_ = true;
-    if (z == Zone::Add) placePending_ = true;
-    if (z == Zone::Activate) activatePending_ = true;
-    if (z == Zone::Pad) {
-        if (hudRects_.valid) {
-            moveForward_ = moveStrafe_ = 0.f;
-            if (hudRects_.up.Contains((float)x, (float)y)) moveForward_ = 1.f;
-            if (hudRects_.down.Contains((float)x, (float)y)) moveForward_ = -1.f;
-            if (hudRects_.left.Contains((float)x, (float)y)) moveStrafe_ = -1.f;
-            if (hudRects_.right.Contains((float)x, (float)y)) moveStrafe_ = 1.f;
-        } else {
-            HudLayout L = ComputeLayout();
-            float pdx = (float)(x - L.padCx) / (float)L.padR;
-            float pdy = (float)(y - L.padCy) / (float)L.padR;
-            moveStrafe_ = pdx;
-            moveForward_ = -pdy;
-            if (moveStrafe_ > 1) moveStrafe_ = 1; if (moveStrafe_ < -1) moveStrafe_ = -1;
-            if (moveForward_ > 1) moveForward_ = 1; if (moveForward_ < -1) moveForward_ = -1;
-        }
+    touches_[id].button = nullptr;
+
+    // In menu mode: no look / movement from HUD pad (Game handles menu hits)
+    if (menuMode_) {
+        touches_[id].zone = Zone::None;
+        return;
     }
+
+    const char* btn = HitHudButton(x, y);
+    if (btn) {
+        touches_[id].zone = Zone::HudButton;
+        touches_[id].button = btn;
+        if (std::strcmp(btn, "hud_delete") == 0) breakPending_ = true;
+        else if (std::strcmp(btn, "hud_add") == 0) placePending_ = true;
+        else if (std::strcmp(btn, "hud_activate") == 0) activatePending_ = true;
+        else if (std::strcmp(btn, "hud_menu") == 0) menuPending_ = true;
+        RecomputeHeldMovement();
+        return;
+    }
+    touches_[id].zone = Zone::Look;
 }
 
 void InputMgr::TouchMoveEvent(unsigned int id, int x, int y) {
@@ -94,30 +72,35 @@ void InputMgr::TouchMoveEvent(unsigned int id, int x, int y) {
     touches_[id].y = y;
 
     if (touches_[id].zone == Zone::Look) {
-        lookDX_ += dx * sensitivity_;
-        lookDY_ += dy * sensitivity_;
-    } else if (touches_[id].zone == Zone::Pad) {
-        HudLayout L = ComputeLayout();
-        float pdx = (float)(x - L.padCx) / (float)L.padR;
-        float pdy = (float)(y - L.padCy) / (float)L.padR;
-        moveStrafe_ = pdx;
-        moveForward_ = -pdy;
-        if (moveStrafe_ > 1) moveStrafe_ = 1; if (moveStrafe_ < -1) moveStrafe_ = -1;
-        if (moveForward_ > 1) moveForward_ = 1; if (moveForward_ < -1) moveForward_ = -1;
+        lookDX_ += (float)dx * sensitivity_;
+        lookDY_ += (float)dy * sensitivity_;
+    } else if (touches_[id].zone == Zone::HudButton && touches_[id].button) {
+        // TouchOver: stay on button or cancel if slid off (discrete hold)
+        const char* now = HitHudButton(x, y);
+        if (now && std::strcmp(now, touches_[id].button) == 0) {
+            // still on same button
+        } else if (now && (std::strcmp(touches_[id].button, "hud_up") == 0
+                        || std::strcmp(touches_[id].button, "hud_down") == 0
+                        || std::strcmp(touches_[id].button, "hud_left") == 0
+                        || std::strcmp(touches_[id].button, "hud_right") == 0
+                        || std::strcmp(touches_[id].button, "hud_jump") == 0)) {
+            // allow slide between movement buttons
+            touches_[id].button = now;
+        } else if (!now) {
+            // slid off — clear this touch's contribution
+            touches_[id].button = nullptr;
+        }
+        RecomputeHeldMovement();
     }
 }
 
 void InputMgr::TouchReleaseEvent(unsigned int id, int x, int y) {
     if (id >= kMaxTouches) return;
-    if (touches_[id].active) {
-        if (touches_[id].zone == Zone::Pad) {
-            moveForward_ = moveStrafe_ = 0.f;
-        }
-        if (touches_[id].zone == Zone::Jump) jump_ = false;
-    }
+    (void)x; (void)y;
     touches_[id].active = false;
     touches_[id].zone = Zone::None;
-    (void)x; (void)y;
+    touches_[id].button = nullptr;
+    RecomputeHeldMovement();
 }
 
 void InputMgr::MousePressEvent(MouseButton btn) {
@@ -135,10 +118,11 @@ bool InputMgr::ConsumePlaceAction() {
 bool InputMgr::ConsumeActivateAction() {
     bool v = activatePending_; activatePending_ = false; return v;
 }
-
-void InputMgr::EndFrame() {
-    // held jump stays; look deltas consumed by Game
+bool InputMgr::ConsumeMenuAction() {
+    bool v = menuPending_; menuPending_ = false; return v;
 }
+
+void InputMgr::EndFrame() {}
 
 bool InputMgr::AnyLookTouch() const {
     for (int i = 0; i < kMaxTouches; ++i)

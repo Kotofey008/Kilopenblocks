@@ -137,7 +137,14 @@ public:
     Camera& GetCamera() { return camera_; }
     InputMgr& GetInput() { return input_; }
     UIDocument& GetHud() { return hud_; }
+    UIDocument& GetMenu() { return menu_; }
     bool HudLoaded() const { return hudLoaded_; }
+    bool MenuLoaded() const { return menuLoaded_; }
+    bool IsMenuOpen() const { return menuOpen_; }
+    void OpenMenu();
+    void CloseMenu();
+    // Called from input path after InputMgr::TouchPressEvent
+    void HandleTouchPress(int x, int y);
     Scene& GetScene() { return scene_; }
     const SceneGridModelConfig& GetGridModelConfig() const { return scene_.gridModel; }
     bool UseProceduralTextures() const { return useProceduralTextures_; }
@@ -174,7 +181,10 @@ private:
     Camera camera_;
     InputMgr input_;
     UIDocument hud_;
+    UIDocument menu_;
     bool hudLoaded_ = false;
+    bool menuLoaded_ = false;
+    bool menuOpen_ = false;
 
     void ParseAndRunCommand(const std::string& cmd);
 };

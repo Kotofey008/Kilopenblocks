@@ -15,11 +15,65 @@ Game::Game() {
 Game::~Game() {}
 
 void Game::InitUI() {
-    // Original @ 0x66350 — loads UI scene objects + HUD from assets
+    // Original @ 0x66350 — loads UI scene objects + HUD/menu from assets
+    // start.scene FileName "Screen/ui/hud.txt" / "Screen/ui/menu.txt" → assets/ui/
     scene_.Load("scenes/start.scene");
     ApplySceneConfigs();
     hudLoaded_ = hud_.LoadAsset("ui/hud.txt");
+    menuLoaded_ = menu_.LoadAsset("ui/menu.txt");
+    if (menuLoaded_) {
+        menu_.SetAllVisible(false); // menu starts hidden (Visible:Bool=0 on menu_ui)
+    }
+    menuOpen_ = false;
 }
+
+void Game::OpenMenu() {
+    // start.scene: hud_menu → ClearInput; hud_* SetVisible 0; menu_* SetVisible 1
+    menuOpen_ = true;
+    input_.SetMenuMode(true);
+    if (hudLoaded_) hud_.SetAllVisible(false);
+    if (menuLoaded_) menu_.SetAllVisible(true);
+}
+
+void Game::CloseMenu() {
+    menuOpen_ = false;
+    input_.SetMenuMode(false);
+    if (hudLoaded_) hud_.SetAllVisible(true);
+    if (menuLoaded_) menu_.SetAllVisible(false);
+}
+
+void Game::HandleTouchPress(int x, int y) {
+    // Menu: ElementClickedMessage for palette / close (start.scene menu_ui)
+    if (!menuOpen_ || !menuLoaded_) return;
+    // Screen size from input
+    // Resolve then hit-test
+    // (Resolve uses last known design; Frame also resolves — use input screen)
+    // Use a conservative 800x480 if unknown — Frame keeps input size updated.
+    UIElement* hit = menu_.HitTest((float)x, (float)y);
+    if (!hit) {
+        // Tap empty area closes inventory (common mobile UX; binary uses frame* click)
+        CloseMenu();
+        return;
+    }
+    const std::string& n = hit->name;
+    if (n.compare(0, 9, "menu_mtl_") == 0 && n.size() > 9) {
+        int idx = std::atoi(n.c_str() + 9);
+        SelectPaletteItem(idx);
+        // start.scene: ClearInput; SelectPaletteItem; hud visible; menu hidden
+        CloseMenu();
+        return;
+    }
+    if (n == "menu_next_mtl_set") {
+        SelectPalettePage(palettePage_ - 2, 0);
+        return;
+    }
+    if (n == "menu_prev_mtl_set") {
+        SelectPalettePage(palettePage_ - 1, 0);
+        return;
+    }
+    // Other menu_* buttons: keep menu open for now (options/new terrain not fully restored)
+}
+
 
 void Game::ApplySceneConfigs() {
     // EntityPlayerSet → player set + look sensitivity
@@ -97,22 +151,26 @@ void Game::Update() {
     //   FixedUpdate / movement
     //   UpdateCameraTransform (GetRotationVectors → Camera basis + eye)
     if (player_) {
-        // Screen Y grows downward → invert lookDY for pitch (binary look controller).
-        // FlipX/YRotation from EntityPlayerSet scene section.
-        float ldx = input_.GetLookDeltaX();
-        float ldy = -input_.GetLookDeltaY();
-        if (scene_.playerSet.flipXRotation) ldx = -ldx;
-        if (scene_.playerSet.flipYRotation) ldy = -ldy;
-        player_->UpdateRotation(ldx, ldy);
-        input_.ConsumeLookDelta();
-        player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
-        if (input_.ConsumeBreakAction()) TryBreakBlock();
-        if (input_.ConsumePlaceAction()) TryPlaceBlock(GetSelectedBlockType());
-        player_->FixedUpdate();
-        player_->FixedPostUpdate();
+        if (input_.ConsumeMenuAction()) OpenMenu();
+        if (!menuOpen_) {
+            float ldx = input_.GetLookDeltaX();
+            float ldy = -input_.GetLookDeltaY();
+            if (scene_.playerSet.flipXRotation) ldx = -ldx;
+            if (scene_.playerSet.flipYRotation) ldy = -ldy;
+            player_->UpdateRotation(ldx, ldy);
+            input_.ConsumeLookDelta();
+            player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
+            if (input_.ConsumeBreakAction()) TryBreakBlock();
+            if (input_.ConsumePlaceAction()) TryPlaceBlock(GetSelectedBlockType());
+            if (input_.ConsumeActivateAction()) { /* EPS UpdateElement — TBD */ }
+            player_->FixedUpdate();
+            player_->FixedPostUpdate();
+        } else {
+            input_.ConsumeLookDelta();
+            player_->SetMoveInput(0.f, 0.f, false);
+        }
         fluidAnim.Update(1.f / 60.f);
         input_.EndFrame();
-        // First-person: camera locked to player eye + rotation basis
         player_->UpdateCameraTransform(camera_);
     }
     UpdateTime();
@@ -286,20 +344,31 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         return;
     }
 
-    // Visibility: "hud_* SetVisible 0" / "menu_* SetVisible 1" etc.
-    // Pattern: <prefix> SetVisible <0|1>
+    // Visibility: "hud_* SetVisible 0" / "menu_* SetVisible 1"
     auto pos = s.find(" SetVisible ");
     if (pos != std::string::npos) {
         std::string prefix = s.substr(0, pos);
         bool vis = (s.find(" SetVisible 1") != std::string::npos);
-        // Apply to matching scene objects
+        std::string stem = prefix;
+        if (!stem.empty() && stem.back() == '*')
+            stem.pop_back();
+        // Document-level UI (primary for rendering)
+        if (stem == "hud" || prefix == "hud_*") {
+            if (vis) CloseMenu();
+            else { menuOpen_ = true; input_.SetMenuMode(true); if (hudLoaded_) hud_.SetAllVisible(false); }
+            if (hudLoaded_) hud_.SetVisiblePrefix("hud_", vis);
+        }
+        if (stem == "menu" || prefix == "menu_*") {
+            if (vis) OpenMenu();
+            else CloseMenu();
+            if (menuLoaded_) menu_.SetVisiblePrefix("menu_", vis);
+        }
         for (auto* obj : scene_.objects) {
             if (!obj || obj->GetKind() != SceneObject::Kind::UI) continue;
             auto* ui = static_cast<UISceneObject*>(obj);
-            // simple wildcard: prefix ends with * or exact match
             if (!prefix.empty() && prefix.back() == '*') {
-                std::string p = prefix.substr(0, prefix.size() - 1);
-                if (ui->name.compare(0, p.size(), p) == 0)
+                std::string pfx = prefix.substr(0, prefix.size() - 1);
+                if (ui->name.compare(0, pfx.size(), pfx) == 0)
                     ui->visible = vis;
             } else if (ui->name == prefix) {
                 ui->visible = vis;
