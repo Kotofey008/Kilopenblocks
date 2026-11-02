@@ -27,19 +27,21 @@ public:
     void SetCameraRenderOrder(int o) { renderOrder_ = o; }
     int GetCameraRenderOrder() const { return renderOrder_; }
 
-    void SetPosition(const Vector& p) { position_ = p; }
+    // Eye position in world space — always the player eye in first-person.
+    void SetPosition(const Vector& p);
     void SetYawPitch(float yaw, float pitch);
-    // Set orthonormal basis + eye (from EntityPlayer::UpdateCameraTransform).
-    // right/up/forward are world-space unit vectors; view looks along +forward.
+    // Orthonormal basis from GetRotationVectors; view looks along +forward.
     void SetBasis(const Vector& right, const Vector& up, const Vector& forward);
     Vector GetPosition() const { return position_; }
     Vector GetForward() const { return forward_; }
     Vector GetRight() const { return right_; }
     Vector GetUp() const { return up_; }
+    float GetYaw() const { return yaw_; }
+    float GetPitch() const { return pitch_; }
 
-    // Build view/projection matrices (for GL use).
-    // View matches binary intent of Camera::GetViewMatrix @ 0x50400 which copies
-    // SceneObject::GetInvWorldTM — here built from basis + position.
+    // World→camera view matrix (column-major, glLoadMatrixf).
+    // BUGFIX 2026-11-02: previous layout stored camera-to-world as view,
+    // which made the world orbit when looking around.
     Matrix4 GetViewMatrix() const;
     Matrix4 GetProjectionMatrix() const;
 

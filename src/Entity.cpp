@@ -170,9 +170,16 @@ void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
 // Input deltas come from the look controller (edx+0x254 yaw, +0x258 pitch).
 // ---------------------------------------------------------------------------
 void EntityPlayer::UpdateRotation(float lookDeltaYaw, float lookDeltaPitch) {
+    // Clamp per-frame delta so a single bad touch sample cannot spin 360°.
+    if (lookDeltaYaw > 30.f) lookDeltaYaw = 30.f;
+    if (lookDeltaYaw < -30.f) lookDeltaYaw = -30.f;
+    if (lookDeltaPitch > 30.f) lookDeltaPitch = 30.f;
+    if (lookDeltaPitch < -30.f) lookDeltaPitch = -30.f;
+
     pitch_ += lookDeltaPitch;
-    if (pitch_ > 90.f) pitch_ = 90.f;
-    if (pitch_ < -90.f) pitch_ = -90.f;
+    // Stay away from exact ±90 to avoid basis singularity in GetRotationVectors
+    if (pitch_ > 89.9f) pitch_ = 89.9f;
+    if (pitch_ < -89.9f) pitch_ = -89.9f;
 
     yaw_ += lookDeltaYaw;
     // Binary wraps with constants 360 / -180 @ 0x107e48 / 0x107e4c
@@ -181,23 +188,17 @@ void EntityPlayer::UpdateRotation(float lookDeltaYaw, float lookDeltaPitch) {
 }
 
 // ---------------------------------------------------------------------------
-// EntityPlayer::UpdateCameraTransform @ 0x5b580 (1262 B) — structure recovered
+// EntityPlayer::UpdateCameraTransform @ 0x5b580 (1262 B)
 //
-// Binary flow (CONFIRMED from pdf):
-//   1. GetRotationVectors(right, up, forward, yaw, pitch)
-//   2. Eye = feet + (0, eyeHeight, 0)  (eye height field on player)
-//   3. Build / orthonormalize basis (several sqrt paths for edge cases)
-//   4. Write transform into camera / scene-object world matrix
-//
-// Reconstruction maps this onto Camera::SetPosition + SetBasis. Full
-// SceneObject hierarchy / InvWorldTM path is not present in this port.
+// Hard lock: camera eye = player feet + eyeHeight; orientation from yaw/pitch.
+// Every frame overwrites Camera position + basis so the view cannot drift.
 // ---------------------------------------------------------------------------
 void EntityPlayer::UpdateCameraTransform(Camera& camera) {
     Vector right, up, forward;
     GetRotationVectors(right, up, forward, yaw_, pitch_);
-    Vector eye = GetEyePosition();
-    // Set angles first (rebuilds basis), then overwrite basis with the
-    // GetRotationVectors result so both stay consistent.
+    Vector eye = GetEyePosition(); // feet + (0, eyeHeight_, 0)
+
+    // Angles → internal basis, then force the GetRotationVectors result
     camera.SetYawPitch(yaw_, pitch_);
     camera.SetPosition(eye);
     camera.SetBasis(right, up, forward);
