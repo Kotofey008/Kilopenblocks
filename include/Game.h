@@ -147,6 +147,11 @@ public:
     void CloseMenu();
     // Called from input path after InputMgr::TouchPressEvent
     void HandleTouchPress(int x, int y);
+    void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
+    int ScreenW() const { return screenW_; }
+    int ScreenH() const { return screenH_; }
+    int PalettePage() const { return palettePage_; }
+    int PaletteItem() const { return paletteItem_; }
     Scene& GetScene() { return scene_; }
     const SceneGridModelConfig& GetGridModelConfig() const { return scene_.gridModel; }
     bool UseProceduralTextures() const { return useProceduralTextures_; }
@@ -171,6 +176,8 @@ private:
     bool animatedWater_ = true;
     int paletteItem_ = 0;
     int palettePage_ = 0;
+    int screenW_ = 800;
+    int screenH_ = 480;
     float timeOfDay_ = 0.5f;
     float sensitivity_ = 1.f;
     float timeMultiplier_ = 1.f; // Globals.TimeMultiplier from start.scene

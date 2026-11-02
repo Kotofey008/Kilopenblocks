@@ -221,10 +221,42 @@ bool UIDocument::LoadAsset(const char* assetPath) {
 
 std::string UIElement::DisplayText() const {
     if (text.empty()) return "";
-    size_t last = text.rfind('/');
-    if (last != std::string::npos && last + 1 < text.size())
-        return text.substr(last + 1);
-    return text;
+    // Format "/LocKey/Label" — prefer middle key for ASCII-safe labels when
+    // the trailing label is unicode (arrows) not present in the bitmap font.
+    std::string key, label;
+    if (text.size() > 1 && text[0] == '/') {
+        size_t mid = text.find('/', 1);
+        if (mid != std::string::npos) {
+            key = text.substr(1, mid - 1);
+            label = text.substr(mid + 1);
+        } else {
+            label = text.substr(1);
+        }
+    } else {
+        label = text;
+    }
+    // Map known HUD keys to short ASCII (font atlas is 8-bit Sans)
+    if (key == "MoveForward") return "Fwd";
+    if (key == "MoveBack") return "Back";
+    if (key == "MoveLeft") return "Left";
+    if (key == "MoveRight") return "Right";
+    if (key == "Jump") return "Jump";
+    if (key == "Delete") return "Break";
+    if (key == "Add") return "Place";
+    if (key == "Menu") return "Menu";
+    if (key == "Toggle") return "Fly";
+    if (key == "NewTerrain") return "New";
+    if (key == "SelectTerrain") return "Load";
+    if (key == "Options") return "Opts";
+    // If label is pure ASCII printable, use it
+    bool ascii = true;
+    for (unsigned char c : label) {
+        if (c == '\n') continue;
+        if (c < 0x20 || c > 0x7E) { ascii = false; break; }
+    }
+    if (ascii && !label.empty()) return label;
+    if (!key.empty()) return key;
+    return label;
 }
 
 void UIElement::ResolveLayout(float screenW, float screenH) {
@@ -301,7 +333,22 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
     (void)screenW; (void)screenH; (void)fonts;
     return;
 #else
+    // ------------------------------------------------------------------
+    // Critical: world pass leaves GL_COLOR_ARRAY / GL_TEXTURE_COORD_ARRAY
+    // enabled and blocksAtlas bound. With those client states active,
+    // glColor4f is ignored and untextured quads sample the block atlas.
+    // Original UI path draws after 3D with a clean 2D state.
+    // ------------------------------------------------------------------
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_LIGHTING);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrthof(0, screenW, screenH, 0, -1, 1);
@@ -313,84 +360,104 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
     auto splitARGB = [](uint32_t c, float& r, float& g, float& b, float& a) {
         a = ((c >> 24) & 0xff) / 255.f;
         r = ((c >> 16) & 0xff) / 255.f;
-        g = ((c >> 8) & 0xff) / 255.f;
-        b = (c & 0xff) / 255.f;
+        g = ((c >>  8) & 0xff) / 255.f;
+        b = ( c        & 0xff) / 255.f;
+    };
+    // Pack as little-endian RGBA bytes for glColorPointer UNSIGNED_BYTE
+    auto argbToRgbaPack = [](uint32_t argb) -> uint32_t {
+        uint32_t a = (argb >> 24) & 0xff;
+        uint32_t r = (argb >> 16) & 0xff;
+        uint32_t g = (argb >>  8) & 0xff;
+        uint32_t b =  argb        & 0xff;
+        return r | (g << 8) | (b << 16) | (a << 24);
     };
     auto drawQuad = [&](float x, float y, float w, float h, uint32_t argb) {
-        if (w <= 0 || h <= 0) return;
-        if (((argb >> 24) & 0xff) == 0) return; // fully transparent
+        if (w <= 0.f || h <= 0.f) return;
+        uint32_t aa = (argb >> 24) & 0xff;
+        if (aa == 0) return;
         float r,g,b,a; splitARGB(argb, r,g,b,a);
         glDisable(GL_TEXTURE_2D);
+        glDisableClientState(GL_COLOR_ARRAY);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
         glColor4f(r, g, b, a);
         const GLfloat verts[] = { x,y, x+w,y, x+w,y+h, x,y+h };
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(2, GL_FLOAT, 0, verts);
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         glDisableClientState(GL_VERTEX_ARRAY);
+        glColor4f(1, 1, 1, 1);
     };
 
-    // Collect text mesh per font
     MeshBuffer textMesh;
     Font* textFont = fonts.FindOrLoad("Sans", 16);
-    uint32_t lastTextColor = 0;
 
     for (const auto& e : elements_) {
         if (!e.visible) continue;
         if (e.screenRect.w < 1.f || e.screenRect.h < 1.f) continue;
-        // Skip pure layout frames with HitTest=0 and no text (frame_background)
-        if (!e.hitTest && e.DisplayText().empty() && e.name.find("crosshair") == std::string::npos)
-            continue;
+
+        // Layout-only frames: skip drawing (still used for layout / hit parents)
+        if (e.name == "frame_background" || e.name == "frame") continue;
+        if (e.name == "menu_mtl_sets") continue; // container
+        // GM0 material panel is drawn separately via DrawMaterialSlots (block atlas)
 
         const UIStyle& st = e.CurrentStyle();
         float x = e.screenRect.x, y = e.screenRect.y, w = e.screenRect.w, h = e.screenRect.h;
 
-        // Crosshair elements: thin filled rects
         if (e.name.find("crosshair") != std::string::npos) {
             drawQuad(x, y, w, h, 0xFFFFFFFFu);
             continue;
         }
 
-        // DrawBackground: fill
+        // Skip pure image/model placeholders that have no text and transparent bg
+        // menu_mtl_N: hit targets over material grid — no text; frames only when selected later
+        bool isMtlSlot = (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10);
+
+        // DrawBackground fill
         drawQuad(x, y, w, h, st.backgroundColor);
 
-        // Frame rings (frame0 outer inset, frame1 colored border)
-        float f0 = st.frame0Width;
+        // Frame ring (always draw for interactive buttons — even if fill is transparent)
         float f1 = st.frame1Width;
-        if (f1 > 0.f && (st.frame1Color & 0xFF000000u)) {
-            // outer ring of thickness f1
-            drawQuad(x, y, w, f1, st.frame1Color);
-            drawQuad(x, y + h - f1, w, f1, st.frame1Color);
-            drawQuad(x, y, f1, h, st.frame1Color);
-            drawQuad(x + w - f1, y, f1, h, st.frame1Color);
+        uint32_t fcol = st.frame1Color;
+        if (f1 < 1.f && e.hitTest && !isMtlSlot) f1 = 2.f; // ensure visible outline
+        if (f1 > 0.f) {
+            if (((fcol >> 24) & 0xff) < 0x20) fcol = (fcol & 0x00FFFFFFu) | 0xA0000000u;
+            drawQuad(x, y, w, f1, fcol);
+            drawQuad(x, y + h - f1, w, f1, fcol);
+            drawQuad(x, y, f1, h, fcol);
+            drawQuad(x + w - f1, y, f1, h, fcol);
         }
-        (void)f0;
 
-        // DrawText
+        // DrawText (ASCII labels; unicode arrows may be absent from font atlas)
         std::string label = e.DisplayText();
+        // Strip newlines from multi-line labels
+        for (char& ch : label) if (ch == '\n') ch = ' ';
         if (!label.empty() && textFont && textFont->IsLoaded()) {
-            // scale text to fit roughly inside button
             float scale = 1.f;
             float tw = textFont->MeasureWidth(label.c_str(), 1.f);
             float th = textFont->LineHeight();
             if (tw > 1.f && tw * scale > w * 0.85f) scale = (w * 0.85f) / tw;
-            if (th * scale > h * 0.7f) scale = (h * 0.7f) / th;
+            if (th * scale > h * 0.7f && th > 0.f) scale = (h * 0.7f) / th;
+            if (scale < 0.5f) scale = 0.5f;
             float tx = x + (w - tw * scale) * 0.5f;
             float ty = y + (h - th * scale) * 0.5f;
-            // shadow
+            uint32_t shadow = argbToRgbaPack(st.textShadowColor);
+            uint32_t col = argbToRgbaPack(st.textColor);
+            // Ensure text is visible
+            if (((st.textColor >> 24) & 0xff) < 0x40)
+                col = argbToRgbaPack(0xFFDCDCDCu);
             textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), label.c_str(),
-                                    scale, st.textShadowColor, TextAlign::Left);
+                                    scale, shadow, TextAlign::Left);
             textFont->AddTextToMesh(textMesh, Vector(tx, ty, 0), label.c_str(),
-                                    scale, st.textColor, TextAlign::Left);
-            lastTextColor = st.textColor;
+                                    scale, col, TextAlign::Left);
         }
     }
 
-    // Flush text mesh with font texture
-    if (textFont && textMesh.IndexCount() > 0) {
+    // Flush text with font texture — client state only for this pass
+    if (textFont && textFont->IsLoaded() && textMesh.IndexCount() > 0) {
         glEnable(GL_TEXTURE_2D);
         textFont->GetTexture().Bind();
+        glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
         glColor4f(1, 1, 1, 1);
-        // DrawPrimitive style client arrays
         const auto& verts = textMesh.Vertices();
         const auto& inds = textMesh.Indices();
         glEnableClientState(GL_VERTEX_ARRAY);
@@ -404,10 +471,13 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
         glDisableClientState(GL_TEXTURE_COORD_ARRAY);
         glDisableClientState(GL_COLOR_ARRAY);
         glDisableClientState(GL_VERTEX_ARRAY);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glDisable(GL_TEXTURE_2D);
     }
-    (void)lastTextColor;
+
     glEnable(GL_DEPTH_TEST);
-    glColor4f(1,1,1,1);
+    glEnable(GL_CULL_FACE);
+    glColor4f(1, 1, 1, 1);
 #endif
 }
+

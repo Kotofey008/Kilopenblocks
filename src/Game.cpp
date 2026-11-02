@@ -47,35 +47,48 @@ void Game::CloseMenu() {
 }
 
 void Game::HandleTouchPress(int x, int y) {
-    // Menu: ElementClickedMessage for palette / close (start.scene menu_ui)
+    // Menu: ElementClickedMessage from start.scene menu_ui
     if (!menuOpen_ || !menuLoaded_) return;
-    // Screen size from input
-    // Resolve then hit-test
-    // (Resolve uses last known design; Frame also resolves — use input screen)
-    // Use a conservative 800x480 if unknown — Frame keeps input size updated.
+    // Must resolve with current framebuffer size before hit-test (same as RenderHUD)
+    menu_.ResolveAll((float)screenW_, (float)screenH_);
     UIElement* hit = menu_.HitTest((float)x, (float)y);
     if (!hit) {
-        // Tap empty area closes inventory (common mobile UX; binary uses frame* click)
+        // start.scene: frame* → close menu / show hud
         CloseMenu();
         return;
     }
     const std::string& n = hit->name;
-    if (n.compare(0, 9, "menu_mtl_") == 0 && n.size() > 9) {
-        int idx = std::atoi(n.c_str() + 9);
-        SelectPaletteItem(idx);
-        // start.scene: ClearInput; SelectPaletteItem; hud visible; menu hidden
+    // frame_background fills screen — treat as frame* close
+    if (n == "frame_background") {
         CloseMenu();
         return;
     }
+    // menu_mtl_0..8 → SelectPaletteItem N; close (page base applied inside)
+    if (n.compare(0, 9, "menu_mtl_") == 0 && n.size() >= 10) {
+        int slot = std::atoi(n.c_str() + 9);
+        if (slot >= 0 && slot <= 8) {
+            SelectPaletteItem(slot);
+            CloseMenu();
+        }
+        return;
+    }
+    // start.scene: menu_next_mtl_set → SelectPalettePage -2
+    //             menu_prev_mtl_set → SelectPalettePage -1
     if (n == "menu_next_mtl_set") {
-        SelectPalettePage(palettePage_ - 2, 0);
+        SelectPalettePage(-2, 0);
         return;
     }
     if (n == "menu_prev_mtl_set") {
-        SelectPalettePage(palettePage_ - 1, 0);
+        SelectPalettePage(-1, 0);
         return;
     }
-    // Other menu_* buttons: keep menu open for now (options/new terrain not fully restored)
+    // menu_mtl_set_N (page tabs, HitTest=0 in file — usually not hit)
+    if (n.compare(0, 13, "menu_mtl_set_") == 0) {
+        int page = std::atoi(n.c_str() + 13);
+        SelectPalettePage(page, 0);
+        return;
+    }
+    // Other menu_* keep menu open (options/new terrain not fully restored)
 }
 
 
@@ -265,8 +278,33 @@ void Game::UpdateTime() {
     timeOfDay_ = std::fmod(timeOfDay_ + step, 1.f);
 }
 
-void Game::SelectPaletteItem(int index) { paletteItem_ = index; }
-void Game::SelectPalettePage(int page, int) { palettePage_ = page; }
+void Game::SelectPaletteItem(int index) {
+    // Binary: +0xdac = arg + pageBase (+0xdb0). Slot 0..8 within current page.
+    if (index < 0) index = 0;
+    if (index > 8) {
+        // absolute index from messages
+        paletteItem_ = index;
+        return;
+    }
+    paletteItem_ = palettePage_ * 9 + index;
+}
+
+void Game::SelectPalettePage(int page, int) {
+    // start.scene specials: -2 = next set, -1 = prev set
+    if (page == -2) {
+        palettePage_ += 1;
+    } else if (page == -1) {
+        palettePage_ -= 1;
+    } else if (page >= 0) {
+        palettePage_ = page;
+    }
+    if (palettePage_ < 0) palettePage_ = 0;
+    // Clamp to plausible S-Index range (blocks.txt has ~70 placeables)
+    if (palettePage_ > 20) palettePage_ = 20;
+    // Keep selection on same slot within new page
+    int slot = paletteItem_ % 9;
+    paletteItem_ = palettePage_ * 9 + slot;
+}
 
 void Game::ShowElement(UISceneObject* ui, const char* name, bool visible) {
     if (!ui) return;

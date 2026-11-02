@@ -245,17 +245,77 @@ void GLApplication::RenderWorld() {
 
 void GLApplication::RenderHUD(int screenW, int screenH) {
     // Original chain: Scene::RenderUI → UISceneObject::RenderUI → UIElement::Draw
-    //   → DrawBackground (styles from hud.txt) + DrawText (Font "Sans")
-    // No substitute widgets — document styles + font glyph atlas only.
+    //   → DrawBackground + DrawText; GridModelMtl.RenderUI for palette tiles
+    game_.SetScreenSize(screenW, screenH);
     if (game_.IsMenuOpen()) {
         if (game_.MenuLoaded()) {
             game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
             game_.GetMenu().Draw((float)screenW, (float)screenH, game_.GetFonts());
+            DrawMenuMaterialSlots(screenW, screenH);
         }
     } else if (game_.HudLoaded()) {
         game_.GetHud().ResolveAll((float)screenW, (float)screenH);
         game_.GetHud().Draw((float)screenW, (float)screenH, game_.GetFonts());
     }
+}
+
+// GridModelMtl.RenderUI @ 0xa97c0 — 3×3 material preview tiles over menu_mtl_N
+void GLApplication::DrawMenuMaterialSlots(int /*screenW*/, int /*screenH*/) {
+#if !defined(__ANDROID__)
+    return;
+#else
+    if (!blocksAtlas_.GLId()) return;
+    GridData& grid = game_.GetGrid();
+    // Reset client state (Draw may have left 2D state; rebind atlas carefully)
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_TEXTURE_2D);
+    blocksAtlas_.Bind();
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glColor4f(1, 1, 1, 1);
+
+    int page = game_.PalettePage();
+    for (int slot = 0; slot < 9; ++slot) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "menu_mtl_%d", slot);
+        UIElement* el = game_.GetMenu().Find(name);
+        if (!el || !el->visible) continue;
+        const UIRect& r = el->screenRect;
+        if (r.w < 1.f || r.h < 1.f) continue;
+
+        int sIndex = page * 9 + slot;
+        unsigned char cell = grid.MtlSelIndexToCell(sIndex);
+        if (cell == 0) continue; // empty / air
+        const Material* mat = grid.GetMaterial(cell);
+        if (!mat) continue;
+        // Top face UV (YP = face index 1 in XP,YP,ZP,XN,YN,ZN order → 1)
+        int tu = mat->uFace(1);
+        int tv = mat->vFace(1);
+        float u0, v0, u1, v1;
+        Texture::TileUV(tu, tv, u0, v0, u1, v1);
+
+        float pad = r.w * 0.12f;
+        float x0 = r.x + pad, y0 = r.y + pad;
+        float x1 = r.x + r.w - pad, y1 = r.y + r.h - pad;
+        const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
+        const GLfloat uvs[]   = { u0,v0, u1,v0, u1,v1, u0,v1 };
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glVertexPointer(2, GL_FLOAT, 0, verts);
+        glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisableClientState(GL_VERTEX_ARRAY);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+#endif
 }
 
 void GLApplication::Frame() {

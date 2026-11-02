@@ -32,6 +32,7 @@ public:
     void Frame();
     void RenderWorld();
     void RenderHUD(int screenW, int screenH);
+    void DrawMenuMaterialSlots(int screenW, int screenH);
     void EnsureRegionMeshes();
 
     Game& GetGame() { return game_; }
