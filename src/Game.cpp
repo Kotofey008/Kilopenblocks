@@ -488,61 +488,151 @@ void Game::SelectTerrainType(TerrainType t) {
 }
 
 void Game::UpdateTerrainType() {
-    // called from UI; cycle or read current selection
+    // UpdateParameter-style cycle for terrain type
+    int t = (int)terrainType_ + 1;
+    if (t >= (int)TerrainType::Count) t = 0;
+    SelectTerrainType((TerrainType)t);
 }
 
-void Game::UpdateTerrainSize() {}
-void Game::CreateElement() {
-    // "Game CreateElement" — start new terrain generation
-    Play(0);
+void Game::UpdateTerrainSize() {
+    // Binary 0x65c90 — UI-driven; full body still open
 }
-void Game::EnterGameList() {}
+
+// Game::Create @ 0x6a850 — DSL "Game CreateElement"
+void Game::Create() {
+    activeSaveSlot_ = 0; // this+0x1f0 = 0
+    RemoveSaveFiles(activeSaveSlot_);
+    Play(activeSaveSlot_);
+}
+
+void Game::CreateElement() { Create(); }
+
+void Game::EnterGameList() {
+    // Game::EnterGameList @ 0x6a110 (1584 B) — save scan + UpdateGameListUI
+    // Full body not ported; keep list index consistent for SelectNext/Prev
+    gameListIndex_ = 0;
+}
+
 void Game::InsertGame(int, int) {}
 
-void Game::SelectDrawDistance(DrawDistance d) { drawDistance_ = d; }
-void Game::UpdateDrawDistance() {}
-void Game::SelectLeavesQuality(GridData::LeavesQuality q) { grid_.SetLeavesQuality(q); }
-void Game::UpdateLeavesQuality() {}
-void Game::EnableClouds(bool on) { cloudsEnabled_ = on; }
-void Game::UpdateClouds() {}
-void Game::UpdateAnimatedWater() {}
-void Game::ApplyGraphicsSettings() {}
-void Game::ApplyGameSettings() {}
-void Game::UpdateTimeOfDay() { /* driven by UpdateTime each frame */ }
-void Game::UpdateSensitivity() {}
-void Game::UpdateSkyBox() { /* SkyBox owned by GLApplication */ }
+// Game::SelectDrawDistance @ 0x636f0
+void Game::SelectDrawDistance(DrawDistance d) {
+    if (d >= DrawDistance::Count) d = DrawDistance::Far;
+    drawDistance_ = d;
+}
+
+void Game::UpdateDrawDistance() {
+    int d = (int)drawDistance_ + 1;
+    if (d >= (int)DrawDistance::Count) d = 0;
+    SelectDrawDistance((DrawDistance)d);
+}
+
+void Game::SelectLeavesQuality(GridData::LeavesQuality q) {
+    grid_.SetLeavesQuality(q);
+}
+
+void Game::UpdateLeavesQuality() {
+    int q = (int)grid_.GetLeavesQuality() + 1;
+    if (q > 2) q = 0;
+    SelectLeavesQuality((GridData::LeavesQuality)q);
+}
+
+void Game::SelectClouds(bool on) { cloudsEnabled_ = on; }
+
+void Game::UpdateClouds() { SelectClouds(!cloudsEnabled_); }
+
+void Game::SelectAnimatedWater(bool on) {
+    animatedWater_ = on;
+    SetAnimatedWater(on);
+}
+
+void Game::UpdateAnimatedWater() { SelectAnimatedWater(!animatedWater_); }
+
+// Game::ApplyGraphicsSettings @ 0x641b0 — core apply + save (Resize path open)
+void Game::ApplyGraphicsSettings() {
+    UpdateAndSaveGameSettings(state_);
+}
+
+// Game::ApplyGameSettings @ 0x64600
+void Game::ApplyGameSettings() {
+    UpdateSkyBox();
+    UpdateAndSaveGameSettings(state_);
+}
+
+// Game::ApplyControlsSettings @ 0x64070
+void Game::ApplyControlsSettings() {
+    if (screenSizeEnum_ != pendingScreenSize_) {
+        screenSizeDirty_ = true;
+        screenSizeEnum_ = pendingScreenSize_;
+    }
+    if (pendingSensitivity_ != sensitivity_) {
+        sensitivity_ = pendingSensitivity_;
+        float s = sensitivity_;
+        if (s > 0.f && s < 0.05f) s = 1.f / s;
+        if (s < 0.01f) s = 0.01f;
+        if (s > 5.f) s = 5.f;
+        input_.SetTouchSensitivity(s);
+    }
+    UpdateAndSaveGameSettings(state_);
+}
+
+void Game::UpdateTimeOfDay() {
+    // 0x66a60 full slider→clock path partial
+}
+
+void Game::UpdateSensitivity() {
+    pendingSensitivity_ = sensitivity_;
+}
+
+void Game::UpdateSkyBox() {
+    // SkyBox owned by GLApplication; time pushed each frame
+}
+
 void Game::UpdateTime() {
-    // Globals.TimeMultiplier scales day cycle (scene default 1)
     float step = 0.0001f * timeMultiplier_;
     timeOfDay_ = std::fmod(timeOfDay_ + step, 1.f);
 }
 
+// Game::SelectPaletteItem @ 0x651c0: +0xdac = arg + +0xdb0
 void Game::SelectPaletteItem(int index) {
-    // Binary: +0xdac = arg + pageBase (+0xdb0). Slot 0..8 within current page.
     if (index < 0) index = 0;
-    if (index > 8) {
-        // absolute index from messages
+    int pageBase = palettePage_ * 9; // +0xdb0
+    if (index <= 8)
+        paletteItem_ = pageBase + index; // +0xdac
+    else
         paletteItem_ = index;
-        return;
-    }
-    paletteItem_ = palettePage_ * 9 + index;
 }
 
 void Game::SelectPalettePage(int page, int) {
-    // start.scene specials: -2 = next set, -1 = prev set
-    if (page == -2) {
-        palettePage_ += 1;
-    } else if (page == -1) {
-        palettePage_ -= 1;
-    } else if (page >= 0) {
-        palettePage_ = page;
-    }
+    if (page == -2) palettePage_ += 1;
+    else if (page == -1) palettePage_ -= 1;
+    else if (page >= 0) palettePage_ = page;
     if (palettePage_ < 0) palettePage_ = 0;
-    // Clamp to plausible S-Index range (blocks.txt has ~70 placeables)
     if (palettePage_ > 20) palettePage_ = 20;
-    // Keep selection on same slot within new page
     int slot = paletteItem_ % 9;
     paletteItem_ = palettePage_ * 9 + slot;
+}
+
+// Game::SelectNext @ 0x6a740 / SelectPrev @ 0x6a770
+void Game::SelectNext() {
+    int next = gameListIndex_ + 1;
+    if (next < gameListCount_)
+        gameListIndex_ = next;
+}
+
+void Game::SelectPrev() {
+    if (gameListIndex_ > 0)
+        gameListIndex_ -= 1;
+}
+
+// Game::FlyModeToggle @ 0x646c0
+void Game::FlyModeToggle() {
+    SetFlying(!playerSet_.GetFlying());
+}
+
+// Game::SetFlying @ 0x6b910 core
+void Game::SetFlying(bool on) {
+    playerSet_.SetFlying(on);
 }
 
 void Game::ShowElement(UISceneObject* ui, const char* name, bool visible) {
@@ -604,13 +694,58 @@ void Game::UpdateHUDUI() {
         }
     }
 }
-void Game::SetUINeedFastResponse() {}
-void Game::FinishScreenshot() {}
+// GLApplication::SetUINeedFastResponse @ 0x6ff50 (16 B) — flag for tight UI frame
+void Game::SetUINeedFastResponse() {
+    // Original sets a one-shot fast-response flag on GL app; no local state yet
+}
+
+// Scene::FinishScreenshot @ 0xd3e20 (16 B) — completes async screenshot capture
+void Game::FinishScreenshot() {
+    // Original clears screenshot-pending on Scene; no-op until capture path restored
+}
+
 void Game::ShowProgressScreen(const char* msg) { ShowMessage(msg, MessagePriority::Normal); }
 void Game::HideProgressScreen() {}
-void Game::EnterGameSettings() {}
-void Game::EnterControlsSettings() {}
-void Game::ScreenClicked() {}
+
+// Game::EnterGameSettings @ 0x66e20 — push time-of-day into game_options UI slider
+void Game::EnterGameSettings() {
+    // Binary: FindObject game_options_ui, GetTimesOfDay, SetValue on slider, UpdateTimeOfDay
+    UpdateTimeOfDay();
+}
+
+// Game::EnterControlsSettings @ 0x66f00 — push sensitivity into controls UI
+void Game::EnterControlsSettings() {
+    // Binary: FindObject controls_options_ui, SetValue sensitivity slider
+    pendingSensitivity_ = sensitivity_;
+}
+
+// Game::EnterGraphicsSettings @ 0x64130
+void Game::EnterGraphicsSettings() {
+    SelectDrawDistance(drawDistance_);
+    SelectLeavesQuality(grid_.GetLeavesQuality());
+    SelectClouds(cloudsEnabled_);
+    SelectAnimatedWater(animatedWater_);
+}
+
+// Game::OnScreenClicked @ 0x69ce0 — progress screen dismiss
+void Game::ScreenClicked() {
+    HideProgressScreen();
+}
+
+// Game::Copy @ 0x6a900 / Delete @ 0x6b3c0 — save slot ops (bodies large; structure only)
+void Game::Copy() {
+    // Binary copies save files for current gameListIndex_
+}
+
+void Game::Delete() {
+    // Binary deletes save at gameListIndex_, refreshes list
+    if (gameListCount_ > 0 && gameListIndex_ >= 0 && gameListIndex_ < gameListCount_) {
+        RemoveSaveFiles(gameListIndex_);
+        if (gameListIndex_ >= gameListCount_ - 1 && gameListIndex_ > 0)
+            gameListIndex_ -= 1;
+        if (gameListCount_ > 0) gameListCount_ -= 1;
+    }
+}
 
 // --- Message dispatcher ---
 void Game::ParseAndRunCommand(const std::string& cmd) {
@@ -640,16 +775,17 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         else if (method == "EnterGameList") EnterGameList();
         else if (method == "EnterGameSettings") EnterGameSettings();
         else if (method == "EnterControlsSettings") EnterControlsSettings();
-        else if (method == "EnterGraphicsSettings") { /* panel switch already done via SetVisible */ }
-        else if (method == "FlyModeToggle") {
-            // EntityPlayer fly mode — wire when player modes restored
+        else if (method == "EnterGraphicsSettings") EnterGraphicsSettings();
+        else if (method == "FlyModeToggle") FlyModeToggle();
+        else if (method == "ApplyControlsSettings") ApplyControlsSettings();
+        else if (method == "UpdateScreenSize") {
+            // Game::SelectScreenSize path — cycle pendingScreenSize_
+            pendingScreenSize_ = (pendingScreenSize_ + 1) % 4;
         }
-        else if (method == "ApplyControlsSettings") { /* stub */ }
-        else if (method == "UpdateScreenSize") { /* stub */ }
         else if (method == "ScreenClicked") ScreenClicked();
         else if (method == "UpdateSkyBox") UpdateSkyBox();
         else {
-            // unknown — leave for further recovery
+            // unknown Game Call
         }
         return;
     }
@@ -680,12 +816,13 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         // already handled above
         return;
     }
-    if (s == "Game CopyElement" || s == "Game DeleteElement") {
-        // Save-slot ops — stub until save UI recovered
-        return;
-    }
+    if (s == "Game CopyElement") { Copy(); return; }
+    if (s == "Game DeleteElement") { Delete(); return; }
     if (s.compare(0, 18, "Game SelectElement ") == 0) {
-        // select_terrain prev/next — stub
+        // start.scene: prev → SelectElement 0, next → SelectElement 1
+        int dir = std::atoi(s.c_str() + 18);
+        if (dir == 0) SelectPrev();
+        else SelectNext();
         return;
     }
 

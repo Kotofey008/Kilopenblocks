@@ -274,9 +274,11 @@ void GridData::GetCellSelectionBox(int, Vector&, Vector&) {}
 void GridData::ActivateCell(int, const Vector&) {}
 
 GridData::LeavesQuality GridData::GetLeavesQuality() const {
-    return LeavesQuality::High; // matching default observed at +0xec
+    return leavesQuality_; // +0xec
 }
-void GridData::SetLeavesQuality(LeavesQuality) {}
+void GridData::SetLeavesQuality(LeavesQuality q) {
+    leavesQuality_ = q;
+}
 
 void GridData::Region::Init(int rx, int ry, int rz) {
     x = rx; y = ry; z = rz;

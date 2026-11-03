@@ -176,6 +176,7 @@ public:
     std::vector<Material> materials;
     int materialCount = 0;
     bool meshesDirty_ = true;
+    LeavesQuality leavesQuality_ = LeavesQuality::High; // +0xec default 2
 
     // Region dirty tracking (region size 16, stride 0xa4 observed in InitRegions).
     // Key = EncodeWorldPos(regionX*16, regionZ*16) or simpler (rx,ry,rz) for now.
