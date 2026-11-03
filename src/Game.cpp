@@ -550,17 +550,6 @@ static Game::UIPanel* FindPanelBySceneName(std::vector<Game::UIPanel>& panels, c
 // Size table @ 0x109e60: per draw-distance {x,y,z} half-extents
 // ---------------------------------------------------------------------------
 
-static void SetPanelElementText(Game::UIPanel* panel, const char* elemName, const char* text) {
-    if (!panel || !panel->loaded || !text) return;
-    if (UIElement* e = panel->doc.Find(elemName))
-        e->text = text;
-}
-static Game::UIPanel* FindPanelBySceneName(std::vector<Game::UIPanel>& panels, const char* name) {
-    for (auto& p : panels)
-        if (p.sceneName == name) return &p;
-    return nullptr;
-}
-
 // Game::SelectDrawDistance @ 0x636f0 — writes pending +0xd30, updates UI label
 void Game::SelectDrawDistance(DrawDistance d) {
     if ((int)d < 0) d = DrawDistance::Tiny;
@@ -615,7 +604,7 @@ void Game::EnableAnimatedWater(bool on) {
 // Game::UpdateParameter @ 0x67210
 void Game::UpdateParameter(const char* name) {
     if (!name) return;
-    if (std::strcasecmp(name, "UpdateDrawDistance") == 0) {
+    if (::strcasecmp(name, "UpdateDrawDistance") == 0) {
         int cur = (int)drawDistancePending_; // +0xd30
         if (cur == 2)
             SelectDrawDistance(DrawDistance::Short);
@@ -631,7 +620,7 @@ void Game::UpdateParameter(const char* name) {
         }
         return;
     }
-    if (std::strcasecmp(name, "UpdateLeavesQuality") == 0) {
+    if (::strcasecmp(name, "UpdateLeavesQuality") == 0) {
         int cur = (int)leavesQualityPending_;
         if (cur == 0)
             SelectLeavesQuality(GridData::LeavesQuality::Medium);
@@ -641,15 +630,15 @@ void Game::UpdateParameter(const char* name) {
             SelectLeavesQuality(GridData::LeavesQuality::Low);
         return;
     }
-    if (std::strcasecmp(name, "UpdateClouds") == 0) {
+    if (::strcasecmp(name, "UpdateClouds") == 0) {
         SelectClouds(!cloudsPending_);
         return;
     }
-    if (std::strcasecmp(name, "UpdateAnimatedWater") == 0) {
+    if (::strcasecmp(name, "UpdateAnimatedWater") == 0) {
         SelectAnimatedWater(!animatedWaterPending_);
         return;
     }
-    if (std::strcasecmp(name, "UpdateTerrainType") == 0) {
+    if (::strcasecmp(name, "UpdateTerrainType") == 0) {
         int t = (int)terrainType_;
         // Binary branches at 0x67249: terrain type at +0x234
         if (t == 1)
@@ -660,15 +649,15 @@ void Game::UpdateParameter(const char* name) {
             SelectTerrainType(TerrainType::Flat);
         return;
     }
-    if (std::strcasecmp(name, "UpdateSensitivity") == 0) {
+    if (::strcasecmp(name, "UpdateSensitivity") == 0) {
         pendingSensitivity_ = sensitivity_;
         return;
     }
-    if (std::strcasecmp(name, "UpdateScreenSize") == 0) {
+    if (::strcasecmp(name, "UpdateScreenSize") == 0) {
         pendingScreenSize_ = (pendingScreenSize_ + 1) % 4;
         return;
     }
-    if (std::strcasecmp(name, "UpdateTimeOfDay") == 0) {
+    if (::strcasecmp(name, "UpdateTimeOfDay") == 0) {
         UpdateTimeOfDay();
         return;
     }

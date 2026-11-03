@@ -184,6 +184,12 @@ public:
     int materialCount = 0;
     bool meshesDirty_ = true;
     LeavesQuality leavesQuality_ = LeavesQuality::High; // +0xec default 2
+    int viewDistanceCells_ = 64; // binary GridData +0x22c (from draw-distance table)
+    // Store() snapshot for Resize/Restore (binary 0xa3770 / 0xa4d50)
+    std::vector<unsigned char> storeTypes_;
+    std::vector<unsigned short> storeStates_;
+    int storeOriginX_ = 0, storeOriginY_ = 0, storeOriginZ_ = 0;
+    int storeSizeX_ = 0, storeSizeY_ = 0, storeSizeZ_ = 0;
 
     // Region dirty tracking (region size 16, stride 0xa4 observed in InitRegions).
     // Key = EncodeWorldPos(regionX*16, regionZ*16) or simpler (rx,ry,rz) for now.

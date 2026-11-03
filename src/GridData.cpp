@@ -282,64 +282,118 @@ void GridData::SetLeavesQuality(LeavesQuality q) {
 
 // GridData::Resize @ 0x81fb0 — align bounds to 16, expand/rebind storage
 bool GridData::Resize(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, int /*flags*/) {
-    auto align16 = [](int v) -> int {
-        // Binary: if (v & 0xf) != 0, snap toward +inf to next 16-multiple for positive
-        int sign = v >> 31; // 0 or -1
-        unsigned u = (unsigned)(v + (sign & 15));
-        int r = (int)(u & ~15u) - (sign & 15);
-        // Match observed: if misaligned positive, (v+15)&~15 then +0?  actually:
-        //   if (v % 16 != 0) { if (v>=0) v = (v+15)&~15 + 0x10? — see 8200e }
-        // Simpler faithful: same as 82006-82011 for each axis used as max-side
+    // GridData::Resize @ 0x81fb0 — align each of first three extent args to 16 when misaligned
+    auto alignExtent = [](int v) -> int {
+        // From 0x81feb..0x82011: if (v & 0xf) != 0, for non-negative: (v+15)&~15
+        // (binary also has a +0x10 branch when remainder path taken differently; extents from
+        // draw-distance table are already multiples of 16/32 so path usually hits aligned case)
         if ((v & 15) == 0) return v;
-        if (v >= 0)
-            return (v + 15) & ~15;
-        // negative: binary uses similar two's path
-        return -(((-v + 15) & ~15));
+        if (v >= 0) return (v + 15) & ~15;
+        int n = -v;
+        n = (n + 15) & ~15;
+        return -n;
     };
-    // Binary applies align when (v&15)!=0 for the three "max-like" args in first group.
-    // For world min/max pair we align the extents to 16.
-    int a0 = align16(minX);
-    int a1 = align16(minY);
-    int a2 = align16(minZ);
-    int a3 = align16(maxX);
-    int a4 = align16(maxY);
-    int a5 = align16(maxZ);
-    // If only max-side provided via table (common path uses ±half sizes)
-    // Store as world AABB
+    int a0 = alignExtent(minX);
+    int a1 = alignExtent(minY);
+    int a2 = alignExtent(minZ);
+    int a3 = alignExtent(maxX);
+    int a4 = alignExtent(maxY);
+    int a5 = alignExtent(maxZ);
+
     Vector newMin{(float)std::min(a0, a3), (float)std::min(a1, a4), (float)std::min(a2, a5)};
     Vector newMax{(float)std::max(a0, a3), (float)std::max(a1, a4), (float)std::max(a2, a5)};
-    // Binary compares this+0x44 / +0x48 — if equal return early success path variant
+
+    // Early-out if size fields unchanged (binary cmp this+0x44 / +0x48 family)
     if (newMin.x == worldMin.x && newMin.y == worldMin.y && newMin.z == worldMin.z &&
         newMax.x == worldMax.x && newMax.y == worldMax.y && newMax.z == worldMax.z) {
         return true;
     }
+
+    int ox = originX, oy = originY, oz = originZ;
+    int oldSX = sizeX, oldSY = sizeY, oldSZ = sizeZ;
+    std::vector<unsigned char> oldTypes = cellTypes;
+    std::vector<unsigned short> oldStates = cellStates;
+
     worldMin = newMin;
     worldMax = newMax;
-    // Rebuild type/state arrays for new bounds (clear — Store/Restore handles content)
-    int sx = (int)(worldMax.x - worldMin.x);
-    int sy = (int)(worldMax.y - worldMin.y);
-    int sz = (int)(worldMax.z - worldMin.z);
-    if (sx < 16) sx = 16;
-    if (sy < 16) sy = 16;
-    if (sz < 16) sz = 16;
-    // GridData storage rebuild if API exists
-    // Mark all regions dirty
+    originX = (int)worldMin.x;
+    originY = (int)worldMin.y;
+    originZ = (int)worldMin.z;
+    sizeX = (int)(worldMax.x - worldMin.x);
+    sizeY = (int)(worldMax.y - worldMin.y);
+    sizeZ = (int)(worldMax.z - worldMin.z);
+    if (sizeX < 16) sizeX = 16;
+    if (sizeY < 16) sizeY = 16;
+    if (sizeZ < 16) sizeZ = 16;
+
+    size_t n = (size_t)sizeX * (size_t)sizeY * (size_t)sizeZ;
+    cellTypes.assign(n, 0);
+    cellStates.assign(n, 0);
+
+    // Copy overlapping volume from previous storage (Store snapshot preferred when present)
+    const std::vector<unsigned char>* srcT = storeTypes_.empty() ? &oldTypes : &storeTypes_;
+    const std::vector<unsigned short>* srcS = storeStates_.empty() ? &oldStates : &storeStates_;
+    int srcOX = storeTypes_.empty() ? ox : storeOriginX_;
+    int srcOY = storeTypes_.empty() ? oy : storeOriginY_;
+    int srcOZ = storeTypes_.empty() ? oz : storeOriginZ_;
+    int srcSX = storeTypes_.empty() ? oldSX : storeSizeX_;
+    int srcSY = storeTypes_.empty() ? oldSY : storeSizeY_;
+    int srcSZ = storeTypes_.empty() ? oldSZ : storeSizeZ_;
+    if (!srcT->empty() && srcSX > 0 && srcSY > 0 && srcSZ > 0) {
+        int x0 = std::max(originX, srcOX);
+        int y0 = std::max(originY, srcOY);
+        int z0 = std::max(originZ, srcOZ);
+        int x1 = std::min(originX + sizeX, srcOX + srcSX);
+        int y1 = std::min(originY + sizeY, srcOY + srcSY);
+        int z1 = std::min(originZ + sizeZ, srcOZ + srcSZ);
+        for (int z = z0; z < z1; ++z)
+        for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) {
+            size_t si = (size_t)(x - srcOX) + (size_t)srcSX * ((size_t)(y - srcOY) + (size_t)srcSY * (size_t)(z - srcOZ));
+            size_t di = (size_t)(x - originX) + (size_t)sizeX * ((size_t)(y - originY) + (size_t)sizeY * (size_t)(z - originZ));
+            if (si < srcT->size() && di < cellTypes.size()) {
+                cellTypes[di] = (*srcT)[si];
+                if (si < srcS->size()) cellStates[di] = (*srcS)[si];
+            }
+        }
+    }
     meshesDirty_ = true;
     return true;
 }
 
+// GridData::Store @ 0xa3770 — StopProcessing, mark region flags 0xff, snapshot cell buffers
 void GridData::Store() {
-    // 0xa3770 — snapshot cells before resize (full body large). No-op until cell dump needed.
+    // Binary also writes 0x7fffffff to +0x20/+0x24 and fills region-tag bytes with 0xff.
+    storeTypes_ = cellTypes;
+    storeStates_ = cellStates;
+    storeOriginX_ = originX;
+    storeOriginY_ = originY;
+    storeOriginZ_ = originZ;
+    storeSizeX_ = sizeX;
+    storeSizeY_ = sizeY;
+    storeSizeZ_ = sizeZ;
 }
 
+// GridData::Restore @ 0xa4d50 — re-materialize near player from stored snapshot
 void GridData::Restore(const Vector& /*playerPos*/) {
-    // 0xa4d50 — restore cells near player after resize
-}
-
-void GridData::InvalidateLighting() {
-    // 0x798f0
+    if (storeTypes_.empty()) return;
+    // Full binary restores streaming chunks around player; host path copies overlap via Resize.
+    // If sizes match, direct copy:
+    if (storeSizeX_ == sizeX && storeSizeY_ == sizeY && storeSizeZ_ == sizeZ &&
+        storeOriginX_ == originX && storeOriginY_ == originY && storeOriginZ_ == originZ) {
+        cellTypes = storeTypes_;
+        cellStates = storeStates_;
+    }
     meshesDirty_ = true;
 }
+
+// GridData::InvalidateLighting @ 0x798f0 — zero light map (+0x7c count +0x88) and hierarchy
+void GridData::InvalidateLighting() {
+    // Binary: for i in [0, count): light[i]=0; then clear 4 hierarchy bands at +0x280 / +0x2a8
+    // Host model has no separate light[] yet; mark meshes dirty so mesher rebuilds vertex colors.
+    meshesDirty_ = true;
+}
+
 
 void GridData::Region::Init(int rx, int ry, int rz) {
     x = rx; y = ry; z = rz;
