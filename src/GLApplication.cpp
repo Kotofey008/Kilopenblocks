@@ -218,6 +218,8 @@ void GLApplication::RenderWorld() {
         }
     }
     // Clouds (drawn first, no depth write ideally)
+    // EnableClouds @ 0x63b80 sets Clouds::SetEnabled; sync from Game applied flag
+    clouds_.SetEnabled(game_.CloudsEnabled());
     if (clouds_.IsEnabled()) {
         clouds_.Bind();
         // rebuild plane UV from offset

@@ -47,7 +47,7 @@ struct GameSettings {
 class Game {
 public:
     enum class TerrainType { Earth = 0, Flat = 1, Test = 2, Count };
-    enum class DrawDistance { Near = 0, Medium = 1, Far = 2, Count };
+    enum class DrawDistance { Tiny = 0, Short = 1, Normal = 2, Far = 3, Count }; // binary 0..3 labels Tiny/Short/Normal/Far
     enum class LeavesQuality { Low = 0, Medium = 1, High = 2, Count }; // matches GridData default 2
     enum class GameState { Menu = 0, Playing = 1, Loading = 2, Paused = 3 };
     enum class MessagePriority { Low = 0, Normal = 1, High = 2 };
@@ -79,13 +79,15 @@ public:
 
     // Graphics / options (from UI messages) — addresses from binary
     void SelectDrawDistance(DrawDistance d);          // 0x636f0
-    void UpdateDrawDistance();                       // Game Call — cycle via Select*
+    void UpdateDrawDistance();                       // → UpdateParameter("UpdateDrawDistance")
+    void UpdateParameter(const char* name);       // 0x67210
     void SelectLeavesQuality(GridData::LeavesQuality q); // 0x638a0
     void UpdateLeavesQuality();
-    void SelectClouds(bool on);                      // 0x63a20
-    void EnableClouds(bool on) { SelectClouds(on); }
+    void SelectClouds(bool on);                      // 0x63a20 — pending + UI
+    void EnableClouds(bool on);                     // 0x63b80 — apply to Clouds objects
     void UpdateClouds();
-    void SelectAnimatedWater(bool on);               // 0x63d50
+    void SelectAnimatedWater(bool on);               // 0x63d50 — pending + UI
+    void EnableAnimatedWater(bool on);              // 0x63eb0 — apply to GridModel
     void UpdateAnimatedWater();
     void ApplyGraphicsSettings();                    // 0x641b0
     void ApplyGameSettings();                        // 0x64600
@@ -107,6 +109,9 @@ public:
     // Fly mode — 0x646c0 / 0x6b910
     void FlyModeToggle();
     void SetFlying(bool on);
+    bool CloudsEnabled() const { return cloudsEnabled_; }
+    bool AnimatedWaterEnabled() const { return animatedWater_; }
+    DrawDistance GetDrawDistance() const { return drawDistance_; }
 
     // UI helpers
     void ShowElement(UISceneObject* ui, const char* name, bool visible);
@@ -204,9 +209,19 @@ private:
     TerrainGeneratorFlat genFlat_;
     GameState state_ = GameState::Menu;
     TerrainType terrainType_ = TerrainType::Earth;
-    DrawDistance drawDistance_ = DrawDistance::Medium;
+    // Applied settings (binary +0x84 / +0x88 / +0x8c / +0x8d)
+    DrawDistance drawDistance_ = DrawDistance::Normal;
+    GridData::LeavesQuality leavesQualityApplied_ = GridData::LeavesQuality::High;
     bool cloudsEnabled_ = true;
     bool animatedWater_ = true;
+    // Pending from Select* (binary +0xd30 / +0xd34 / +0xd38 / +0xd39)
+    DrawDistance drawDistancePending_ = DrawDistance::Normal;
+    GridData::LeavesQuality leavesQualityPending_ = GridData::LeavesQuality::High;
+    bool cloudsPending_ = true;
+    bool animatedWaterPending_ = true;
+    // Draw-distance world half-extents table @ VA 0x109e60 (GOT 0x12ce04)
+    // stride 12: {x, y, z} per level 0..3
+    static const int s_DrawDistanceSize[4][3];
     int paletteItem_ = 0;   // binary +0xdac (absolute S-index)
     int palettePage_ = 0;   // binary +0xdb0 (page base, multiples of 9)
     int gameListIndex_ = 0; // binary +0x1ec — SelectNext/Prev

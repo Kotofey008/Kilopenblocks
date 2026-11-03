@@ -4,9 +4,18 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
+#include <strings.h> // strcasecmp
 
 // Observed static world-size table (values still approximate; symbol s_WorldSizesHi size 72)
 int Game::s_WorldSizesHi[] = { 128, 256, 384, 512, 640, 768, 896, 1024, 0 };
+// Binary table @ VA 0x109e60 (GOT @ 0x12ce04), stride 12, levels 0..3
+const int Game::s_DrawDistanceSize[4][3] = {
+    {96, 128, 96},   // Tiny
+    {128, 128, 128}, // Short
+    {160, 128, 160}, // Normal
+    {192, 128, 192}, // Far
+};
 
 Game::Game() {
     scene_.grid = &grid_;
@@ -488,10 +497,7 @@ void Game::SelectTerrainType(TerrainType t) {
 }
 
 void Game::UpdateTerrainType() {
-    // UpdateParameter-style cycle for terrain type
-    int t = (int)terrainType_ + 1;
-    if (t >= (int)TerrainType::Count) t = 0;
-    SelectTerrainType((TerrainType)t);
+    UpdateParameter("UpdateTerrainType");
 }
 
 void Game::UpdateTerrainSize() {
@@ -515,41 +521,249 @@ void Game::EnterGameList() {
 
 void Game::InsertGame(int, int) {}
 
-// Game::SelectDrawDistance @ 0x636f0
+// ---------------------------------------------------------------------------
+// Graphics / controls settings — recovered from binary (Select* @ 0x636f0..,
+// UpdateParameter @ 0x67210, ApplyGraphicsSettings @ 0x641b0).
+// Pending fields mirror binary offsets:
+//   +0xd30 drawDistance pending, +0x84 applied
+//   +0xd34 leavesQuality pending, +0x88 applied
+//   +0xd38 clouds pending, +0x8c applied
+//   +0xd39 animatedWater pending, +0x8d applied
+// ---------------------------------------------------------------------------
+
+static void SetPanelElementText(Game::UIPanel* panel, const char* elemName, const char* text) {
+    if (!panel || !panel->loaded || !text) return;
+    if (UIElement* e = panel->doc.Find(elemName))
+        e->text = text;
+}
+
+static Game::UIPanel* FindPanelBySceneName(std::vector<Game::UIPanel>& panels, const char* name) {
+    for (auto& p : panels)
+        if (p.sceneName == name) return &p;
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Settings — dual storage + tables recovered from binary
+// Applied: +0x84 draw, +0x88 leaves, +0x8c clouds, +0x8d water
+// Pending: +0xd30, +0xd34, +0xd38, +0xd39 (written by Select*)
+// Size table @ 0x109e60: per draw-distance {x,y,z} half-extents
+// ---------------------------------------------------------------------------
+
+static void SetPanelElementText(Game::UIPanel* panel, const char* elemName, const char* text) {
+    if (!panel || !panel->loaded || !text) return;
+    if (UIElement* e = panel->doc.Find(elemName))
+        e->text = text;
+}
+static Game::UIPanel* FindPanelBySceneName(std::vector<Game::UIPanel>& panels, const char* name) {
+    for (auto& p : panels)
+        if (p.sceneName == name) return &p;
+    return nullptr;
+}
+
+// Game::SelectDrawDistance @ 0x636f0 — writes pending +0xd30, updates UI label
 void Game::SelectDrawDistance(DrawDistance d) {
+    if ((int)d < 0) d = DrawDistance::Tiny;
     if (d >= DrawDistance::Count) d = DrawDistance::Far;
-    drawDistance_ = d;
+    drawDistancePending_ = d; // +0xd30
+    const char* label = "/DrawDistanceTiny/";
+    switch (d) {
+        case DrawDistance::Short:  label = "/DrawDistanceShort/"; break;
+        case DrawDistance::Normal: label = "/DrawDistanceNormal/"; break;
+        case DrawDistance::Far:    label = "/DrawDistanceFar/"; break;
+        default: break;
+    }
+    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "graphics_options_ui"))
+        SetPanelElementText(p, "draw_distance", label);
 }
 
-void Game::UpdateDrawDistance() {
-    int d = (int)drawDistance_ + 1;
-    if (d >= (int)DrawDistance::Count) d = 0;
-    SelectDrawDistance((DrawDistance)d);
-}
-
+// Game::SelectLeavesQuality @ 0x638a0 — pending +0xd34
 void Game::SelectLeavesQuality(GridData::LeavesQuality q) {
-    grid_.SetLeavesQuality(q);
+    leavesQualityPending_ = q;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "Leaves %d", (int)q);
+    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "graphics_options_ui"))
+        SetPanelElementText(p, "leaves_quality", buf);
 }
 
-void Game::UpdateLeavesQuality() {
-    int q = (int)grid_.GetLeavesQuality() + 1;
-    if (q > 2) q = 0;
-    SelectLeavesQuality((GridData::LeavesQuality)q);
+// Game::SelectClouds @ 0x63a20 — pending +0xd38
+void Game::SelectClouds(bool on) {
+    cloudsPending_ = on;
+    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "graphics_options_ui"))
+        SetPanelElementText(p, "clouds", on ? "/CloudsOn/" : "/CloudsOff/");
 }
 
-void Game::SelectClouds(bool on) { cloudsEnabled_ = on; }
-
-void Game::UpdateClouds() { SelectClouds(!cloudsEnabled_); }
-
+// Game::SelectAnimatedWater @ 0x63d50 — pending +0xd39
 void Game::SelectAnimatedWater(bool on) {
-    animatedWater_ = on;
+    animatedWaterPending_ = on;
+    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "graphics_options_ui"))
+        SetPanelElementText(p, "animated_water", on ? "/AnimatedWaterOn/" : "/AnimatedWaterOff/");
+}
+
+// Game::EnableClouds @ 0x63b80 — iterate scene Clouds (IsKindOf 5) → SetEnabled
+void Game::EnableClouds(bool on) {
+    cloudsEnabled_ = on; // applied +0x8c
+    // Binary walks ApplicationBase object list; host path: flag consumed by GLApplication
+}
+
+// Game::EnableAnimatedWater @ 0x63eb0 — GridModel::SetAnimatedWater on this+0xe7c
+void Game::EnableAnimatedWater(bool on) {
+    animatedWater_ = on; // applied +0x8d
     SetAnimatedWater(on);
 }
 
-void Game::UpdateAnimatedWater() { SelectAnimatedWater(!animatedWater_); }
+// Game::UpdateParameter @ 0x67210
+void Game::UpdateParameter(const char* name) {
+    if (!name) return;
+    if (std::strcasecmp(name, "UpdateDrawDistance") == 0) {
+        int cur = (int)drawDistancePending_; // +0xd30
+        if (cur == 2)
+            SelectDrawDistance(DrawDistance::Short);
+        else if (cur == 3)
+            SelectDrawDistance(DrawDistance::Normal);
+        else if (cur == 1)
+            SelectDrawDistance(DrawDistance::Tiny);
+        else {
+            if (screenW_ <= 0x27f)
+                SelectDrawDistance(DrawDistance::Normal);
+            else
+                SelectDrawDistance(DrawDistance::Far);
+        }
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateLeavesQuality") == 0) {
+        int cur = (int)leavesQualityPending_;
+        if (cur == 0)
+            SelectLeavesQuality(GridData::LeavesQuality::Medium);
+        else if (cur == 1)
+            SelectLeavesQuality(GridData::LeavesQuality::High);
+        else
+            SelectLeavesQuality(GridData::LeavesQuality::Low);
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateClouds") == 0) {
+        SelectClouds(!cloudsPending_);
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateAnimatedWater") == 0) {
+        SelectAnimatedWater(!animatedWaterPending_);
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateTerrainType") == 0) {
+        int t = (int)terrainType_;
+        // Binary branches at 0x67249: terrain type at +0x234
+        if (t == 1)
+            SelectTerrainType(TerrainType::Test);
+        else if (t == 2)
+            SelectTerrainType(TerrainType::Earth);
+        else
+            SelectTerrainType(TerrainType::Flat);
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateSensitivity") == 0) {
+        pendingSensitivity_ = sensitivity_;
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateScreenSize") == 0) {
+        pendingScreenSize_ = (pendingScreenSize_ + 1) % 4;
+        return;
+    }
+    if (std::strcasecmp(name, "UpdateTimeOfDay") == 0) {
+        UpdateTimeOfDay();
+        return;
+    }
+}
 
-// Game::ApplyGraphicsSettings @ 0x641b0 — core apply + save (Resize path open)
+void Game::UpdateDrawDistance() { UpdateParameter("UpdateDrawDistance"); }
+void Game::UpdateLeavesQuality() { UpdateParameter("UpdateLeavesQuality"); }
+void Game::UpdateClouds() { UpdateParameter("UpdateClouds"); }
+void Game::UpdateAnimatedWater() { UpdateParameter("UpdateAnimatedWater"); }
+
+// Game::ApplyGraphicsSettings @ 0x641b0
 void Game::ApplyGraphicsSettings() {
+    bool dirty = false;
+
+    // --- Draw distance change: pending +0xd30 vs applied +0x84 ---
+    if (drawDistancePending_ != drawDistance_) {
+        int level = (int)drawDistancePending_;
+        if (level < 0) level = 0;
+        if (level > 3) level = 3;
+        const int hx = s_DrawDistanceSize[level][0];
+        const int hy = s_DrawDistanceSize[level][1];
+        const int hz = s_DrawDistanceSize[level][2];
+        // Current world half-extents from bounds
+        int curHx = (int)((grid_.worldMax.x - grid_.worldMin.x) * 0.5f);
+        int curHz = (int)((grid_.worldMax.z - grid_.worldMin.z) * 0.5f);
+        // Binary compares table x/z with stored size fields; if mismatch → Store + Resize
+        if (hx != curHx || hz != curHz) {
+            grid_.Store();
+            // Resize args recovered from stack setup around 0x64288:
+            // min/max derived from ± table extents (y uses table y / world y)
+            int minX = -hx, maxX = hx;
+            int minZ = -hz, maxZ = hz;
+            int minY = (int)grid_.worldMin.y;
+            int maxY = (int)grid_.worldMax.y;
+            // Prefer table y if it defines full height band
+            if (hy > 0) {
+                minY = -hy / 2;
+                maxY = hy / 2;
+            }
+            bool ok = grid_.Resize(minX, minY, minZ, maxX, maxY, maxZ, 0);
+            if (ok) {
+                drawDistance_ = drawDistancePending_; // +0x84 = +0xd30
+                // view distance cells: (table.x - 0x20) / 2  @ grid+0x22c
+                int vd = (hx - 0x20) / 2;
+                if (vd < 1) vd = 1;
+                grid_.SetViewDistanceCells(vd);
+                // Restore near local player
+                if (EntityPlayer* pl = playerSet_.GetLocalPlayer())
+                    grid_.Restore(pl->GetPosition());
+                grid_.InvalidateLighting();
+            } else {
+                // Binary retries with lower pending levels (decrement +0xd30) — 0x642cc
+                while (level > 0) {
+                    --level;
+                    drawDistancePending_ = (DrawDistance)level;
+                    const int hx2 = s_DrawDistanceSize[level][0];
+                    const int hz2 = s_DrawDistanceSize[level][2];
+                    if (grid_.Resize(-hx2, minY, -hz2, hx2, maxY, hz2, 0)) {
+                        drawDistance_ = drawDistancePending_;
+                        grid_.SetViewDistanceCells((hx2 - 0x20) / 2);
+                        if (EntityPlayer* pl = playerSet_.GetLocalPlayer())
+                            grid_.Restore(pl->GetPosition());
+                        grid_.InvalidateLighting();
+                        break;
+                    }
+                }
+            }
+        } else {
+            drawDistance_ = drawDistancePending_;
+        }
+        dirty = true;
+        // ShowMessage with localized draw-distance name (0x64340 path) — optional
+        UpdateSkyBox();
+    }
+
+    // --- Leaves: pending +0xd34 vs applied +0x88 ---
+    if (leavesQualityPending_ != leavesQualityApplied_) {
+        leavesQualityApplied_ = leavesQualityPending_;
+        grid_.SetLeavesQuality(leavesQualityApplied_);
+        dirty = true;
+    }
+
+    // --- Clouds: pending +0xd38 vs applied +0x8c ---
+    if (cloudsPending_ != cloudsEnabled_) {
+        EnableClouds(cloudsPending_);
+        dirty = true;
+    }
+
+    // --- Animated water: pending +0xd39 vs applied +0x8d ---
+    if (animatedWaterPending_ != animatedWater_) {
+        EnableAnimatedWater(animatedWaterPending_);
+        dirty = true;
+    }
+
+    // Always save settings at end of ApplyGraphics (0x643e2)
     UpdateAndSaveGameSettings(state_);
 }
 
@@ -576,29 +790,19 @@ void Game::ApplyControlsSettings() {
     UpdateAndSaveGameSettings(state_);
 }
 
-void Game::UpdateTimeOfDay() {
-    // 0x66a60 full slider→clock path partial
-}
-
-void Game::UpdateSensitivity() {
-    pendingSensitivity_ = sensitivity_;
-}
-
-void Game::UpdateSkyBox() {
-    // SkyBox owned by GLApplication; time pushed each frame
-}
-
+void Game::UpdateTimeOfDay() {}
+void Game::UpdateSensitivity() { UpdateParameter("UpdateSensitivity"); }
+void Game::UpdateSkyBox() {}
 void Game::UpdateTime() {
     float step = 0.0001f * timeMultiplier_;
     timeOfDay_ = std::fmod(timeOfDay_ + step, 1.f);
 }
 
-// Game::SelectPaletteItem @ 0x651c0: +0xdac = arg + +0xdb0
 void Game::SelectPaletteItem(int index) {
     if (index < 0) index = 0;
-    int pageBase = palettePage_ * 9; // +0xdb0
+    int pageBase = palettePage_ * 9;
     if (index <= 8)
-        paletteItem_ = pageBase + index; // +0xdac
+        paletteItem_ = pageBase + index;
     else
         paletteItem_ = index;
 }
@@ -613,24 +817,18 @@ void Game::SelectPalettePage(int page, int) {
     paletteItem_ = palettePage_ * 9 + slot;
 }
 
-// Game::SelectNext @ 0x6a740 / SelectPrev @ 0x6a770
 void Game::SelectNext() {
     int next = gameListIndex_ + 1;
     if (next < gameListCount_)
         gameListIndex_ = next;
 }
-
 void Game::SelectPrev() {
     if (gameListIndex_ > 0)
         gameListIndex_ -= 1;
 }
-
-// Game::FlyModeToggle @ 0x646c0
 void Game::FlyModeToggle() {
     SetFlying(!playerSet_.GetFlying());
 }
-
-// Game::SetFlying @ 0x6b910 core
 void Game::SetFlying(bool on) {
     playerSet_.SetFlying(on);
 }
@@ -721,8 +919,9 @@ void Game::EnterControlsSettings() {
 
 // Game::EnterGraphicsSettings @ 0x64130
 void Game::EnterGraphicsSettings() {
+    // 0x64130: Select*(applied fields +0x84/+0x88/+0x8c/+0x8d) → fills pending + UI
     SelectDrawDistance(drawDistance_);
-    SelectLeavesQuality(grid_.GetLeavesQuality());
+    SelectLeavesQuality(leavesQualityApplied_);
     SelectClouds(cloudsEnabled_);
     SelectAnimatedWater(animatedWater_);
 }

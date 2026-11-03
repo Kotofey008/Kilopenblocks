@@ -155,6 +155,13 @@ public:
 
     LeavesQuality GetLeavesQuality() const;
     void SetLeavesQuality(LeavesQuality q);
+    // Binary GridData::Resize(int,int,int,int,int,int,int) @ 0x81fb0
+    bool Resize(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, int flags);
+    void Store();   // @ 0xa3770 — snapshot before resize
+    void Restore(const Vector& playerPos); // @ 0xa4d50
+    void InvalidateLighting(); // @ 0x798f0
+    int GetViewDistanceCells() const { return viewDistanceCells_; }
+    void SetViewDistanceCells(int v) { viewDistanceCells_ = v; }
 
     // Bounds (from scene Globals)
     Vector worldMin{-576.f, -64.f, -576.f};

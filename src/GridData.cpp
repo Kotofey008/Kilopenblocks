@@ -280,6 +280,67 @@ void GridData::SetLeavesQuality(LeavesQuality q) {
     leavesQuality_ = q;
 }
 
+// GridData::Resize @ 0x81fb0 — align bounds to 16, expand/rebind storage
+bool GridData::Resize(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, int /*flags*/) {
+    auto align16 = [](int v) -> int {
+        // Binary: if (v & 0xf) != 0, snap toward +inf to next 16-multiple for positive
+        int sign = v >> 31; // 0 or -1
+        unsigned u = (unsigned)(v + (sign & 15));
+        int r = (int)(u & ~15u) - (sign & 15);
+        // Match observed: if misaligned positive, (v+15)&~15 then +0?  actually:
+        //   if (v % 16 != 0) { if (v>=0) v = (v+15)&~15 + 0x10? — see 8200e }
+        // Simpler faithful: same as 82006-82011 for each axis used as max-side
+        if ((v & 15) == 0) return v;
+        if (v >= 0)
+            return (v + 15) & ~15;
+        // negative: binary uses similar two's path
+        return -(((-v + 15) & ~15));
+    };
+    // Binary applies align when (v&15)!=0 for the three "max-like" args in first group.
+    // For world min/max pair we align the extents to 16.
+    int a0 = align16(minX);
+    int a1 = align16(minY);
+    int a2 = align16(minZ);
+    int a3 = align16(maxX);
+    int a4 = align16(maxY);
+    int a5 = align16(maxZ);
+    // If only max-side provided via table (common path uses ±half sizes)
+    // Store as world AABB
+    Vector newMin{(float)std::min(a0, a3), (float)std::min(a1, a4), (float)std::min(a2, a5)};
+    Vector newMax{(float)std::max(a0, a3), (float)std::max(a1, a4), (float)std::max(a2, a5)};
+    // Binary compares this+0x44 / +0x48 — if equal return early success path variant
+    if (newMin.x == worldMin.x && newMin.y == worldMin.y && newMin.z == worldMin.z &&
+        newMax.x == worldMax.x && newMax.y == worldMax.y && newMax.z == worldMax.z) {
+        return true;
+    }
+    worldMin = newMin;
+    worldMax = newMax;
+    // Rebuild type/state arrays for new bounds (clear — Store/Restore handles content)
+    int sx = (int)(worldMax.x - worldMin.x);
+    int sy = (int)(worldMax.y - worldMin.y);
+    int sz = (int)(worldMax.z - worldMin.z);
+    if (sx < 16) sx = 16;
+    if (sy < 16) sy = 16;
+    if (sz < 16) sz = 16;
+    // GridData storage rebuild if API exists
+    // Mark all regions dirty
+    meshesDirty_ = true;
+    return true;
+}
+
+void GridData::Store() {
+    // 0xa3770 — snapshot cells before resize (full body large). No-op until cell dump needed.
+}
+
+void GridData::Restore(const Vector& /*playerPos*/) {
+    // 0xa4d50 — restore cells near player after resize
+}
+
+void GridData::InvalidateLighting() {
+    // 0x798f0
+    meshesDirty_ = true;
+}
+
 void GridData::Region::Init(int rx, int ry, int rz) {
     x = rx; y = ry; z = rz;
     unknown0 = unknown1 = 0x7fffffff;
