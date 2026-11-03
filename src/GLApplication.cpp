@@ -246,17 +246,26 @@ void GLApplication::RenderWorld() {
 void GLApplication::RenderHUD(int screenW, int screenH) {
     // Original chain: Scene::RenderUI → UISceneObject::RenderUI → UIElement::Draw
     //   → DrawBackground + DrawText; GridModelMtl.RenderUI for palette tiles
+    // Panel visibility follows start.scene "…_* SetVisible" on UISceneObject names.
     game_.SetScreenSize(screenW, screenH);
-    if (game_.IsMenuOpen()) {
-        if (game_.MenuLoaded()) {
-            game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
-            game_.GetMenu().Draw((float)screenW, (float)screenH, game_.GetFonts());
-            DrawMenuMaterialSlots(screenW, screenH);
+    bool drewMenu = false;
+    if (!game_.UIPanels().empty()) {
+        for (auto& p : game_.UIPanels()) {
+            if (!p.visible || !p.loaded) continue;
+            p.doc.ResolveAll((float)screenW, (float)screenH);
+            p.doc.Draw((float)screenW, (float)screenH, game_.GetFonts());
+            if (p.sceneName == "menu_ui") drewMenu = true;
         }
+    } else if (game_.IsMenuOpen() && game_.MenuLoaded()) {
+        game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
+        game_.GetMenu().Draw((float)screenW, (float)screenH, game_.GetFonts());
+        drewMenu = true;
     } else if (game_.HudLoaded()) {
         game_.GetHud().ResolveAll((float)screenW, (float)screenH);
         game_.GetHud().Draw((float)screenW, (float)screenH, game_.GetFonts());
     }
+    if (drewMenu)
+        DrawMenuMaterialSlots(screenW, screenH);
 }
 
 // GridModelMtl.RenderUI @ 0xa97c0 — 3×3 material preview tiles over menu_mtl_N

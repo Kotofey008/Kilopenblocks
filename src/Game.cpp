@@ -19,76 +19,315 @@ void Game::InitUI() {
     // start.scene FileName "Screen/ui/hud.txt" / "Screen/ui/menu.txt" → assets/ui/
     scene_.Load("scenes/start.scene");
     ApplySceneConfigs();
-    hudLoaded_ = hud_.LoadAsset("ui/hud.txt");
-    menuLoaded_ = menu_.LoadAsset("ui/menu.txt");
+    LoadUIPanelsFromScene();
+    // Panels own the UIDocument; GetHud()/GetMenu() return panel docs.
+    hudLoaded_ = false;
+    menuLoaded_ = false;
+    for (auto& p : uiPanels_) {
+        if (p.sceneName == "hud_ui" && p.loaded) {
+            hudLoaded_ = true;
+            p.visible = true; // HUD visible at start
+            p.doc.SetAllVisible(true);
+        }
+        if (p.sceneName == "menu_ui" && p.loaded) {
+            menuLoaded_ = true;
+            p.visible = false;
+            p.doc.SetAllVisible(false);
+        }
+    }
+    // If panel load missed, fall back to direct asset load into legacy members
+    if (!hudLoaded_) {
+        hudLoaded_ = hud_.LoadAsset("ui/hud.txt");
+    }
+    if (!menuLoaded_) {
+        menuLoaded_ = menu_.LoadAsset("ui/menu.txt");
+        if (menuLoaded_) menu_.SetAllVisible(false);
+    }
     // Game::LoadFont — Sans sizes used by UI (font/font_N.txt)
     fonts_.FindOrLoad("Sans", 16);
     fonts_.FindOrLoad("Sans", 20);
     fonts_.FindOrLoad("Sans", 24);
-    if (menuLoaded_) {
-        menu_.SetAllVisible(false); // menu starts hidden (Visible:Bool=0 on menu_ui)
-    }
     menuOpen_ = false;
+}
+
+// ---------------------------------------------------------------------------
+// UISceneObject panels + ElementClickedMessage (from start.scene)
+// Original: each UISceneObject has FileName + ElementClickedMessage[] strings.
+// "menu_* SetVisible 1" matches scene object names (menu_ui), not only element
+// name prefixes. Element clicks match the first token of each message.
+// ---------------------------------------------------------------------------
+
+void Game::LoadUIPanelsFromScene() {
+    // Hard-coded from start.scene UISceneObject blocks (recovered, not invented).
+    // Format: sceneName, asset path under assets/, click messages.
+    struct Def {
+        const char* sceneName;
+        const char* asset;
+        const char* const* msgs;
+        int nmsgs;
+    };
+    static const char* hudMsgs[] = {
+        "hud_menu;ClearInput;hud_* SetVisible 0;menu_* SetVisible 1;Game Call SetUINeedFastResponse",
+        "hud_activate;EPS UpdateElement"
+    };
+    static const char* menuMsgs[] = {
+        "frame*;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_new_terrain;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 1;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0;Game Call FinishScreenshot",
+        "menu_full_version;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 1;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_select_terrain;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 1;options_* SetVisible 0;Game Call FinishScreenshot;Game Call EnterGameList",
+        "menu_options;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 1;Game Call SetUINeedFastResponse",
+        "menu_mtl_0;ClearInput;Game SelectPaletteItem 0;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_1;ClearInput;Game SelectPaletteItem 1;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_2;ClearInput;Game SelectPaletteItem 2;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_3;ClearInput;Game SelectPaletteItem 3;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_4;ClearInput;Game SelectPaletteItem 4;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_5;ClearInput;Game SelectPaletteItem 5;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_6;ClearInput;Game SelectPaletteItem 6;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_7;ClearInput;Game SelectPaletteItem 7;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_mtl_8;ClearInput;Game SelectPaletteItem 8;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
+        "menu_next_mtl_set;ClearInput;Game SelectPalettePage -2",
+        "menu_prev_mtl_set;ClearInput;Game SelectPalettePage -1",
+        "menu_mtl_set_0;Game SelectPalettePage 0",
+        "menu_mtl_set_1;Game SelectPalettePage 1",
+        "menu_mtl_set_2;Game SelectPalettePage 2",
+        "menu_mtl_set_3;Game SelectPalettePage 3",
+        "menu_mtl_set_4;Game SelectPalettePage 4",
+        "menu_mtl_set_5;Game SelectPalettePage 5",
+        "menu_mtl_set_6;Game SelectPalettePage 6"
+    };
+    static const char* newTerrainMsgs[] = {
+        "frame*;ClearInput;menu_* SetVisible 1;new_terrain_* SetVisible 0;terrain_options_* SetVisible 0",
+        "terrain_options;ClearInput;new_terrain_* SetVisible 0;terrain_options_* SetVisible 1",
+        "terrain_create;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;Game CreateElement"
+    };
+    static const char* fullVersionMsgs[] = {
+        "frame*;ClearInput;menu_* SetVisible 1;full_version_* SetVisible 0"
+    };
+    static const char* selectTerrainMsgs[] = {
+        "frame*;ClearInput;menu_* SetVisible 1;select_terrain_* SetVisible 0;terrain_info_* SetVisible 0;delete_terrain_* SetVisible 0",
+        "play;ClearInput;hud_* SetVisible 1;select_terrain_* SetVisible 0;Game Call EnterGameList",
+        "file;ClearInput;select_terrain_* SetVisible 0;terrain_info_* SetVisible 1",
+        "prev;Game SelectElement 0",
+        "next;Game SelectElement 1"
+    };
+    static const char* terrainInfoMsgs[] = {
+        "frame*;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0;terrain_info_* SetVisible 0",
+        "delete;ClearInput;select_terrain_* SetVisible 0;delete_terrain_* SetVisible 1;terrain_info_* SetVisible 0",
+        "copy;ClearInput;select_terrain_* SetVisible 0;delete_terrain_* SetVisible 0;terrain_info_* SetVisible 0;Game CopyElement"
+    };
+    static const char* deleteTerrainMsgs[] = {
+        "frame*;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0",
+        "delete;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0;Game DeleteElement"
+    };
+    static const char* messageFrameMsgs[] = {
+        "frame*;ClearInput;menu_* SetVisible 1;message_frame_* SetVisible 0"
+    };
+    static const char* optionsMsgs[] = {
+        "frame*;ClearInput;menu_* SetVisible 1;game_options_* SetVisible 0;graphics_options_* SetVisible 0;options_* SetVisible 0",
+        "controls_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 0;controls_options_* SetVisible 1;options_* SetVisible 0;Game Call EnterControlsSettings",
+        "graphics_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 1;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call EnterGraphicsSettings",
+        "game_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 1;graphics_options_* SetVisible 0;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call EnterGameSettings",
+        "fly_mode_toggle;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 0;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call FlyModeToggle"
+    };
+    static const char* controlsMsgs[] = {
+        "frame*;ClearInput;options_* SetVisible 1;controls_options_* SetVisible 0",
+        "screen_size;Game Call UpdateScreenSize",
+        "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;controls_options_* SetVisible 0;Game Call ApplyControlsSettings"
+    };
+    static const char* graphicsMsgs[] = {
+        "frame*;ClearInput;options_* SetVisible 1;graphics_options_* SetVisible 0",
+        "draw_distance;Game Call UpdateDrawDistance",
+        "leaves_quality;Game Call UpdateLeavesQuality",
+        "clouds;Game Call UpdateClouds",
+        "animated_water;Game Call UpdateAnimatedWater",
+        "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;graphics_options_* SetVisible 0;Game Call ApplyGraphicsSettings"
+    };
+    static const char* gameOptsMsgs[] = {
+        "frame*;ClearInput;options_* SetVisible 1;game_options_* SetVisible 0",
+        "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;game_options_* SetVisible 0;Game Call ApplyGameSettings"
+    };
+
+    static const Def defs[] = {
+        { "hud_ui", "ui/hud.txt", hudMsgs, 2 },
+        { "menu_ui", "ui/menu.txt", menuMsgs, (int)(sizeof(menuMsgs)/sizeof(menuMsgs[0])) },
+        { "new_terrain_ui", "ui/menu_new_terrain.txt", newTerrainMsgs, 3 },
+        { "full_version_ui", "ui/menu_full_version.txt", fullVersionMsgs, 1 },
+        { "select_terrain_ui", "ui/menu_select_terrain.txt", selectTerrainMsgs, 5 },
+        { "terrain_info_ui", "ui/menu_terrain_info.txt", terrainInfoMsgs, 3 },
+        { "delete_terrain_ui", "ui/menu_delete_terrain.txt", deleteTerrainMsgs, 2 },
+        { "message_frame_ui", "ui/menu_message_frame.txt", messageFrameMsgs, 1 },
+        { "options_ui", "ui/menu_options.txt", optionsMsgs, 5 },
+        { "controls_options_ui", "ui/menu_controls_options.txt", controlsMsgs, 3 },
+        { "graphics_options_ui", "ui/menu_graphics_options.txt", graphicsMsgs, 6 },
+        { "game_options_ui", "ui/menu_game_options.txt", gameOptsMsgs, 2 },
+    };
+
+    uiPanels_.clear();
+    for (const auto& d : defs) {
+        UIPanel panel;
+        panel.sceneName = d.sceneName;
+        panel.loaded = panel.doc.LoadAsset(d.asset);
+        panel.visible = false;
+        for (int i = 0; i < d.nmsgs; ++i)
+            panel.clickMsgs.push_back(d.msgs[i]);
+        uiPanels_.push_back(std::move(panel));
+    }
+}
+
+bool Game::MatchNamePattern(const std::string& name, const std::string& pattern) const {
+    // Wildcard: "frame*" matches "frame", "frame_background"; "menu_*" matches "menu_ui"
+    if (pattern.empty()) return false;
+    if (pattern.back() == '*') {
+        std::string prefix = pattern.substr(0, pattern.size() - 1);
+        return name.size() >= prefix.size() &&
+               name.compare(0, prefix.size(), prefix) == 0;
+    }
+    return name == pattern;
+}
+
+void Game::SetPanelVisiblePattern(const std::string& pattern, bool visible) {
+    for (auto& p : uiPanels_) {
+        if (MatchNamePattern(p.sceneName, pattern)) {
+            p.visible = visible;
+            // Element visibility so Draw skips hidden trees
+            p.doc.SetAllVisible(visible);
+        }
+    }
+    // Legacy fallback members if panels not used
+    if (!uiPanels_.empty()) {
+        SyncMenuOpenFromPanels();
+        return;
+    }
+    if (MatchNamePattern("hud_ui", pattern) || pattern == "hud_*") {
+        if (hudLoaded_) hud_.SetAllVisible(visible);
+    }
+    if (MatchNamePattern("menu_ui", pattern) || pattern == "menu_*") {
+        if (menuLoaded_) menu_.SetAllVisible(visible);
+    }
+    SyncMenuOpenFromPanels();
+}
+
+void Game::SyncMenuOpenFromPanels() {
+    // menuOpen_ when any non-hud panel is visible (blocks look/movement)
+    bool any = false;
+    for (const auto& p : uiPanels_) {
+        if (!p.visible) continue;
+        if (p.sceneName == "hud_ui") continue;
+        any = true;
+        break;
+    }
+    menuOpen_ = any;
+    input_.SetMenuMode(any);
+}
+
+void Game::RunElementClickedMessage(const std::string& fullMsg) {
+    // "elemPattern;cmd;cmd;..." — skip first token (already matched), run the rest
+    size_t start = fullMsg.find(';');
+    if (start == std::string::npos) return;
+    std::string rest = fullMsg.substr(start + 1);
+    size_t pos = 0;
+    while (pos < rest.size()) {
+        size_t semi = rest.find(';', pos);
+        std::string cmd = (semi == std::string::npos) ? rest.substr(pos) : rest.substr(pos, semi - pos);
+        // trim
+        while (!cmd.empty() && (cmd.front() == ' ' || cmd.front() == '\t')) cmd.erase(cmd.begin());
+        while (!cmd.empty() && (cmd.back() == ' ' || cmd.back() == '\t')) cmd.pop_back();
+        if (!cmd.empty()) ParseAndRunCommand(cmd);
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+}
+
+Game::UIPanel* Game::FindVisiblePanelHit(float x, float y, UIElement** outHit) {
+    *outHit = nullptr;
+    // Prefer non-hud panels (they draw on top); then hud
+    for (auto& p : uiPanels_) {
+        if (!p.visible || !p.loaded) continue;
+        if (p.sceneName == "hud_ui") continue;
+        p.doc.ResolveAll((float)screenW_, (float)screenH_);
+        UIElement* hit = p.doc.HitTest(x, y);
+        if (hit) {
+            *outHit = hit;
+            return &p;
+        }
+    }
+    for (auto& p : uiPanels_) {
+        if (!p.visible || !p.loaded) continue;
+        if (p.sceneName != "hud_ui") continue;
+        p.doc.ResolveAll((float)screenW_, (float)screenH_);
+        UIElement* hit = p.doc.HitTest(x, y);
+        if (hit) {
+            *outHit = hit;
+            return &p;
+        }
+    }
+    return nullptr;
 }
 
 void Game::OpenMenu() {
-    // start.scene: hud_menu → ClearInput; hud_* SetVisible 0; menu_* SetVisible 1
-    menuOpen_ = true;
-    input_.SetMenuMode(true);
-    if (hudLoaded_) hud_.SetAllVisible(false);
-    if (menuLoaded_) menu_.SetAllVisible(true);
+    // start.scene hud_menu message: hud_* SetVisible 0; menu_* SetVisible 1
+    SetPanelVisiblePattern("hud_*", false);
+    SetPanelVisiblePattern("menu_*", true);
+    SetPanelVisiblePattern("new_terrain_*", false);
+    SetPanelVisiblePattern("full_version_*", false);
+    SetPanelVisiblePattern("select_terrain_*", false);
+    SetPanelVisiblePattern("options_*", false);
+    SetPanelVisiblePattern("controls_options_*", false);
+    SetPanelVisiblePattern("graphics_options_*", false);
+    SetPanelVisiblePattern("game_options_*", false);
 }
 
 void Game::CloseMenu() {
-    menuOpen_ = false;
-    input_.SetMenuMode(false);
-    if (hudLoaded_) hud_.SetAllVisible(true);
-    if (menuLoaded_) menu_.SetAllVisible(false);
+    // start.scene frame* on menu_ui: hud_* 1; hide all menu panels
+    SetPanelVisiblePattern("hud_*", true);
+    SetPanelVisiblePattern("menu_*", false);
+    SetPanelVisiblePattern("new_terrain_*", false);
+    SetPanelVisiblePattern("full_version_*", false);
+    SetPanelVisiblePattern("select_terrain_*", false);
+    SetPanelVisiblePattern("options_*", false);
+    SetPanelVisiblePattern("controls_options_*", false);
+    SetPanelVisiblePattern("graphics_options_*", false);
+    SetPanelVisiblePattern("game_options_*", false);
+    SetPanelVisiblePattern("terrain_info_*", false);
+    SetPanelVisiblePattern("delete_terrain_*", false);
+    SetPanelVisiblePattern("message_frame_*", false);
+    SetPanelVisiblePattern("terrain_options_*", false);
 }
 
 void Game::HandleTouchPress(int x, int y) {
-    // Menu: ElementClickedMessage from start.scene menu_ui
-    if (!menuOpen_ || !menuLoaded_) return;
-    // Must resolve with current framebuffer size before hit-test (same as RenderHUD)
-    menu_.ResolveAll((float)screenW_, (float)screenH_);
-    UIElement* hit = menu_.HitTest((float)x, (float)y);
-    if (!hit) {
-        // start.scene: frame* → close menu / show hud
-        CloseMenu();
-        return;
-    }
-    const std::string& n = hit->name;
-    // frame_background fills screen — treat as frame* close
-    if (n == "frame_background") {
-        CloseMenu();
-        return;
-    }
-    // menu_mtl_0..8 → SelectPaletteItem N; close (page base applied inside)
-    if (n.compare(0, 9, "menu_mtl_") == 0 && n.size() >= 10) {
-        int slot = std::atoi(n.c_str() + 9);
-        if (slot >= 0 && slot <= 8) {
-            SelectPaletteItem(slot);
+    // Original: ElementClickedMessage dispatch on the UISceneObject that owns the hit element
+    float fx = (float)x, fy = (float)y;
+    UIElement* hit = nullptr;
+    UIPanel* panel = FindVisiblePanelHit(fx, fy, &hit);
+
+    // When a non-hud panel is open and miss → treat as frame* background close for that panel
+    if (!panel || !hit) {
+        if (menuOpen_) {
+            // Find topmost visible non-hud panel and run its frame* message if any
+            for (auto& p : uiPanels_) {
+                if (!p.visible || p.sceneName == "hud_ui") continue;
+                for (const auto& msg : p.clickMsgs) {
+                    if (msg.compare(0, 6, "frame*") == 0) {
+                        RunElementClickedMessage(msg);
+                        return;
+                    }
+                }
+            }
             CloseMenu();
         }
         return;
     }
-    // start.scene: menu_next_mtl_set → SelectPalettePage -2
-    //             menu_prev_mtl_set → SelectPalettePage -1
-    if (n == "menu_next_mtl_set") {
-        SelectPalettePage(-2, 0);
-        return;
+
+    const std::string& n = hit->name;
+    // Match ElementClickedMessage first token against element name (wildcard supported)
+    for (const auto& msg : panel->clickMsgs) {
+        size_t semi = msg.find(';');
+        std::string pat = (semi == std::string::npos) ? msg : msg.substr(0, semi);
+        if (MatchNamePattern(n, pat)) {
+            RunElementClickedMessage(msg);
+            return;
+        }
     }
-    if (n == "menu_prev_mtl_set") {
-        SelectPalettePage(-1, 0);
-        return;
-    }
-    // menu_mtl_set_N (page tabs, HitTest=0 in file — usually not hit)
-    if (n.compare(0, 13, "menu_mtl_set_") == 0) {
-        int page = std::atoi(n.c_str() + 13);
-        SelectPalettePage(page, 0);
-        return;
-    }
-    // Other menu_* keep menu open (options/new terrain not fully restored)
 }
 
 
@@ -325,17 +564,18 @@ void Game::UpdateHUDUI() {
     // Here we set the flags; Draw uses CurrentStyle() (Default/Pressed/Selected*).
 
     // --- HUD: pressed from held discrete buttons ---
+    UIDocument& hudDoc = GetHud();
     if (hudLoaded_ && !menuOpen_) {
         static const char* kHudBtns[] = {
             "hud_up", "hud_down", "hud_left", "hud_right",
             "hud_jump", "hud_delete", "hud_add", "hud_activate", "hud_menu"
         };
         for (const char* n : kHudBtns) {
-            if (UIElement* e = hud_.Find(n))
+            if (UIElement* e = hudDoc.Find(n))
                 e->pressed = input_.IsHudButtonHeld(n);
         }
     } else if (hudLoaded_) {
-        for (auto& e : hud_.All()) e.pressed = false;
+        for (auto& e : hudDoc.All()) e.pressed = false;
     }
 
     // --- Menu / palette: selected slot + page tab ---
@@ -344,7 +584,8 @@ void Game::UpdateHUDUI() {
     const int selSlot = paletteItem_ % 9;   // 0..8 within page
     const int selPage = palettePage_;       // menu_mtl_set_N
 
-    for (auto& e : menu_.All()) {
+    UIDocument& menuDoc = GetMenu();
+    for (auto& e : menuDoc.All()) {
         e.pressed = false;
         e.selected = false;
 
@@ -399,11 +640,16 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         else if (method == "EnterGameList") EnterGameList();
         else if (method == "EnterGameSettings") EnterGameSettings();
         else if (method == "EnterControlsSettings") EnterControlsSettings();
+        else if (method == "EnterGraphicsSettings") { /* panel switch already done via SetVisible */ }
+        else if (method == "FlyModeToggle") {
+            // EntityPlayer fly mode — wire when player modes restored
+        }
+        else if (method == "ApplyControlsSettings") { /* stub */ }
+        else if (method == "UpdateScreenSize") { /* stub */ }
         else if (method == "ScreenClicked") ScreenClicked();
         else if (method == "UpdateSkyBox") UpdateSkyBox();
         else {
-            // unknown — log for further recovery
-            // std::cerr << "Unhandled Game Call: " << method << std::endl;
+            // unknown — leave for further recovery
         }
         return;
     }
@@ -415,10 +661,10 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         return;
     }
 
-    // "Game SelectPalettePage N M"
+    // "Game SelectPalettePage N" or "Game SelectPalettePage N M"
     if (s.compare(0, 23, "Game SelectPalettePage ") == 0) {
         int page = 0, arg = 0;
-        std::sscanf(s.c_str() + 22, "%d %d", &page, &arg);
+        std::sscanf(s.c_str() + 23, "%d %d", &page, &arg);
         SelectPalettePage(page, arg);
         return;
     }
@@ -429,36 +675,27 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         return;
     }
 
-    // Visibility: "hud_* SetVisible 0" / "menu_* SetVisible 1"
+    // "Game Call EnterGraphicsSettings" already covered; extra Game Calls from scene
+    if (s.compare(0, 10, "Game Call ") == 0) {
+        // already handled above
+        return;
+    }
+    if (s == "Game CopyElement" || s == "Game DeleteElement") {
+        // Save-slot ops — stub until save UI recovered
+        return;
+    }
+    if (s.compare(0, 18, "Game SelectElement ") == 0) {
+        // select_terrain prev/next — stub
+        return;
+    }
+
+    // Visibility: "hud_* SetVisible 0" / "options_* SetVisible 1"
+    // Original targets UISceneObject names (menu_ui, options_ui, …), not only elements.
     auto pos = s.find(" SetVisible ");
     if (pos != std::string::npos) {
-        std::string prefix = s.substr(0, pos);
+        std::string pattern = s.substr(0, pos);
         bool vis = (s.find(" SetVisible 1") != std::string::npos);
-        std::string stem = prefix;
-        if (!stem.empty() && stem.back() == '*')
-            stem.pop_back();
-        // Document-level UI (primary for rendering)
-        if (stem == "hud" || prefix == "hud_*") {
-            if (vis) CloseMenu();
-            else { menuOpen_ = true; input_.SetMenuMode(true); if (hudLoaded_) hud_.SetAllVisible(false); }
-            if (hudLoaded_) hud_.SetVisiblePrefix("hud_", vis);
-        }
-        if (stem == "menu" || prefix == "menu_*") {
-            if (vis) OpenMenu();
-            else CloseMenu();
-            if (menuLoaded_) menu_.SetVisiblePrefix("menu_", vis);
-        }
-        for (auto* obj : scene_.objects) {
-            if (!obj || obj->GetKind() != SceneObject::Kind::UI) continue;
-            auto* ui = static_cast<UISceneObject*>(obj);
-            if (!prefix.empty() && prefix.back() == '*') {
-                std::string pfx = prefix.substr(0, prefix.size() - 1);
-                if (ui->name.compare(0, pfx.size(), pfx) == 0)
-                    ui->visible = vis;
-            } else if (ui->name == prefix) {
-                ui->visible = vis;
-            }
-        }
+        SetPanelVisiblePattern(pattern, vis);
         return;
     }
 }

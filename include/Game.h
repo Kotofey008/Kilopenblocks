@@ -137,8 +137,16 @@ public:
     EntityPlayer* GetLocalPlayer() { return playerSet_.GetLocalPlayer(); }
     Camera& GetCamera() { return camera_; }
     InputMgr& GetInput() { return input_; }
-    UIDocument& GetHud() { return hud_; }
-    UIDocument& GetMenu() { return menu_; }
+    UIDocument& GetHud() {
+        for (auto& p : uiPanels_)
+            if (p.sceneName == "hud_ui" && p.loaded) return p.doc;
+        return hud_;
+    }
+    UIDocument& GetMenu() {
+        for (auto& p : uiPanels_)
+            if (p.sceneName == "menu_ui" && p.loaded) return p.doc;
+        return menu_;
+    }
     FontResource& GetFonts() { return fonts_; }
     bool HudLoaded() const { return hudLoaded_; }
     bool MenuLoaded() const { return menuLoaded_; }
@@ -147,6 +155,18 @@ public:
     void CloseMenu();
     // Called from input path after InputMgr::TouchPressEvent
     void HandleTouchPress(int x, int y);
+
+    // UISceneObject panels from start.scene (name → document). Used by RenderHUD.
+    // Visibility is panel-level (matches "menu_* SetVisible" patterns on scene object names).
+    struct UIPanel {
+        std::string sceneName;              // e.g. "options_ui"
+        UIDocument doc;
+        std::vector<std::string> clickMsgs; // ElementClickedMessage strings from start.scene
+        bool visible = false;
+        bool loaded = false;
+    };
+    std::vector<UIPanel>& UIPanels() { return uiPanels_; }
+    const std::vector<UIPanel>& UIPanels() const { return uiPanels_; }
     void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
     int ScreenW() const { return screenW_; }
     int ScreenH() const { return screenH_; }
@@ -195,6 +215,13 @@ private:
     bool hudLoaded_ = false;
     bool menuLoaded_ = false;
     bool menuOpen_ = false;
+    std::vector<UIPanel> uiPanels_;
 
     void ParseAndRunCommand(const std::string& cmd);
+    void LoadUIPanelsFromScene();
+    void SetPanelVisiblePattern(const std::string& pattern, bool visible);
+    void SyncMenuOpenFromPanels();
+    bool MatchNamePattern(const std::string& name, const std::string& pattern) const;
+    void RunElementClickedMessage(const std::string& fullMsg);
+    UIPanel* FindVisiblePanelHit(float x, float y, UIElement** outHit);
 };
