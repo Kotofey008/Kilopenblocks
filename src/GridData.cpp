@@ -548,16 +548,27 @@ bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
         tDeltaZ = 1.f / std::fabs(dz);
     }
 
+    // Binary FindFirstUsedCell @ 0x79dd0: non-air cells call
+    // GetCellCollisionBoxArray; water (and other non-solid) return 0 boxes →
+    // DDA continues. Effect: ray passes through water to the first solid.
+    auto isTraceSolid = [&](int cidx) -> bool {
+        if (cidx < 0 || cidx >= (int)cellTypes.size()) return false;
+        unsigned char t = cellTypes[cidx];
+        if (t == 0) return false;   // air
+        if (t == 5) return false;   // Water — pass through (no collision boxes)
+        // Decorative non-cube (still selectable in some cases; skip for liquid path)
+        if (t == 12 || t == 13 || t == 14) return false; // flowers / mushrooms
+        if (t == 17 || t == 18) return false; // torch
+        return true; // solids, leaves, glass — hittable
+    };
+
     int face = -1;
     for (int i = 0; i < 512 && t <= t1; ++i) {
         int cidx = CoordToIndex(x, y, z);
-        if (cidx >= 0) {
-            // Region flag check (orig: region[+0x1e] != 0) — approximated always true
-            if (cellTypes[cidx] != 0) {
-                outT = t;
-                outCellIndex = cidx;
-                return true;
-            }
+        if (cidx >= 0 && isTraceSolid(cidx)) {
+            outT = t;
+            outCellIndex = cidx;
+            return true;
         }
         // Step
         if (tMaxX < tMaxY) {
@@ -671,7 +682,15 @@ bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char bloc
     int idx = -1; unsigned char face = 0;
     if (!GetAddingPosition(tr, blockType, idx, face)) return false;
     if (idx < 0 || idx >= (int)cellTypes.size()) return false;
-    if (cellTypes[idx] != 0) return false;
+    // Destination must be empty OR replaceable liquid (water). Binary allows
+    // placing into water cells so streams can be blocked / seabed filled.
+    {
+        unsigned char dt = cellTypes[idx];
+        bool empty = (dt == 0);
+        bool water = (dt == 5) ||
+                     (idx < (int)cellStates.size() && (cellStates[idx] & 0x3fc0) != 0);
+        if (!empty && !water) return false;
+    }
 
     // Entity list walk @ 0x99630: virtual Intersects(cellX,cellY,cellZ) on each entity.
     // With a single local player, reject if the destination cell AABB overlaps player AABB.
@@ -768,6 +787,11 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
 
 bool GridData::BreakBlock(const GridDataTraceResult& tr) {
     if (!tr.hit) return false;
+    // Water is not breakable (FindFirstUsedCell already skips water; hard guard).
+    if (tr.blockType == 5) return false;
+    int idx = CoordToIndex(tr.cellX, tr.cellY, tr.cellZ);
+    if (idx >= 0 && idx < (int)cellTypes.size() && cellTypes[idx] == 5)
+        return false;
     // ConfigureAirState (0x99af0) → air + state 0
     SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0);
     return true;
