@@ -1114,10 +1114,11 @@ void GridData::UpdateWater(int maxSteps) {
         bool solidBelow = isSolidSupport(below);
         bool waterAbove = isWaterIdx(above);
         bool trueSource = (level == 0);
-        // False source: sits on solid, not a true source. Spreads like a source
-        // (outgoing level ignored → treat as 0) but keeps level!=0 so it can dry
-        // when the vertical feed disappears.
-        bool falseSource = !trueSource && solidBelow;
+        // False source: vertical column on solid, fed from water above.
+        // level!=0 so it can dry when the feed stops. Horizontal streams that
+        // only sit on solid must NOT be false sources (else level-1 on solid
+        // re-spreads as source → infinite same-level floods).
+        bool falseSource = !trueSource && solidBelow && waterAbove;
 
         // --- Vertical fall (preferred)
         // Into air: place with same level. If the cell BELOW the destination is
@@ -1147,12 +1148,10 @@ void GridData::UpdateWater(int maxSteps) {
         }
 
         // --- Horizontal spread
-        // 1) True source (level 0) always may spread (outLevel=1).
-        // 2) False source (solid below, level!=0): ignore own level → outLevel=1.
-        // 3) If water of any level is below and cell is NOT a true source → NO
-        //    horizontal spread (vertical column / stream over water).
-        // 4) Otherwise outLevel = level+1, stop at 7.
-        if (waterBelow && !trueSource)
+        // Water of ANY level below → no new horizontal streams (level 0 included).
+        // False source (solid below, level!=0): ignore own level → outLevel=1.
+        // Otherwise outLevel = level+1, stop at 7.
+        if (waterBelow)
             continue;
 
         int spreadFrom = trueSource || falseSource ? 0 : level;

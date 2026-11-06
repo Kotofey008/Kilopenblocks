@@ -123,12 +123,24 @@ float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
     if ((st & 0x3fc0) == 0 && grid.cellTypes[idx] != 5)
         return 0.f;
     if (IsWaterCell(grid, x, y + 1, z))
-        return 1.f; // 0x80 path — full column under water
+        return 1.f; // 0x80 path — full column under water above
     int level = (int)((st & 0x1c00) >> 10);
-    // Flowing water with water below: full height so the vertical join has no gap
-    // (horizontal streams still use level height when air is below).
-    if (level != 0 && IsWaterCell(grid, x, y - 1, z))
-        return 1.f;
+    // Water under a horizontal stream: keep normal height unless dead-end
+    // (no child stream at level+1) and level != 7 → then level-7 look (1/16).
+    // Corner-max still joins neighbours of any level continuously.
+    if (level > 0 && level < 7 && IsWaterCell(grid, x, y - 1, z)) {
+        bool hasChildStream = false;
+        static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+        for (auto& o : offs) {
+            if (!IsWaterCell(grid, x + o[0], y, z + o[1])) continue;
+            int ni = grid.CoordToIndex(x + o[0], y, z + o[1]);
+            if (ni < 0 || ni >= (int)grid.cellStates.size()) continue;
+            int nl = (int)((grid.cellStates[ni] & 0x1c00) >> 10);
+            if (nl == level + 1) { hasChildStream = true; break; }
+        }
+        if (!hasChildStream)
+            return 1.f / 16.f;
+    }
     // Source (0): 0x0e; flowing: 0x0f - 2*level  (units out of 16)
     int units = (level == 0) ? 0xe : (0xf - 2 * level);
     if (units < 1) units = 1;
