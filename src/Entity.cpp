@@ -284,14 +284,22 @@ void EntityPlayer::FixedUpdate() {
         // SimplePlayer mode==2: bVar13 (jump/move-up) → vy = Jump, else 0
         velocity_.y = jumpPressed_ ? ps.jump : 0.f;
     } else if (mode_ == Mode::Swim) {
-        // SimplePlayer mode==1 — hold jump to swim up
-        if (jumpPressed_) {
+        // SimplePlayer mode==1 @ 0xdc9b0
+        // Standing on solid while submerged (seabed / ford): jump is an impulse
+        // (ParamSet.Jump), same idea as the walk branch — not continuous swim accel.
+        // In free water, hold jump to swim up (accel toward MaximumSpeed).
+        if (onGround_ && jumpPressed_) {
+            velocity_.y = ps.jump;
+            onGround_ = false;
+        } else if (jumpPressed_) {
             float vy = velocity_.y + ps.acceleration * dt;
             if (vy > ps.maximumSpeed)
                 vy = ps.maximumSpeed;
             velocity_.y = vy;
-        } else {
+        } else if (!onGround_) {
             velocity_.y += ps.gravity * dt;
+        } else {
+            velocity_.y = std::min(velocity_.y, 0.f);
         }
         // Soft clamp when falling faster than GravityLimit (swim: -2)
         if (velocity_.y < ps.gravityLimit) {

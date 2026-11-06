@@ -261,16 +261,37 @@ void GridData::FillState(int x0, int y0, int z0, int x1, int y1, int z1, unsigne
 }
 
 bool GridData::IsUnderwater(const Vector& pos) const {
-    // Binary IsUnderwater @ 0x7b350: floor cell, then (states[idx] & 0x3fc0) != 0
-    // (fluid bits). Type-5 accepted as fallback when state not yet fluid-tagged.
+    // Binary IsUnderwater @ 0x7b350: fluid bits (state & 0x3fc0), then
+    // GetWaterBlockFaceYP + triangle test — sample must be under the liquid
+    // surface, not merely inside a water-typed cell. Shallow level-7 puddles
+    // (height 1/16) therefore do not force Swim when the body sample is above
+    // the free surface.
     int bx = (int)std::floor(pos.x);
     int by = (int)std::floor(pos.y);
     int bz = (int)std::floor(pos.z);
     int idx = CoordToIndex(bx, by, bz);
     if (idx < 0) return false;
-    if (idx < (int)cellStates.size() && (cellStates[idx] & 0x3fc0) != 0)
-        return true;
-    return cellTypes[idx] == 5;
+    bool fluid = (idx < (int)cellStates.size() && (cellStates[idx] & 0x3fc0) != 0) ||
+                 (cellTypes[idx] == 5);
+    if (!fluid) return false;
+
+    // Surface height matches GetWaterBlockHeight units (0..16): source 14/16,
+    // level n → (15-2n)/16, water above → full cell.
+    unsigned short st = (idx < (int)cellStates.size()) ? cellStates[idx] : 0;
+    float hFrac = 1.f;
+    int above = CoordToIndex(bx, by + 1, bz);
+    bool waterAbove = above >= 0 &&
+        ((above < (int)cellTypes.size() && cellTypes[above] == 5) ||
+         (above < (int)cellStates.size() && (cellStates[above] & 0x3fc0) != 0));
+    if (!waterAbove) {
+        int level = (int)((st & 0x1c00) >> 10);
+        int units = (level == 0) ? 0xe : (0xf - 2 * level);
+        if (units < 1) units = 1;
+        if (units > 16) units = 16;
+        hFrac = (float)units / 16.f;
+    }
+    float surfaceY = (float)by + hFrac;
+    return pos.y < surfaceY;
 }
 
 bool GridData::OnLadder(const Vector&, const Vector&, const Vector&) const {
