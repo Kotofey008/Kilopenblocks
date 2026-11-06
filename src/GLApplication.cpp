@@ -133,13 +133,12 @@ void GLApplication::OnDeleteGLContext() {
 
 void GLApplication::EnsureRegionMeshes() {
     GridData& grid = game_.GetGrid();
-    // Binary path: MarkModifiedRegions → only dirty regions get Region::AddMesh /
-    // Region::Update. Full clear+rebuild of the entire world on every place/break
-    // was the source of the ~0.5s freeze (and worse under rapid edits).
-    const auto& dirty = grid.dirtyRegions_;
+    // Binary: region+0x1f dirty → Region::Update / AddMesh only for those regions.
+    // Origins MUST be identical to full-build (coord & ~15) or the erase/replace
+    // misses the stored mesh and the old geometry stays (collision updates, view not).
 
     auto rebuildOne = [&](int ox, int oy, int oz) {
-        // Drop any existing mesh for this region origin
+        ox &= ~15; oy &= ~15; oz &= ~15;
         for (auto it = regionMeshes_.begin(); it != regionMeshes_.end(); ) {
             if (it->ox == ox && it->oy == oy && it->oz == oz)
                 it = regionMeshes_.erase(it);
@@ -154,9 +153,31 @@ void GLApplication::EnsureRegionMeshes() {
             regionMeshes_.push_back(std::move(rm));
     };
 
+    // Snapshot dirty list (SetCell may still run during water in same frame before us,
+    // but we must not hold a reference across ClearDirtyRegions).
+    std::vector<GridData::RegionKey> dirty = grid.dirtyRegions_;
+
     if (!dirty.empty()) {
-        // Refresh sky light only for columns covered by dirty regions (cheap).
-        // Avoids full lightMap_.Init which scans the entire world volume.
+        // Expand with face-adjacent regions so boundary faces on the neighbour
+        // chunk also refresh (NeedFace looks across the 16³ boundary).
+        auto addKey = [&](int rx, int ry, int rz) {
+            GridData::RegionKey k{rx, ry, rz};
+            for (const auto& d : dirty)
+                if (d == k) return;
+            dirty.push_back(k);
+        };
+        // Expand from a copy of the original set size
+        const size_t n0 = dirty.size();
+        for (size_t i = 0; i < n0; ++i) {
+            const auto& k = dirty[i];
+            addKey(k.rx + 1, k.ry, k.rz);
+            addKey(k.rx - 1, k.ry, k.rz);
+            addKey(k.rx, k.ry + 1, k.rz);
+            addKey(k.rx, k.ry - 1, k.rz);
+            addKey(k.rx, k.ry, k.rz + 1);
+            addKey(k.rx, k.ry, k.rz - 1);
+        }
+
         if (!lightMap_.Empty()) {
             int minX = dirty[0].rx * 16, maxX = minX + 16;
             int minZ = dirty[0].rz * 16, maxZ = minZ + 16;
@@ -167,19 +188,18 @@ void GLApplication::EnsureRegionMeshes() {
                 if (z0 < minZ) minZ = z0;
                 if (z0 + 16 > maxZ) maxZ = z0 + 16;
             }
-            // Expand by 1 cell so neighbour faces see updated light
             lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
         }
-        // Incremental: only regions marked dirty by SetCell / water / etc.
+
         for (const auto& k : dirty) {
+            // origin = index * 16; for negative indices e.g. -1 → -16, matches & ~15
             rebuildOne(k.rx * 16, k.ry * 16, k.rz * 16);
         }
         grid.ClearDirtyRegions();
         return;
     }
 
-    // Full rebuild (initial load / Invalidate / empty dirty list + meshesDirty)
-    // Also refresh the entire lightmap — this path is rare (load / resize).
+    // Full rebuild (initial load / Invalidate / empty dirty + meshesDirty)
     lightMap_.Init(grid);
     regionMeshes_.clear();
     int minX = (int)grid.worldMin.x & ~15;

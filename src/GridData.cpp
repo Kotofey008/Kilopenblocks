@@ -176,13 +176,16 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
 }
 
 void GridData::MarkRegionDirty(int x, int y, int z) {
-    // Region size 16 (verified). Floor-divide with negative handling matching
-    // binary: test sign, lea +0xf / cmovns, then sar 4.
-    auto reg = [](int v) -> int {
-        if (v < 0) v += 15;
-        return v >> 4;
-    };
-    RegionKey k{reg(x), reg(y), reg(z)};
+    // Region size 16. Origin must match EnsureRegionMeshes / full-build alignment:
+    //   origin = coord & ~15  (two's-complement, works for negatives)
+    // The earlier (v<0 ? v+15 : v)>>4 formula maps e.g. -1 → region 0 while
+    // full-build places cells -16..-1 at origin -16 — mesh key mismatch →
+    // second-chunk edits never replaced the stored RegionMesh (physics ok, view stale).
+    int ox = x & ~15;
+    int oy = y & ~15;
+    int oz = z & ~15;
+    // Store as region indices (origin/16) for compactness; rebuild multiplies back.
+    RegionKey k{ox >> 4, oy >> 4, oz >> 4};
     for (const auto& d : dirtyRegions_)
         if (d == k) return;
     dirtyRegions_.push_back(k);
