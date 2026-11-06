@@ -47,9 +47,14 @@ class LightMap {
 public:
     void Init(GridData& grid);
     void UpdateSunRays(GridData& grid);
+    // Cheap local sky-light refresh for columns covering [minX..maxX]×[minZ..maxZ]
+    // (world coords). Used after place/break so vertex colors stay correct without
+    // a full O(world) Init. Block-light channel is preserved.
+    void UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, int maxZ);
     void PropagateBlockLights(GridData& grid);
     void AddLight(int x, int y, int z, uint16_t packed);
     void Invalidate() { dirty_ = true; }
+    bool Empty() const { return data_.empty(); }
 
     uint16_t GetLight(int x, int y, int z) const;
     uint16_t GetFaceLight(int x, int y, int z, int face) const;

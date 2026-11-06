@@ -132,9 +132,56 @@ void GLApplication::OnDeleteGLContext() {
 }
 
 void GLApplication::EnsureRegionMeshes() {
-    regionMeshes_.clear();
     GridData& grid = game_.GetGrid();
-    // Mesh all regions that intersect the world bounds (16³)
+    // Binary path: MarkModifiedRegions → only dirty regions get Region::AddMesh /
+    // Region::Update. Full clear+rebuild of the entire world on every place/break
+    // was the source of the ~0.5s freeze (and worse under rapid edits).
+    const auto& dirty = grid.dirtyRegions_;
+
+    auto rebuildOne = [&](int ox, int oy, int oz) {
+        // Drop any existing mesh for this region origin
+        for (auto it = regionMeshes_.begin(); it != regionMeshes_.end(); ) {
+            if (it->ox == ox && it->oy == oy && it->oz == oz)
+                it = regionMeshes_.erase(it);
+            else
+                ++it;
+        }
+        RegionMesh rm;
+        rm.ox = ox; rm.oy = oy; rm.oz = oz;
+        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &lightMap_);
+        rm.valid = rm.buffer.IndexCount() > 0;
+        if (rm.valid)
+            regionMeshes_.push_back(std::move(rm));
+    };
+
+    if (!dirty.empty()) {
+        // Refresh sky light only for columns covered by dirty regions (cheap).
+        // Avoids full lightMap_.Init which scans the entire world volume.
+        if (!lightMap_.Empty()) {
+            int minX = dirty[0].rx * 16, maxX = minX + 16;
+            int minZ = dirty[0].rz * 16, maxZ = minZ + 16;
+            for (const auto& k : dirty) {
+                int x0 = k.rx * 16, z0 = k.rz * 16;
+                if (x0 < minX) minX = x0;
+                if (x0 + 16 > maxX) maxX = x0 + 16;
+                if (z0 < minZ) minZ = z0;
+                if (z0 + 16 > maxZ) maxZ = z0 + 16;
+            }
+            // Expand by 1 cell so neighbour faces see updated light
+            lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
+        }
+        // Incremental: only regions marked dirty by SetCell / water / etc.
+        for (const auto& k : dirty) {
+            rebuildOne(k.rx * 16, k.ry * 16, k.rz * 16);
+        }
+        grid.ClearDirtyRegions();
+        return;
+    }
+
+    // Full rebuild (initial load / Invalidate / empty dirty list + meshesDirty)
+    // Also refresh the entire lightmap — this path is rare (load / resize).
+    lightMap_.Init(grid);
+    regionMeshes_.clear();
     int minX = (int)grid.worldMin.x & ~15;
     int minY = (int)grid.worldMin.y & ~15;
     int minZ = (int)grid.worldMin.z & ~15;
@@ -145,12 +192,7 @@ void GLApplication::EnsureRegionMeshes() {
     for (int z = minZ; z < maxZ; z += 16)
     for (int y = minY; y < maxY; y += 16)
     for (int x = minX; x < maxX; x += 16) {
-        RegionMesh rm;
-        rm.ox = x; rm.oy = y; rm.oz = z;
-        RegionMesher::Build(grid, x, y, z, blockDefs_, rm.buffer, &lightMap_);
-        rm.valid = rm.buffer.IndexCount() > 0;
-        if (rm.valid)
-            regionMeshes_.push_back(std::move(rm));
+        rebuildOne(x, y, z);
     }
 }
 
@@ -376,7 +418,12 @@ void GLApplication::Frame() {
         game_.GetGrid().UpdateWater(32);
     }
     if (game_.GetGrid().MeshesDirty()) {
-        lightMap_.Init(game_.GetGrid());
+        // Binary does NOT recompute the full light map on every block edit.
+        // lightMap_.Init is O(world volume) and was the main cause of the
+        // half-second freeze on place/break. Lightmap is built once at world
+        // load (OnCreateGLContext); local light refresh is handled separately
+        // when lighting is explicitly invalidated or a light source changes.
+        // Meshes: only dirty regions are rebuilt (see EnsureRegionMeshes).
         EnsureRegionMeshes();
         game_.GetGrid().ClearMeshesDirty();
     }

@@ -74,6 +74,35 @@ void LightMap::UpdateSunRays(GridData& grid) {
     dirty_ = false;
 }
 
+void LightMap::UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, int maxZ) {
+    if (data_.empty() || sizeX_ <= 0 || sizeY_ <= 0 || sizeZ_ <= 0) return;
+    // Clamp to lightmap bounds (local indices)
+    int lx0 = minX - ox_; if (lx0 < 0) lx0 = 0;
+    int lx1 = maxX - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
+    int lz0 = minZ - oz_; if (lz0 < 0) lz0 = 0;
+    int lz1 = maxZ - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
+    if (lx0 >= lx1 || lz0 >= lz1) return;
+
+    for (int z = lz0; z < lz1; ++z) {
+        for (int x = lx0; x < lx1; ++x) {
+            int sky = 15;
+            for (int y = sizeY_ - 1; y >= 0; --y) {
+                int idx = x + sizeX_ * (y + sizeY_ * z);
+                int wx = x + ox_, wy = y + oy_, wz = z + oz_;
+                int cidx = grid.CoordToIndex(wx, wy, wz);
+                unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
+                if (IsOpaque(t)) {
+                    sky = 0;
+                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2 || t == BlockId::Water) {
+                    if (sky > 0) sky -= 1;
+                }
+                int block = LightPack::Block(data_[idx]);
+                data_[idx] = LightPack::Make(sky, block);
+            }
+        }
+    }
+}
+
 void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
     // Matches GridData::AddLight(x,y,z,ushort) — seeds block-light channel
     int i = Index(x, y, z);
