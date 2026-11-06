@@ -123,8 +123,13 @@ float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
     if ((st & 0x3fc0) == 0 && grid.cellTypes[idx] != 5)
         return 0.f;
     if (IsWaterCell(grid, x, y + 1, z))
-        return 1.f; // 0x80 path
+        return 1.f; // 0x80 path — full column under water
     int level = (int)((st & 0x1c00) >> 10);
+    // Flowing water with water below: full height so the vertical join has no gap
+    // (horizontal streams still use level height when air is below).
+    if (level != 0 && IsWaterCell(grid, x, y - 1, z))
+        return 1.f;
+    // Source (0): 0x0e; flowing: 0x0f - 2*level  (units out of 16)
     int units = (level == 0) ? 0xe : (0xf - 2 * level);
     if (units < 1) units = 1;
     if (units > 16) units = 16;

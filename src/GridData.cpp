@@ -1083,6 +1083,24 @@ void GridData::UpdateWater(int maxSteps) {
         return true;
     };
 
+    auto isSolidSupport = [&](int idx) -> bool {
+        // Solid = not air, not water (any level). False-source stands on this.
+        if (idx < 0) return false;
+        unsigned char t = cellTypes[idx];
+        if (t == 0) return false;
+        if (t == WATER) return false;
+        if (idx < (int)cellStates.size() && (cellStates[idx] & ST_FLUID_MASK) != 0)
+            return false;
+        // Non-colliding plants / glass still count as "something under" for source
+        // formation; false-source only needs non-air non-water.
+        return true;
+    };
+    auto isWaterIdx = [&](int idx) -> bool {
+        if (idx < 0) return false;
+        if (cellTypes[idx] == WATER) return true;
+        return idx < (int)cellStates.size() && (cellStates[idx] & ST_FLUID) != 0;
+    };
+
     for (size_t si = 0; si < active.size() && steps < maxSteps; ++si) {
         int x = active[si].x, y = active[si].y, z = active[si].z;
         int selfIdx = CoordToIndex(x, y, z);
@@ -1090,10 +1108,21 @@ void GridData::UpdateWater(int maxSteps) {
         if (cellTypes[selfIdx] != WATER) continue;
 
         int level = getLevel(selfIdx);
-
-        // --- Vertical fall (preferred) — SpreadWater / UpdateOneWaterState YN path
-        // Destination keeps source level (falling column is still "full" at that depth).
         int below = CoordToIndex(x, y - 1, z);
+        int above = CoordToIndex(x, y + 1, z);
+        bool waterBelow = isWaterIdx(below);
+        bool solidBelow = isSolidSupport(below);
+        bool waterAbove = isWaterIdx(above);
+        bool trueSource = (level == 0);
+        // False source: sits on solid, not a true source. Spreads like a source
+        // (outgoing level ignored → treat as 0) but keeps level!=0 so it can dry
+        // when the vertical feed disappears.
+        bool falseSource = !trueSource && solidBelow;
+
+        // --- Vertical fall (preferred)
+        // Into air: place with same level. If the cell BELOW the destination is
+        // solid, store max(level,1) so the new cell is a false source, not level 0.
+        // Into higher-level water: replace with our level.
         if (below >= 0) {
             unsigned char bt = cellTypes[below];
             unsigned short bs = (below < (int)cellStates.size()) ? cellStates[below] : 0;
@@ -1102,22 +1131,33 @@ void GridData::UpdateWater(int maxSteps) {
                                 level < (int)((bs & ST_LEVEL_MASK) >> ST_LEVEL_SHIFT));
             if (belowEmpty || belowHigher) {
                 if (IsFlowAllowed(below, FlowYN) != 0 || IsFlowAllowed(selfIdx, FlowYN) != 0) {
-                    if (tryPlace(x, y - 1, z, level, FlowYN)) {
-                        // After successful fall from a non-source, the source cell
-                        // itself may dry — binary does this in UpdateOneWaterState
-                        // when no supporting neighbours remain. For sources (level 0)
-                        // we keep the block; for flowing water we leave it (infinite
-                        // column from above is handled next tick).
-                        continue; // prefer fall over horizontal this tick
+                    int placeLvl = level;
+                    if (belowEmpty) {
+                        // If landing directly on solid (world floor of this cell is solid
+                        // — i.e. the empty cell we're filling has solid under it), avoid
+                        // level 0 so it becomes a false source.
+                        int below2 = CoordToIndex(x, y - 2, z);
+                        if (isSolidSupport(below2) && placeLvl == 0)
+                            placeLvl = 1;
                     }
+                    if (tryPlace(x, y - 1, z, placeLvl, FlowYN))
+                        continue; // prefer fall this tick
                 }
             }
         }
 
-        // --- Horizontal spread (level + 1), only if level < 7
-        // Matches SpreadWater: arg_14h (srcLevel) < 7 for empty, or < neighLevel.
-        if (level >= 7) continue;
-        const int newLevel = level + 1;
+        // --- Horizontal spread
+        // 1) True source (level 0) always may spread (outLevel=1).
+        // 2) False source (solid below, level!=0): ignore own level → outLevel=1.
+        // 3) If water of any level is below and cell is NOT a true source → NO
+        //    horizontal spread (vertical column / stream over water).
+        // 4) Otherwise outLevel = level+1, stop at 7.
+        if (waterBelow && !trueSource)
+            continue;
+
+        int spreadFrom = trueSource || falseSource ? 0 : level;
+        if (spreadFrom >= 7) continue;
+        const int newLevel = spreadFrom + 1;
         struct Dir { int dx, dz; FlowType ft; };
         static const Dir dirs[4] = {
             { 1, 0, FlowXP}, {-1, 0, FlowXN},
@@ -1127,19 +1167,22 @@ void GridData::UpdateWater(int maxSteps) {
             if (steps >= maxSteps) break;
             tryPlace(x + d.dx, y, z + d.dz, newLevel, d.ft);
         }
+        (void)waterAbove;
     }
 
-    // --- New source formation (UpdateOneWaterState neighbour scan)
-    // Binary tracks adjacent level==0 cells (bStack_26 / source count). When a
-    // flowing cell has ≥2 horizontal neighbours that are sources, promote to
-    // level 0 (infinite spring). Matches classic two-source infinite water.
+    // --- New source formation (UpdateOneWaterState)
+    // ≥2 horizontal level-0 neighbours AND support below is either a full solid
+    // block or water with level==0. Air / flowing water below → no new source.
     if (steps < maxSteps) {
         for (size_t si = 0; si < active.size() && steps < maxSteps; ++si) {
             int x = active[si].x, y = active[si].y, z = active[si].z;
             int selfIdx = CoordToIndex(x, y, z);
             if (selfIdx < 0 || cellTypes[selfIdx] != WATER) continue;
-            int level = getLevel(selfIdx);
-            if (level == 0) continue; // already source
+            if (getLevel(selfIdx) == 0) continue;
+            int below = CoordToIndex(x, y - 1, z);
+            bool supportOk = isSolidSupport(below) ||
+                             (isWaterIdx(below) && getLevel(below) == 0);
+            if (!supportOk) continue;
             int sourceNeigh = 0;
             static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
             for (auto& o : offs) {

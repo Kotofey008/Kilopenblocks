@@ -27,14 +27,17 @@ static void parseVec3(const std::string& v, Vector& out) {
     iss >> out.x >> out.y >> out.z;
 }
 static void parseColor255(const std::string& v, float& r, float& g, float& b, float& a) {
-    // start.scene Color = "A R G B" with A often 255
+    // start.scene Color = "A B G R" (0xAABBGGRR dword written as four decimals).
+    // WaterPlaneColor "64 232 144 5" → A=64 B=232 G=144 R=5 → blue underwater tint.
+    // LavaPlaneColor "204 0 50 204" → A=204 B=0 G=50 R=204 → red-orange lava.
+    // Old A R G B parse swapped R/B → orange water overlay.
     int c0 = 255, c1 = 255, c2 = 255, c3 = 255;
     std::istringstream iss(v);
     iss >> c0 >> c1 >> c2 >> c3;
-    r = c1 / 255.f;
-    g = c2 / 255.f;
-    b = c3 / 255.f;
     a = c0 / 255.f;
+    b = c1 / 255.f;
+    g = c2 / 255.f;
+    r = c3 / 255.f;
 }
 
 static bool parseParamSetKey(const std::string& key, int& index, std::string& field) {

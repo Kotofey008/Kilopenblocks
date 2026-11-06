@@ -159,9 +159,9 @@ struct SceneGridModelConfig {
     std::string waterTextureFileName = "textures/water.png";
     std::string lavaTextureFileName = "textures/lava.png";
     std::string mtlDescFileName = "scenes/blocks.txt";
-    // Color as 0..1 RGBA (scene Color = A R G B with A first)
-    float waterPlaneR = 232.f/255.f, waterPlaneG = 144.f/255.f, waterPlaneB = 5.f/255.f, waterPlaneA = 64.f/255.f;
-    float lavaPlaneR = 0.f, lavaPlaneG = 50.f/255.f, lavaPlaneB = 204.f/255.f, lavaPlaneA = 204.f/255.f;
+    // Color 0..1 RGBA; scene Color = A B G R (WaterPlane "64 232 144 5" → blue)
+    float waterPlaneR = 5.f/255.f, waterPlaneG = 144.f/255.f, waterPlaneB = 232.f/255.f, waterPlaneA = 64.f/255.f;
+    float lavaPlaneR = 204.f/255.f, lavaPlaneG = 50.f/255.f, lavaPlaneB = 0.f, lavaPlaneA = 204.f/255.f;
     float waterFlowSpeed = 0.625f;  // start.scene; drives FluidAnim UV scroll
     float lavaFlowSpeed = 0.15f;
     bool useProceduralTextures = true;
