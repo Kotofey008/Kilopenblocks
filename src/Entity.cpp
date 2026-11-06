@@ -161,9 +161,13 @@ void EntityPlayer::UpdateMode() {
         mode_ = Mode::Ladder;
         return;
     }
-    // Sample near eye / chest (binary adds bbox extents to set origin)
+    // Binary UpdateMode @ 0x5b040: IsUnderwater(entity position) — feet origin
+    // (+0x18), not mid-body. Sampling eyeHeight*0.5 missed 1-block-deep water
+    // (surface below chest) → Walk in a ford. Sample just above feet so any
+    // water covering the lower body engages Swim; IsUnderwater still uses the
+    // free-surface height (thin level-7 puddles stay Walk).
     Vector sample = position_;
-    sample.y += eyeHeight_ * 0.5f;
+    sample.y += 0.2f;
     mode_ = grid_->IsUnderwater(sample) ? Mode::Swim : Mode::Walk;
 }
 
