@@ -147,8 +147,8 @@ void GLApplication::EnsureRegionMeshes() {
         }
         RegionMesh rm;
         rm.ox = ox; rm.oy = oy; rm.oz = oz;
-        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &lightMap_);
-        rm.valid = rm.buffer.IndexCount() > 0;
+        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &rm.waterBuffer, &lightMap_);
+        rm.valid = rm.buffer.IndexCount() > 0 || rm.waterBuffer.IndexCount() > 0;
         if (rm.valid)
             regionMeshes_.push_back(std::move(rm));
     };
@@ -296,14 +296,32 @@ void GLApplication::RenderWorld() {
     blocksAtlas_.Bind();
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glColor4f(1.f, 1.f, 1.f, 1.f);
-    // Draw all region meshes
+    // Pass 1: opaque solids (depth write on)
     for (auto& rm : regionMeshes_) {
-        if (!rm.valid) continue;
+        if (!rm.valid || rm.buffer.IndexCount() <= 0) continue;
         DrawPrimitive(GL_TRIANGLES,
                       rm.buffer.Vertices().data(),
                       rm.buffer.Indices().data(),
                       rm.buffer.IndexCount(), 0);
     }
+    // Pass 2: liquid faces (AddWaterFace path) — blend, no depth write so
+    // submerged solid faces remain visible through the surface.
+#if defined(__ANDROID__)
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+#endif
+    for (auto& rm : regionMeshes_) {
+        if (!rm.valid || rm.waterBuffer.IndexCount() <= 0) continue;
+        DrawPrimitive(GL_TRIANGLES,
+                      rm.waterBuffer.Vertices().data(),
+                      rm.waterBuffer.Indices().data(),
+                      rm.waterBuffer.IndexCount(), 0);
+    }
+#if defined(__ANDROID__)
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+#endif
 }
 
 

@@ -102,6 +102,68 @@ bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
     return true;
 }
 
+bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
+    int idx = grid.CoordToIndex(x, y, z);
+    if (idx < 0) return false;
+    if (grid.cellTypes[idx] == 5) return true;
+    if (idx < (int)grid.cellStates.size() && (grid.cellStates[idx] & 0x3fc0) != 0)
+        return true;
+    return false;
+}
+
+// GetWaterBlockHeight @ 0x8b4a0 — returns 0..0x80 fixed (1/128 block).
+// Connected water above → 0x80 (full). Else derived from level bits 0x1c00>>10.
+float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
+    int idx = grid.CoordToIndex(x, y, z);
+    if (idx < 0) return 0.f;
+    unsigned short st = (idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
+    if ((st & 0x3fc0) == 0 && grid.cellTypes[idx] != 5)
+        return 0.f;
+    // Full column when fluid water sits above (binary returns 0x80)
+    if (IsWaterCell(grid, x, y + 1, z))
+        return 1.f;
+    int level = (int)((st & 0x1c00) >> 10); // 0=source … 7=nearly dry
+    // Map level → height. Source/full ≈ 1; level 7 ≈ 1/8.
+    // Matches 0..0x80 scale used by AddWaterFace (coords << 7).
+    float h = (8 - level) / 8.f;
+    if (h < 0.125f) h = 0.125f;
+    if (h > 1.f) h = 1.f;
+    return h;
+}
+
+// WaterNeedFace* family @ 0x855c0–0x867f0
+// Core rule (YN/YP recovered): if neighbour is also water and flow allowed both
+// ways → cull (return 0). Otherwise emit against air / solid / empty.
+int RegionMesher::WaterNeedFace(GridData& grid, int x, int y, int z, int face) {
+    if (!IsWaterCell(grid, x, y, z)) return 0;
+    int nx = x, ny = y, nz = z;
+    switch (face) {
+        case 0: nx++; break; case 1: nx--; break;
+        case 2: ny++; break; case 3: ny--; break;
+        case 4: nz++; break; case 5: nz--; break;
+        default: return 0;
+    }
+    int nIdx = grid.CoordToIndex(nx, ny, nz);
+    if (nIdx < 0) return 1; // world edge
+    if (IsWaterCell(grid, nx, ny, nz)) {
+        // Top face: still emit if this cell is lower than full and neighbour
+        // is only partial — but binary typically culls water|water entirely
+        // when both are fluid (YN/YP IsFlowAllowed both ways → false).
+        // Side faces between water: cull.
+        if (face == 2) {
+            // YP: emit only if our height is below full and above has lower
+            // surface — for connected full column, cull.
+            float h = WaterHeightFrac(grid, x, y, z);
+            if (h >= 0.999f) return 0;
+            // partial top against water above still usually culled if above exists
+            return 0;
+        }
+        return 0;
+    }
+    // Neighbour air / solid / non-water → emit liquid face
+    return 1;
+}
+
 void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
                             float u0, float v0, float u1, float v1, uint32_t color) {
     PCT1Vertex v[4];
@@ -129,6 +191,46 @@ void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
         case 5:
             set(0, fx,   fy,   fz, u0, v1); set(1, fx,   fy+1, fz, u0, v0);
             set(2, fx+1, fy+1, fz, u1, v0); set(3, fx+1, fy,   fz, u1, v1); break;
+        default: return;
+    }
+    out.PushQuad(v);
+}
+
+// AddWaterFace @ 0x8cc70 — geometry in 1/128 units; we emit float verts with
+// heightFrac ∈ (0,1]. Side faces run from cell floor to surface; YP at surface.
+void RegionMesher::EmitWaterFace(MeshBuffer& out, int x, int y, int z, int face,
+                                 float heightFrac, float u0, float v0, float u1, float v1,
+                                 uint32_t color) {
+    if (heightFrac <= 0.f) return;
+    if (heightFrac > 1.f) heightFrac = 1.f;
+    PCT1Vertex v[4];
+    auto set = [&](int i, float px, float py, float pz, float u, float vv) {
+        v[i].x = px; v[i].y = py; v[i].z = pz;
+        v[i].color = color; v[i].u = u; v[i].v = vv;
+    };
+    float fx = (float)x, fy = (float)y, fz = (float)z;
+    float top = fy + heightFrac;
+    // V coordinate scaled on sides so texture matches surface height
+    float vTop = v0 + (v1 - v0) * (1.f - heightFrac);
+    switch (face) {
+        case 0: // +X
+            set(0, fx+1, fy,  fz,   u0, v1); set(1, fx+1, top, fz,   u0, vTop);
+            set(2, fx+1, top, fz+1, u1, vTop); set(3, fx+1, fy,  fz+1, u1, v1); break;
+        case 1: // -X
+            set(0, fx, fy,  fz+1, u0, v1); set(1, fx, top, fz+1, u0, vTop);
+            set(2, fx, top, fz,   u1, vTop); set(3, fx, fy,  fz,   u1, v1); break;
+        case 2: // +Y surface
+            set(0, fx,   top, fz,   u0, v1); set(1, fx,   top, fz+1, u0, v0);
+            set(2, fx+1, top, fz+1, u1, v0); set(3, fx+1, top, fz,   u1, v1); break;
+        case 3: // -Y bottom
+            set(0, fx,   fy, fz+1, u0, v1); set(1, fx,   fy, fz,   u0, v0);
+            set(2, fx+1, fy, fz,   u1, v0); set(3, fx+1, fy, fz+1, u1, v1); break;
+        case 4: // +Z
+            set(0, fx+1, fy,  fz+1, u0, v1); set(1, fx+1, top, fz+1, u0, vTop);
+            set(2, fx,   top, fz+1, u1, vTop); set(3, fx,   fy,  fz+1, u1, v1); break;
+        case 5: // -Z
+            set(0, fx,   fy,  fz, u0, v1); set(1, fx,   top, fz, u0, vTop);
+            set(2, fx+1, top, fz, u1, vTop); set(3, fx+1, fy,  fz, u1, v1); break;
         default: return;
     }
     out.PushQuad(v);
@@ -202,9 +304,19 @@ static void EmitGreedyQuad(MeshBuffer& out, int face,
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                          const std::vector<BlockDef>& defs, MeshBuffer& out,
                          const LightMap* lights) {
-    // Per-face emission (no greedy merge) — correct single-tile UVs from BlockDef atlas indices
-    out.Clear();
+    Build(grid, ox, oy, oz, defs, out, nullptr, lights);
+}
+
+void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
+                         const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
+                         MeshBuffer* waterOut, const LightMap* lights) {
+    // Region::AddMesh: solids → NeedFace* + AddBlockFace;
+    // liquids → WaterNeedFace* + AddWaterFace (separate translucent pass).
+    solidOut.Clear();
+    if (waterOut) waterOut->Clear();
     const int S = 16;
+    static const int kFaceToMat[6] = { 0, 3, 1, 4, 2, 5 };
+
     for (int z = 0; z < S; ++z)
     for (int y = 0; y < S; ++y)
     for (int x = 0; x < S; ++x) {
@@ -214,20 +326,39 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         unsigned char t = grid.cellTypes[cidx];
         if (t == 0) continue; // air
 
-        // Skip non-cube decorative for now (still emit leaves/wood)
+        const bool liquid = IsWaterCell(grid, wx, wy, wz) || t == 5;
+
+        if (liquid) {
+            MeshBuffer& dst = waterOut ? *waterOut : solidOut;
+            float h = WaterHeightFrac(grid, wx, wy, wz);
+            if (h <= 0.f) continue;
+            for (int face = 0; face < 6; ++face) {
+                if (WaterNeedFace(grid, wx, wy, wz, face) == 0)
+                    continue;
+                float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
+                const Material* mat = grid.GetMaterial(5);
+                if (mat) {
+                    int mi = kFaceToMat[face];
+                    Texture::TileUV((int)mat->uFace(mi), (int)mat->vFace(mi), u0, v0, u1, v1);
+                } else {
+                    Texture::TileUV(6, 0, u0, v0, u1, v1); // blocks.txt water UV
+                }
+                uint32_t col = 0xA0FFFFFF; // RGBA translucent (alpha≈0.63)
+                if (lights) {
+                    uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
+                    // Keep water alpha; modulate RGB from light
+                    col = (lc & 0x00FFFFFFu) | 0xA0000000u;
+                }
+                EmitWaterFace(dst, wx, wy, wz, face, h, u0, v0, u1, v1, col);
+            }
+            continue;
+        }
+
+        // Solid / leaves / etc.
         for (int face = 0; face < 6; ++face) {
-            int nx = wx, ny = wy, nz = wz;
-            if (face == 0) nx++; else if (face == 1) nx--;
-            else if (face == 2) ny++; else if (face == 3) ny--;
-            else if (face == 4) nz++; else nz--;
-            // NeedFace* (binary): 0=cull, 1/2=emit
             if (NeedFace(grid, wx, wy, wz, face) == 0)
                 continue;
             float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-            // Prefer GridData::Material UV (LoadMaterials from blocks.txt).
-            // Material face order is XP,YP,ZP,XN,YN,ZN — map from EmitFace order
-            // 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z.
-            static const int kFaceToMat[6] = { 0, 3, 1, 4, 2, 5 };
             const Material* mat = grid.GetMaterial((int)t);
             if (mat) {
                 int mi = kFaceToMat[face];
@@ -240,11 +371,10 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             uint32_t col = 0xFFFFFFFFu;
             if (lights) {
                 col = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
-                // Never pure-black vertices (uninitialized light map edges)
                 if ((col & 0xFFu) < 32 && ((col >> 8) & 0xFFu) < 32)
                     col = 0xFFC0C0C0u;
             }
-            EmitFace(out, wx, wy, wz, face, u0, v0, u1, v1, col);
+            EmitFace(solidOut, wx, wy, wz, face, u0, v0, u1, v1, col);
         }
     }
 }

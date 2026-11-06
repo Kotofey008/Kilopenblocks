@@ -45,16 +45,32 @@ public:
     static void Build(GridData& grid, int originX, int originY, int originZ,
                       const std::vector<BlockDef>& defs, MeshBuffer& out,
                       const LightMap* lights = nullptr);
+    // Optional second buffer for translucent water faces (drawn after solids).
+    static void Build(GridData& grid, int originX, int originY, int originZ,
+                      const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
+                      MeshBuffer* waterOut, const LightMap* lights);
 
     // NeedFace* recovery (NeedFaceXP @ 0x833d0 template).
     // Returns: 0 = no face, 1 = emit face, 2 = special/partial (binary).
     // face: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
     static int NeedFace(GridData& grid, int x, int y, int z, int face);
 
+    // WaterNeedFace* @ 0x855c0–0x867f0 — cull water|water, emit against air/solid.
+    static int WaterNeedFace(GridData& grid, int x, int y, int z, int face);
+
+    // GetWaterBlockHeight @ 0x8b4a0 simplified → [0,1] fraction of cell height.
+    static float WaterHeightFrac(GridData& grid, int x, int y, int z);
+
+    static bool IsWaterCell(GridData& grid, int x, int y, int z);
+
 private:
     static bool IsSolid(GridData& grid, int x, int y, int z);
     static void EmitFace(MeshBuffer& out, int x, int y, int z, int face,
                          float u0, float v0, float u1, float v1, uint32_t color);
+    // AddWaterFace @ 0x8cc70 — side/top faces use water surface height (not full cube).
+    static void EmitWaterFace(MeshBuffer& out, int x, int y, int z, int face,
+                              float heightFrac, float u0, float v0, float u1, float v1,
+                              uint32_t color);
 };
 
 // DrawPrimitive recovered @ 0xcfa30 — uses client-state arrays:
