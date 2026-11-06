@@ -305,11 +305,13 @@ void GLApplication::RenderWorld() {
                       rm.buffer.IndexCount(), 0);
     }
     // Pass 2: liquid faces (AddWaterFace path) — blend, no depth write so
-    // submerged solid faces remain visible through the surface.
+    // submerged solid faces remain visible through the surface. Cull off so
+    // dual-sided YP (underwater looking up) is visible.
 #if defined(__ANDROID__)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
 #endif
     for (auto& rm : regionMeshes_) {
         if (!rm.valid || rm.waterBuffer.IndexCount() <= 0) continue;
@@ -319,8 +321,52 @@ void GLApplication::RenderWorld() {
                       rm.waterBuffer.IndexCount(), 0);
     }
 #if defined(__ANDROID__)
+    glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+#endif
+
+    // Underwater plane tint — start.scene WaterPlaneColor (ARGB 64 232 144 5).
+    // When the eye sample is underwater, full-screen translucent quad modulates
+    // the view (binary uses WaterPlaneColor / liquid plane overlay).
+#if defined(__ANDROID__)
+    {
+        EntityPlayer* pl = game_.GetLocalPlayer();
+        if (pl) {
+            Vector eye = pl->GetEyePosition();
+            if (game_.GetGrid().IsUnderwater(eye)) {
+                const SceneGridModelConfig& gm = game_.GetGridModelConfig();
+                glMatrixMode(GL_PROJECTION);
+                glPushMatrix();
+                glLoadIdentity();
+                glOrthof(0, 1, 0, 1, -1, 1);
+                glMatrixMode(GL_MODELVIEW);
+                glPushMatrix();
+                glLoadIdentity();
+                glDisable(GL_TEXTURE_2D);
+                glDisable(GL_DEPTH_TEST);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glColor4f(gm.waterPlaneR, gm.waterPlaneG, gm.waterPlaneB, gm.waterPlaneA);
+                const GLfloat verts[] = {
+                    0,0, 1,0, 1,1,
+                    0,0, 1,1, 0,1
+                };
+                glEnableClientState(GL_VERTEX_ARRAY);
+                glVertexPointer(2, GL_FLOAT, 0, verts);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+                glDisableClientState(GL_VERTEX_ARRAY);
+                glColor4f(1, 1, 1, 1);
+                glDisable(GL_BLEND);
+                glEnable(GL_DEPTH_TEST);
+                glEnable(GL_TEXTURE_2D);
+                glPopMatrix();
+                glMatrixMode(GL_PROJECTION);
+                glPopMatrix();
+                glMatrixMode(GL_MODELVIEW);
+            }
+        }
+    }
 #endif
 }
 

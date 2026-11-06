@@ -67,10 +67,9 @@ private:
     static bool IsSolid(GridData& grid, int x, int y, int z);
     static void EmitFace(MeshBuffer& out, int x, int y, int z, int face,
                          float u0, float v0, float u1, float v1, uint32_t color);
-    // AddWaterFace @ 0x8cc70 — side/top faces use water surface height (not full cube).
-    static void EmitWaterFace(MeshBuffer& out, int x, int y, int z, int face,
-                              float heightFrac, float u0, float v0, float u1, float v1,
-                              uint32_t color);
+    // AddWaterFace @ 0x8cc70 — per-corner heights, dual-sided YP.
+    static void EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, int z, int face,
+                              float u0, float v0, float u1, float v1, uint32_t color);
 };
 
 // DrawPrimitive recovered @ 0xcfa30 — uses client-state arrays:

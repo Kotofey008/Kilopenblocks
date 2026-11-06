@@ -1129,6 +1129,32 @@ void GridData::UpdateWater(int maxSteps) {
         }
     }
 
+    // --- New source formation (UpdateOneWaterState neighbour scan)
+    // Binary tracks adjacent level==0 cells (bStack_26 / source count). When a
+    // flowing cell has ≥2 horizontal neighbours that are sources, promote to
+    // level 0 (infinite spring). Matches classic two-source infinite water.
+    if (steps < maxSteps) {
+        for (size_t si = 0; si < active.size() && steps < maxSteps; ++si) {
+            int x = active[si].x, y = active[si].y, z = active[si].z;
+            int selfIdx = CoordToIndex(x, y, z);
+            if (selfIdx < 0 || cellTypes[selfIdx] != WATER) continue;
+            int level = getLevel(selfIdx);
+            if (level == 0) continue; // already source
+            int sourceNeigh = 0;
+            static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+            for (auto& o : offs) {
+                int ni = CoordToIndex(x + o[0], y, z + o[1]);
+                if (ni < 0 || cellTypes[ni] != WATER) continue;
+                if (getLevel(ni) == 0) ++sourceNeigh;
+            }
+            if (sourceNeigh >= 2) {
+                SetCell(x, y, z, WATER, makeWaterState(0));
+                any = true;
+                ++steps;
+            }
+        }
+    }
+
     // Evaporation / dry-out of unsupported flowing water (level > 0):
     // if a flowing cell has no adjacent water with level <= ownLevel-1 (or source),
     // and nothing above feeding it, raise level toward 7 then clear.

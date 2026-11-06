@@ -111,24 +111,42 @@ bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
     return false;
 }
 
-// GetWaterBlockHeight @ 0x8b4a0 — returns 0..0x80 fixed (1/128 block).
-// Connected water above → 0x80 (full). Else derived from level bits 0x1c00>>10.
+// GetWaterBlockHeight @ 0x8b4a0
+// Units 0..16 (MaxWaterHeight returns 0x10). Binary:
+//   water above + flow → 0x80 (full block in <<7 mesh space = 16/16)
+//   level==0 (source): height = 0x0e (14)
+//   level>0: height = 0x0f - 2*level  (13,11,…,1)
 float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return 0.f;
     unsigned short st = (idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
     if ((st & 0x3fc0) == 0 && grid.cellTypes[idx] != 5)
         return 0.f;
-    // Full column when fluid water sits above (binary returns 0x80)
     if (IsWaterCell(grid, x, y + 1, z))
-        return 1.f;
-    int level = (int)((st & 0x1c00) >> 10); // 0=source … 7=nearly dry
-    // Map level → height. Source/full ≈ 1; level 7 ≈ 1/8.
-    // Matches 0..0x80 scale used by AddWaterFace (coords << 7).
-    float h = (8 - level) / 8.f;
-    if (h < 0.125f) h = 0.125f;
-    if (h > 1.f) h = 1.f;
-    return h;
+        return 1.f; // 0x80 path
+    int level = (int)((st & 0x1c00) >> 10);
+    int units = (level == 0) ? 0xe : (0xf - 2 * level);
+    if (units < 1) units = 1;
+    if (units > 16) units = 16;
+    return (float)units / 16.f;
+}
+
+// Corner height for seamless liquid surface (GetWaterBlockFaceYP samples
+// GetWaterBlockHeight at neighbour offsets). Corner (cx,cz) ∈ {0,1}² is the
+// max height among the up-to-4 water cells that touch that vertical edge.
+static float WaterCornerHeight(GridData& grid, int x, int y, int z, int cx, int cz) {
+    float best = 0.f;
+    bool any = false;
+    for (int ox = x + cx - 1; ox <= x + cx; ++ox) {
+        for (int oz = z + cz - 1; oz <= z + cz; ++oz) {
+            if (!RegionMesher::IsWaterCell(grid, ox, y, oz)) continue;
+            float h = RegionMesher::WaterHeightFrac(grid, ox, y, oz);
+            if (!any || h > best) { best = h; any = true; }
+        }
+    }
+    if (!any)
+        return RegionMesher::WaterHeightFrac(grid, x, y, z);
+    return best;
 }
 
 // WaterNeedFace* family @ 0x855c0–0x867f0
@@ -196,44 +214,87 @@ void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
     out.PushQuad(v);
 }
 
-// AddWaterFace @ 0x8cc70 — geometry in 1/128 units; we emit float verts with
-// heightFrac ∈ (0,1]. Side faces run from cell floor to surface; YP at surface.
-void RegionMesher::EmitWaterFace(MeshBuffer& out, int x, int y, int z, int face,
-                                 float heightFrac, float u0, float v0, float u1, float v1,
-                                 uint32_t color) {
-    if (heightFrac <= 0.f) return;
-    if (heightFrac > 1.f) heightFrac = 1.f;
+// AddWaterFace @ 0x8cc70 — per-corner heights (GetWaterBlockFaceYP style) so
+// neighbouring liquid cells share edge elevations (no cracks). YP is emitted
+// with both windings so the surface is visible from below water.
+void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, int z, int face,
+                                 float u0, float v0, float u1, float v1, uint32_t color) {
+    float h00 = WaterCornerHeight(grid, x, y, z, 0, 0);
+    float h10 = WaterCornerHeight(grid, x, y, z, 1, 0);
+    float h01 = WaterCornerHeight(grid, x, y, z, 0, 1);
+    float h11 = WaterCornerHeight(grid, x, y, z, 1, 1);
+    float selfH = WaterHeightFrac(grid, x, y, z);
+    if (selfH <= 0.f && h00 <= 0.f && h10 <= 0.f && h01 <= 0.f && h11 <= 0.f)
+        return;
+
     PCT1Vertex v[4];
     auto set = [&](int i, float px, float py, float pz, float u, float vv) {
         v[i].x = px; v[i].y = py; v[i].z = pz;
         v[i].color = color; v[i].u = u; v[i].v = vv;
     };
     float fx = (float)x, fy = (float)y, fz = (float)z;
-    float top = fy + heightFrac;
-    // V coordinate scaled on sides so texture matches surface height
-    float vTop = v0 + (v1 - v0) * (1.f - heightFrac);
+
+    auto push = [&]() { out.PushQuad(v); };
+    auto pushFlip = [&]() {
+        // reverse winding for back face
+        PCT1Vertex t = v[1]; v[1] = v[3]; v[3] = t;
+        out.PushQuad(v);
+    };
+
     switch (face) {
-        case 0: // +X
-            set(0, fx+1, fy,  fz,   u0, v1); set(1, fx+1, top, fz,   u0, vTop);
-            set(2, fx+1, top, fz+1, u1, vTop); set(3, fx+1, fy,  fz+1, u1, v1); break;
-        case 1: // -X
-            set(0, fx, fy,  fz+1, u0, v1); set(1, fx, top, fz+1, u0, vTop);
-            set(2, fx, top, fz,   u1, vTop); set(3, fx, fy,  fz,   u1, v1); break;
-        case 2: // +Y surface
-            set(0, fx,   top, fz,   u0, v1); set(1, fx,   top, fz+1, u0, v0);
-            set(2, fx+1, top, fz+1, u1, v0); set(3, fx+1, top, fz,   u1, v1); break;
+        case 0: { // +X  edge heights h10, h11
+            float t0 = fy + h10, t1 = fy + h11;
+            float vt0 = v0 + (v1 - v0) * (1.f - h10);
+            float vt1 = v0 + (v1 - v0) * (1.f - h11);
+            set(0, fx+1, fy, fz,   u0, v1); set(1, fx+1, t0, fz,   u0, vt0);
+            set(2, fx+1, t1, fz+1, u1, vt1); set(3, fx+1, fy, fz+1, u1, v1);
+            push(); break;
+        }
+        case 1: { // -X  h00, h01
+            float t0 = fy + h01, t1 = fy + h00;
+            float vt0 = v0 + (v1 - v0) * (1.f - h01);
+            float vt1 = v0 + (v1 - v0) * (1.f - h00);
+            set(0, fx, fy, fz+1, u0, v1); set(1, fx, t0, fz+1, u0, vt0);
+            set(2, fx, t1, fz,   u1, vt1); set(3, fx, fy, fz,   u1, v1);
+            push(); break;
+        }
+        case 2: { // +Y surface — dual sided
+            set(0, fx,   fy+h00, fz,   u0, v1);
+            set(1, fx,   fy+h01, fz+1, u0, v0);
+            set(2, fx+1, fy+h11, fz+1, u1, v0);
+            set(3, fx+1, fy+h10, fz,   u1, v1);
+            push();
+            // back face for underwater view looking up
+            set(0, fx,   fy+h00, fz,   u0, v1);
+            set(1, fx+1, fy+h10, fz,   u1, v1);
+            set(2, fx+1, fy+h11, fz+1, u1, v0);
+            set(3, fx,   fy+h01, fz+1, u0, v0);
+            push();
+            break;
+        }
         case 3: // -Y bottom
             set(0, fx,   fy, fz+1, u0, v1); set(1, fx,   fy, fz,   u0, v0);
-            set(2, fx+1, fy, fz,   u1, v0); set(3, fx+1, fy, fz+1, u1, v1); break;
-        case 4: // +Z
-            set(0, fx+1, fy,  fz+1, u0, v1); set(1, fx+1, top, fz+1, u0, vTop);
-            set(2, fx,   top, fz+1, u1, vTop); set(3, fx,   fy,  fz+1, u1, v1); break;
-        case 5: // -Z
-            set(0, fx,   fy,  fz, u0, v1); set(1, fx,   top, fz, u0, vTop);
-            set(2, fx+1, top, fz, u1, vTop); set(3, fx+1, fy,  fz, u1, v1); break;
+            set(2, fx+1, fy, fz,   u1, v0); set(3, fx+1, fy, fz+1, u1, v1);
+            push(); break;
+        case 4: { // +Z  h01, h11
+            float t0 = fy + h11, t1 = fy + h01;
+            float vt0 = v0 + (v1 - v0) * (1.f - h11);
+            float vt1 = v0 + (v1 - v0) * (1.f - h01);
+            set(0, fx+1, fy, fz+1, u0, v1); set(1, fx+1, t0, fz+1, u0, vt0);
+            set(2, fx,   t1, fz+1, u1, vt1); set(3, fx,   fy, fz+1, u1, v1);
+            push(); break;
+        }
+        case 5: { // -Z  h00, h10
+            float t0 = fy + h00, t1 = fy + h10;
+            float vt0 = v0 + (v1 - v0) * (1.f - h00);
+            float vt1 = v0 + (v1 - v0) * (1.f - h10);
+            set(0, fx,   fy, fz, u0, v1); set(1, fx,   t0, fz, u0, vt0);
+            set(2, fx+1, t1, fz, u1, vt1); set(3, fx+1, fy, fz, u1, v1);
+            push(); break;
+        }
         default: return;
     }
-    out.PushQuad(v);
+    (void)pushFlip;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,13 +404,12 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                 } else {
                     Texture::TileUV(6, 0, u0, v0, u1, v1); // blocks.txt water UV
                 }
-                uint32_t col = 0xA0FFFFFF; // RGBA translucent (alpha≈0.63)
+                uint32_t col = 0xA0FFFFFF;
                 if (lights) {
                     uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
-                    // Keep water alpha; modulate RGB from light
                     col = (lc & 0x00FFFFFFu) | 0xA0000000u;
                 }
-                EmitWaterFace(dst, wx, wy, wz, face, h, u0, v0, u1, v1, col);
+                EmitWaterFace(grid, dst, wx, wy, wz, face, u0, v0, u1, v1, col);
             }
             continue;
         }
