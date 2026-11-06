@@ -263,16 +263,45 @@ void EntityPlayer::FixedUpdate() {
     const PlayerParamSet& ps = CurrentParamSet();
     const float dt = 1.f / 60.f;
 
-    // 2) Vertical — gravity / jump / fly from ParamSet
-    //    Binary SimplePlayer::Update reads edi+0x14 gravity, +0x18 limit, +0x1c jump
+    // 2) Vertical — from SimplePlayer::Update(ParamSet const&, float) @ 0xdc9b0
+    //    ParamSet layout (scene / binary): +0 maxSpeed, +4 accel, +8 decel,
+    //    +0xc step, +0x10 smallStep, +0x14 gravity, +0x18 gravityLimit, +0x1c jump
+    //    Vertical state at SimplePlayer+0x1f4 (recovered as velocity_.y / +500 in pdg).
+    //
+    //    mode 0 Walk: gravity when airborne; on ground jump → vy = Jump
+    //    mode 1 Swim: CONFIRMED
+    //      if jump held:
+    //        vy = min(MaximumSpeed, vy + Acceleration*dt)   // rise while holding
+    //      else:
+    //        vy += Gravity*dt                               // sink (ParamSets[1].Gravity=-4.9)
+    //      if vy < GravityLimit:                            // soft floor at -2
+    //        vy = min(GravityLimit, vy + Deceleration^2 * dt)
+    //    mode 2 Ladder: jump held → vy = Jump, else 0 (binary)
+    //    mode 3 Fly: separate path (accel along look; kept as prior RE)
     if (mode_ == Mode::Fly) {
-        // ParamSets[3] in scene still has gravity -9.81; fly control is free vertical
-        // from look pitch when forward held (prior RE behaviour; full SimplePlayer path TBD)
         velocity_.y = moveForward_ * std::sin(pitch_ * 3.14159265f / 180.f) * ps.maximumSpeed;
     } else if (mode_ == Mode::Ladder) {
-        // Ladder set has gravity 0; climb with forward/strafe as vertical intent
-        velocity_.y = moveForward_ * ps.maximumSpeed;
+        // SimplePlayer mode==2: bVar13 (jump/move-up) → vy = Jump, else 0
+        velocity_.y = jumpPressed_ ? ps.jump : 0.f;
+    } else if (mode_ == Mode::Swim) {
+        // SimplePlayer mode==1 — hold jump to swim up
+        if (jumpPressed_) {
+            float vy = velocity_.y + ps.acceleration * dt;
+            if (vy > ps.maximumSpeed)
+                vy = ps.maximumSpeed;
+            velocity_.y = vy;
+        } else {
+            velocity_.y += ps.gravity * dt;
+        }
+        // Soft clamp when falling faster than GravityLimit (swim: -2)
+        if (velocity_.y < ps.gravityLimit) {
+            float pulled = velocity_.y + ps.deceleration * ps.deceleration * dt;
+            if (pulled > ps.gravityLimit)
+                pulled = ps.gravityLimit;
+            velocity_.y = pulled;
+        }
     } else {
+        // Walk
         if (!onGround_) {
             velocity_.y += ps.gravity * dt;
             if (velocity_.y < ps.gravityLimit)

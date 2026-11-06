@@ -261,12 +261,16 @@ void GridData::FillState(int x0, int y0, int z0, int x1, int y1, int z1, unsigne
 }
 
 bool GridData::IsUnderwater(const Vector& pos) const {
+    // Binary IsUnderwater @ 0x7b350: floor cell, then (states[idx] & 0x3fc0) != 0
+    // (fluid bits). Type-5 accepted as fallback when state not yet fluid-tagged.
     int bx = (int)std::floor(pos.x);
     int by = (int)std::floor(pos.y);
     int bz = (int)std::floor(pos.z);
     int idx = CoordToIndex(bx, by, bz);
     if (idx < 0) return false;
-    return cellTypes[idx] == 5; // BlockId::Water — partial vs binary state mask 0x3fc0
+    if (idx < (int)cellStates.size() && (cellStates[idx] & 0x3fc0) != 0)
+        return true;
+    return cellTypes[idx] == 5;
 }
 
 bool GridData::OnLadder(const Vector&, const Vector&, const Vector&) const {
