@@ -327,14 +327,19 @@ void EntityPlayer::FixedUpdate() {
     }
 
     // 3) Horizontal — MaximumSpeed + Acceleration / Deceleration
-    //    Confirmed in SimplePlayer::Update: load edi+0 (max), edi+4 (accel), edi+8 (decel)
-    // Horizontal intent in yaw frame (matches original algebraic form):
-    //   at yaw=0: forward→+Z, +strafe→+X. With GetRotationVectors right=-X at yaw=0,
-    //   this equals forward*fwd + (-right)*strafe.
+    //    Confirmed in SimplePlayer::Update @ 0xdc9b0:
+    //      +0x1f0 multiplies GetRotationVectors *right*
+    //      +0x1f8 multiplies GetRotationVectors *forward*
+    //    MoveRight accelerates +0x1f0 (positive along right).
+    //    GetRotationVectors (0xb7190): at yaw=0, right=(-1,0,0), forward=(0,0,+1).
+    //    Therefore +strafe must follow right, not -right:
+    //      intent = forward * moveForward + right * moveStrafe
+    //      ix = (-sinY)*fwd + (-cosY)*strafe
+    //      iz = ( cosY)*fwd + (-sinY)*strafe
     float yawRad = yaw_ * 3.14159265f / 180.f;
     float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
-    float ix = (-sinY) * moveForward_ + (cosY) * moveStrafe_;
-    float iz = ( cosY) * moveForward_ + (sinY) * moveStrafe_;
+    float ix = (-sinY) * moveForward_ + (-cosY) * moveStrafe_;
+    float iz = ( cosY) * moveForward_ + (-sinY) * moveStrafe_;
     float ilen = std::sqrt(ix * ix + iz * iz);
     float inputMag = ilen;
     if (ilen > 1.f) { ix /= ilen; iz /= ilen; inputMag = 1.f; }
