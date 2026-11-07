@@ -28,10 +28,30 @@ public:
     const Vector& GetVelocity() const { return velocity_; }
     void SetGrid(GridData* g) { grid_ = g; }
 
+    // Step heights used by Entity::Move → StepSlideMove (binary set +0x138/+0x13c).
+    // Defaults match ParamSet::ParamSet @ 0x5e000 (step≈0.501, smallStep≈0.0626).
+    void SetStepSizes(float step, float smallStep) {
+        stepSize_ = step;
+        smallStepSize_ = smallStep;
+    }
+
     bool OnGround() const { return onGround_; }
     int GetId() const { return id_; }
 
 protected:
+    // Solid for collision / ground (air, water, flowers, mushrooms, leaves are not).
+    static bool IsCollisionSolid(unsigned char t);
+
+    // True if player AABB at `pos` (feet origin) intersects any solid cell.
+    bool CollidesAt(const Vector& pos) const;
+
+    // Axis-separated slide of `pos` by `delta`; returns false if the axis was blocked.
+    bool TryMoveAxis(Vector& pos, float d, int axis) const;
+
+    // Quake-style step-up attempt (StepSlideMove @ 0xe0e80): elevate by `step`,
+    // slide horizontally, then drop. Returns true if the stepped pose was kept.
+    bool TryStepSlide(Vector& pos, const Vector& start, float dx, float dz, float step) const;
+
     EntitySet* set_ = nullptr;
     GridData* grid_ = nullptr;
     Vector position_{0, 0, 0};
@@ -39,6 +59,8 @@ protected:
     // AABB size from LocalBBox (width, height, depth)
     Vector size_{0.49f, 1.75f, 0.49f};
     bool onGround_ = false;
+    float stepSize_ = 0.501f;
+    float smallStepSize_ = 0.062625f;
     int id_ = 0;
     static int g_FreeEntityID;
 };
