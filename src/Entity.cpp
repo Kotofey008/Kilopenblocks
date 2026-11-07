@@ -141,15 +141,32 @@ bool Entity::TryMoveAxis(Vector& pos, float d, int axis) const {
         return true;
     }
     const bool stuck = CollidesAt(pos);
-    Vector trial = pos;
-    if (axis == 0) trial.x += d;
-    else if (axis == 1) trial.y += d;
-    else trial.z += d;
-    // Free destination always OK. If already embedded in solid, still allow
-    // the move so the player can walk/jump out (user requirement).
-    if (!CollidesAt(trial) || stuck) {
-        pos = trial;
+    auto at = [&](float t) {
+        Vector p = pos;
+        if (axis == 0) p.x += d * t;
+        else if (axis == 1) p.y += d * t;
+        else p.z += d * t;
+        return p;
+    };
+    // Full step free, or already embedded → take the full delta (exit solid).
+    if (!CollidesAt(at(1.f)) || stuck) {
+        pos = at(1.f);
         return true;
+    }
+    // Blocked: binary-search the largest free fraction along this axis.
+    // All-or-nothing rejection left the player floating a few mm above a
+    // block top → onGround stayed false (jump delay / no jump after landings).
+    float lo = 0.f, hi = 1.f;
+    for (int i = 0; i < 12; ++i) {
+        float mid = 0.5f * (lo + hi);
+        if (CollidesAt(at(mid)))
+            hi = mid;
+        else
+            lo = mid;
+    }
+    if (lo > 1e-5f) {
+        pos = at(lo);
+        return true; // partial move up to contact
     }
     return false;
 }
@@ -263,11 +280,15 @@ void Entity::Move(const Vector& delta) {
     float desiredHoriz2 = delta.x * delta.x + delta.z * delta.z;
 
     // 2) Step-up when horizontal travel was incomplete (Entity::Move @ 0x5a810).
+    //    Skip while ascending (jump): step was re-snapping onto surfaces every
+    //    frame with jump held → levitation / zeroed upward velocity.
     Vector best = primary;
     float bestHoriz2 = primaryHoriz2;
     bool usedStep = false;
+    const bool ascending = (delta.y > 1e-5f) || (velocity_.y > 1e-3f);
 
-    if (desiredHoriz2 > 1e-10f && primaryHoriz2 + 1e-8f < desiredHoriz2) {
+    if (!ascending && desiredHoriz2 > 1e-10f &&
+        primaryHoriz2 + 1e-8f < desiredHoriz2) {
         const bool notPureFall =
             !(delta.x == 0.f && delta.z == 0.f && delta.y < 0.f);
         if (notPureFall) {
@@ -275,16 +296,9 @@ void Entity::Move(const Vector& delta) {
                 Vector stepped = slideStart;
                 if (!TryStepSlide(stepped, slideStart, delta.x, delta.z, step))
                     return;
-                // Successful step places us on a surface — do NOT re-apply the
-                // full vertical delta (that was re-embedding into the block).
-                // Only allow additional upward motion (jump) if still free.
-                if (delta.y > 0.f) {
-                    Vector up = stepped;
-                    if (TryMoveAxis(up, delta.y, 1))
-                        stepped = up;
-                } else {
-                    velocity_.y = 0.f; // landed
-                }
+                // Landed on a surface — kill downward / residual vertical speed.
+                if (delta.y < 0.f)
+                    velocity_.y = 0.f;
                 if (CollidesAt(stepped))
                     return;
                 float h2 = (stepped.x - slideStart.x) * (stepped.x - slideStart.x) +
@@ -300,7 +314,6 @@ void Entity::Move(const Vector& delta) {
         }
     }
 
-    // Prefer a free pose: if primary embedded us from a free start, revert axes.
     if (!usedStep && CollidesAt(primary) && !CollidesAt(slideStart)) {
         best = slideStart;
         TryMoveAxis(best, delta.x, 0);
@@ -309,7 +322,27 @@ void Entity::Move(const Vector& delta) {
     }
     position_ = best;
 
-    if (!okY && !usedStep && delta.y != 0.f && best.y == primary.y)
+    // Floor contact: binary search may leave us a hair above the top, or a
+    // blocked full-down step used to reject the move entirely. Snap onto the
+    // highest support within a small window so onGround is true next frame
+    // (eliminates the inter-jump delay).
+    if (velocity_.y <= 0.f) {
+        float supportY = 0.f;
+        const float snapWindow = std::max(stepSize_, 0.25f);
+        // Probe from slightly above feet so a top equal to feet.y is included.
+        Vector probe = position_;
+        probe.y += 0.02f;
+        if (FindSupportY(probe, snapWindow + 0.02f, supportY)) {
+            if (position_.y >= supportY - 1e-3f &&
+                position_.y <= supportY + snapWindow) {
+                position_.y = supportY;
+                velocity_.y = 0.f;
+            }
+        }
+    }
+
+    if (!okY && !usedStep && delta.y != 0.f &&
+        std::fabs(best.y - primary.y) < 1e-6f && !ascending)
         velocity_.y = 0.f;
 
     CheckGround();
@@ -516,13 +549,13 @@ void EntityPlayer::FixedUpdate() {
         velocity_.y = jumpPressed_ ? ps.jump : 0.f;
     } else if (mode_ == Mode::Swim) {
         // SimplePlayer mode==1 @ 0xdc9b0
-        // Standing on solid while submerged (seabed / ford): jump is an impulse
-        // (ParamSet.Jump), same idea as the walk branch — not continuous swim accel.
-        // In free water, hold jump to swim up (accel toward MaximumSpeed).
-        if (onGround_ && jumpPressed_) {
+        // Standing on solid while submerged: impulse jump (ParamSet.Jump).
+        // Free water: hold jump → accel up toward MaximumSpeed.
+        // Impulse only when not already rising (avoids re-boost every frame).
+        if (onGround_ && jumpPressed_ && velocity_.y <= 0.f) {
             velocity_.y = ps.jump;
             onGround_ = false;
-        } else if (jumpPressed_) {
+        } else if (jumpPressed_ && !onGround_) {
             float vy = velocity_.y + ps.acceleration * dt;
             if (vy > ps.maximumSpeed)
                 vy = ps.maximumSpeed;
@@ -532,7 +565,6 @@ void EntityPlayer::FixedUpdate() {
         } else {
             velocity_.y = std::min(velocity_.y, 0.f);
         }
-        // Soft clamp when falling faster than GravityLimit (swim: -2)
         if (velocity_.y < ps.gravityLimit) {
             float pulled = velocity_.y + ps.deceleration * ps.deceleration * dt;
             if (pulled > ps.gravityLimit)
@@ -540,15 +572,20 @@ void EntityPlayer::FixedUpdate() {
             velocity_.y = pulled;
         }
     } else {
-        // Walk
+        // Walk — SimplePlayer mode 0:
+        //   airborne: integrate gravity
+        //   on ground + jump: set vy = Jump (hold-to-rejump on land is OK once
+        //     onGround is only true while supported — see landing snap in Move)
+        // Guard velocity_.y <= 0 so a same-frame onGround flicker cannot stack
+        // jump impulses into levitation.
         if (!onGround_) {
             velocity_.y += ps.gravity * dt;
             if (velocity_.y < ps.gravityLimit)
                 velocity_.y = ps.gravityLimit;
-        } else if (jumpPressed_) {
+        } else if (jumpPressed_ && velocity_.y <= 0.f) {
             velocity_.y = ps.jump;
             onGround_ = false;
-        } else {
+        } else if (onGround_) {
             velocity_.y = std::min(velocity_.y, 0.f);
         }
     }
