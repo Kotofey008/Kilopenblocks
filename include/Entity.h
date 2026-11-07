@@ -45,11 +45,15 @@ protected:
     // True if player AABB at `pos` (feet origin) intersects any solid cell.
     bool CollidesAt(const Vector& pos) const;
 
-    // Axis-separated slide of `pos` by `delta`; returns false if the axis was blocked.
+    // Highest solid top (cellY+1) under the footprint in (pos.y - maxDrop, pos.y].
+    bool FindSupportY(const Vector& pos, float maxDrop, float& outY) const;
+
+    // Axis-separated slide. If already stuck in solid, still allows motion so the
+    // player can walk/jump out.
     bool TryMoveAxis(Vector& pos, float d, int axis) const;
 
-    // Quake-style step-up attempt (StepSlideMove @ 0xe0e80): elevate by `step`,
-    // slide horizontally, then drop. Returns true if the stepped pose was kept.
+    // Quake-style step-up (StepSlideMove @ 0xe0e80): elevate, slide, snap to
+    // support top. Rejects any final pose that still collides.
     bool TryStepSlide(Vector& pos, const Vector& start, float dx, float dz, float step) const;
 
     EntitySet* set_ = nullptr;

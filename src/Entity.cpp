@@ -42,6 +42,8 @@ bool Entity::IsCollisionSolid(unsigned char t) {
 //
 // Any solid under ANY part of the horizontal footprint counts — a single
 // corner of the AABB on a block edge is enough to allow jump.
+// Extra: if already intersecting solid (stuck), treat as grounded so jump
+// remains available to help escape (gameplay safety, not binary).
 // ---------------------------------------------------------------------------
 bool Entity::CheckGround() {
     if (!grid_) { onGround_ = false; return false; }
@@ -49,18 +51,13 @@ bool Entity::CheckGround() {
     const float kGroundEps = 0.001f; // binary constant 0x107e28
     const float halfW = size_.x * 0.5f;
     const float halfD = size_.z * 0.5f;
-    // Sample just below feet across the full AABB footprint (not centre only).
     const float sampleY = position_.y - kGroundEps;
     const int y0 = (int)std::floor(sampleY);
 
-    const float x0 = position_.x - halfW;
-    const float x1 = position_.x + halfW;
-    const float z0 = position_.z - halfD;
-    const float z1 = position_.z + halfD;
-    const int ix0 = (int)std::floor(x0);
-    const int ix1 = (int)std::floor(x1 - 1e-6f);
-    const int iz0 = (int)std::floor(z0);
-    const int iz1 = (int)std::floor(z1 - 1e-6f);
+    const int ix0 = (int)std::floor(position_.x - halfW);
+    const int ix1 = (int)std::floor(position_.x + halfW - 1e-6f);
+    const int iz0 = (int)std::floor(position_.z - halfD);
+    const int iz1 = (int)std::floor(position_.z + halfD - 1e-6f);
 
     onGround_ = false;
     for (int bx = ix0; bx <= ix1 && !onGround_; ++bx) {
@@ -71,6 +68,9 @@ bool Entity::CheckGround() {
                 onGround_ = true;
         }
     }
+    // Stuck inside solid: still allow jump / mode logic to work.
+    if (!onGround_ && CollidesAt(position_))
+        onGround_ = true;
     return onGround_;
 }
 
@@ -79,8 +79,8 @@ bool Entity::CollidesAt(const Vector& pos) const {
     const float halfW = size_.x * 0.5f;
     const float halfD = size_.z * 0.5f;
     const float h = size_.y;
-    // Inclusive AABB cell range; shrink max slightly so exact integer faces
-    // do not double-count the neighbouring cell.
+    // Feet exactly on a block top (integer Y) must NOT count the block below:
+    // solid cell y occupies [y, y+1), top surface is y+1.0 → floor(feet)=y+1.
     const int x0 = (int)std::floor(pos.x - halfW);
     const int x1 = (int)std::floor(pos.x + halfW - 1e-6f);
     const int y0 = (int)std::floor(pos.y);
@@ -98,6 +98,41 @@ bool Entity::CollidesAt(const Vector& pos) const {
     return false;
 }
 
+// Highest solid top under the footprint in (pos.y - maxDrop, pos.y].
+// Block cell Y occupies [Y, Y+1); standing surface is Y+1.
+bool Entity::FindSupportY(const Vector& pos, float maxDrop, float& outY) const {
+    if (!grid_ || maxDrop <= 0.f) return false;
+    const float halfW = size_.x * 0.5f;
+    const float halfD = size_.z * 0.5f;
+    const float minY = pos.y - maxDrop;
+    const int ix0 = (int)std::floor(pos.x - halfW);
+    const int ix1 = (int)std::floor(pos.x + halfW - 1e-6f);
+    const int iz0 = (int)std::floor(pos.z - halfD);
+    const int iz1 = (int)std::floor(pos.z + halfD - 1e-6f);
+    // Cells whose tops can lie in (minY, pos.y]
+    const int yLo = (int)std::floor(minY);
+    const int yHi = (int)std::floor(pos.y - 1e-5f);
+    float best = -1e30f;
+    bool found = false;
+    for (int by = yLo; by <= yHi; ++by) {
+        const float top = (float)(by + 1);
+        if (top <= minY + 1e-5f || top > pos.y + 1e-4f)
+            continue;
+        for (int bx = ix0; bx <= ix1; ++bx) {
+            for (int bz = iz0; bz <= iz1; ++bz) {
+                int idx = grid_->CoordToIndex(bx, by, bz);
+                if (idx < 0) continue;
+                if (IsCollisionSolid(grid_->cellTypes[idx])) {
+                    if (top > best) best = top;
+                    found = true;
+                }
+            }
+        }
+    }
+    if (found) outY = best;
+    return found;
+}
+
 bool Entity::TryMoveAxis(Vector& pos, float d, int axis) const {
     if (d == 0.f || !grid_) {
         if (axis == 0) pos.x += d;
@@ -105,11 +140,14 @@ bool Entity::TryMoveAxis(Vector& pos, float d, int axis) const {
         else pos.z += d;
         return true;
     }
+    const bool stuck = CollidesAt(pos);
     Vector trial = pos;
     if (axis == 0) trial.x += d;
     else if (axis == 1) trial.y += d;
     else trial.z += d;
-    if (!CollidesAt(trial)) {
+    // Free destination always OK. If already embedded in solid, still allow
+    // the move so the player can walk/jump out (user requirement).
+    if (!CollidesAt(trial) || stuck) {
         pos = trial;
         return true;
     }
@@ -117,55 +155,58 @@ bool Entity::TryMoveAxis(Vector& pos, float d, int axis) const {
 }
 
 // ---------------------------------------------------------------------------
-// StepSlideMove @ 0xe0e80 — simplified voxel AABB equivalent of the binary
-// Quake-style algorithm recovered from pdg:
+// StepSlideMove @ 0xe0e80 — voxel AABB equivalent of binary Quake-style step:
 //
 //   1. SlideMove(start → end)
-//   2. if blocked && stepHeight != 0 && not purely falling:
-//        trace end → (end.x, end.y+step, end.z); require clear
-//        SlideMove from elevated start toward elevated end
-//        drop back down (trace elevated → original Y)
-//        keep result if horizontal progress improved
+//   2. if blocked && stepHeight != 0:
+//        require clear path start → (start + up*step)
+//        SlideMove elevated horizontal target
+//        drop onto support surface within step range (trace down)
 //
-// Entity::Move @ 0x5a810 tries stepSize (set+0x138) then smallStepSize (+0x13c)
-// and keeps the candidate with greater horizontal travel.
+// Critical: final pose MUST be collision-free. Landing snaps to the solid
+// block top (cellY+1), never into the interior of a block.
 // ---------------------------------------------------------------------------
 bool Entity::TryStepSlide(Vector& pos, const Vector& start, float dx, float dz,
                           float step) const {
     if (step <= 0.f || !grid_) return false;
     if (dx == 0.f && dz == 0.f) return false;
 
-    // Elevate from the *start* of the move (binary: start.y + stepHeight).
+    // 1) Elevate from start — must be free (binary upward trace fraction ≥ 1).
     Vector elevated = start;
     elevated.y += step;
     if (CollidesAt(elevated))
-        return false; // no headroom / blocked above
+        return false;
 
-    // Horizontal slide at the elevated height.
+    // 2) Horizontal slide at elevated height.
     Vector slid = elevated;
-    TryMoveAxis(slid, dx, 0);
-    TryMoveAxis(slid, dz, 2);
+    // Use strict collision here (ignore "stuck" path): elevated must stay free.
+    {
+        Vector t = slid; t.x += dx;
+        if (!CollidesAt(t)) slid = t;
+        t = slid; t.z += dz;
+        if (!CollidesAt(t)) slid = t;
+    }
 
     float moved2 = (slid.x - start.x) * (slid.x - start.x) +
                    (slid.z - start.z) * (slid.z - start.z);
     if (moved2 < 1e-8f)
-        return false; // no horizontal progress
+        return false;
 
-    // Drop back down by up to `step` onto the surface (binary fraction lerp).
+    // 3) Drop onto the highest solid top within the step window.
+    //    Binary: downward trace fraction → y = lerp(elevated.y, lowY, frac).
+    //    Voxel equivalent: snap feet to support surface (cellY+1).
     Vector landed = slid;
-    if (!TryMoveAxis(landed, -step, 1)) {
-        // Partially blocked on the way down: nudge to the highest free Y
-        // within the step window by binary search (keeps us on the ledge).
-        float lo = slid.y - step, hi = slid.y;
-        for (int i = 0; i < 8; ++i) {
-            float mid = 0.5f * (lo + hi);
-            Vector t = slid; t.y = mid;
-            if (CollidesAt(t)) hi = mid;
-            else lo = mid;
-        }
-        landed = slid;
-        landed.y = lo;
+    float supportY = 0.f;
+    if (FindSupportY(slid, step, supportY)) {
+        landed.y = supportY;
+    } else {
+        // No support in range — drop full step only if the end is free.
+        landed.y = slid.y - step;
     }
+
+    // 4) Hard reject anything that embeds the AABB in solid.
+    if (CollidesAt(landed))
+        return false;
 
     pos = landed;
     return true;
@@ -180,58 +221,95 @@ void Entity::Move(const Vector& delta) {
     }
 
     const Vector start = position_;
+    const bool wasStuck = CollidesAt(start);
+
+    // Optional unstick: if embedded, try to rise onto the nearest free pose
+    // within step height before the main slide (helps after a bad step/frame).
+    if (wasStuck) {
+        float supportY = 0.f;
+        Vector probe = start;
+        // Prefer standing on top of the solid we are inside of.
+        if (FindSupportY(Vector{start.x, start.y + size_.y, start.z},
+                         size_.y + stepSize_, supportY)) {
+            probe.y = supportY;
+            if (!CollidesAt(probe))
+                position_ = probe;
+        }
+        // If still stuck, search upward for free space.
+        if (CollidesAt(position_)) {
+            for (float up = 0.05f; up <= stepSize_ + 1.01f; up += 0.05f) {
+                Vector t = start;
+                t.y = start.y + up;
+                if (!CollidesAt(t)) {
+                    position_ = t;
+                    break;
+                }
+            }
+        }
+    }
+
+    const Vector slideStart = position_;
 
     // 1) Primary axis-separated slide (no step).
-    Vector primary = start;
+    Vector primary = slideStart;
     bool okX = TryMoveAxis(primary, delta.x, 0);
     bool okY = TryMoveAxis(primary, delta.y, 1);
     bool okZ = TryMoveAxis(primary, delta.z, 2);
     if (!okY && delta.y != 0.f)
         velocity_.y = 0.f;
 
-    float primaryHoriz2 = (primary.x - start.x) * (primary.x - start.x) +
-                          (primary.z - start.z) * (primary.z - start.z);
+    float primaryHoriz2 = (primary.x - slideStart.x) * (primary.x - slideStart.x) +
+                          (primary.z - slideStart.z) * (primary.z - slideStart.z);
     float desiredHoriz2 = delta.x * delta.x + delta.z * delta.z;
 
-    // 2) Step-up candidates when horizontal travel was incomplete.
-    //    Binary Entity::Move tries step then smallStep and keeps the better
-    //    horizontal result (pdg 0x5a810 comparison of squared XZ deltas).
+    // 2) Step-up when horizontal travel was incomplete (Entity::Move @ 0x5a810).
     Vector best = primary;
     float bestHoriz2 = primaryHoriz2;
+    bool usedStep = false;
 
     if (desiredHoriz2 > 1e-10f && primaryHoriz2 + 1e-8f < desiredHoriz2) {
-        // Only attempt step-up when not moving purely downward past the ledge
-        // (binary: start.y <= end.y is required before step). For combined
-        // gravity+walk we still allow step when there is horizontal intent.
-        const bool notPureFall = !(delta.x == 0.f && delta.z == 0.f && delta.y < 0.f);
+        const bool notPureFall =
+            !(delta.x == 0.f && delta.z == 0.f && delta.y < 0.f);
         if (notPureFall) {
-            Vector stepped = start;
-            if (TryStepSlide(stepped, start, delta.x, delta.z, stepSize_)) {
-                // Apply vertical component of delta after the step land.
-                TryMoveAxis(stepped, delta.y, 1);
-                float h2 = (stepped.x - start.x) * (stepped.x - start.x) +
-                           (stepped.z - start.z) * (stepped.z - start.z);
+            auto consider = [&](float step) {
+                Vector stepped = slideStart;
+                if (!TryStepSlide(stepped, slideStart, delta.x, delta.z, step))
+                    return;
+                // Successful step places us on a surface — do NOT re-apply the
+                // full vertical delta (that was re-embedding into the block).
+                // Only allow additional upward motion (jump) if still free.
+                if (delta.y > 0.f) {
+                    Vector up = stepped;
+                    if (TryMoveAxis(up, delta.y, 1))
+                        stepped = up;
+                } else {
+                    velocity_.y = 0.f; // landed
+                }
+                if (CollidesAt(stepped))
+                    return;
+                float h2 = (stepped.x - slideStart.x) * (stepped.x - slideStart.x) +
+                           (stepped.z - slideStart.z) * (stepped.z - slideStart.z);
                 if (h2 > bestHoriz2) {
                     best = stepped;
                     bestHoriz2 = h2;
+                    usedStep = true;
                 }
-            }
-            Vector steppedSmall = start;
-            if (TryStepSlide(steppedSmall, start, delta.x, delta.z, smallStepSize_)) {
-                TryMoveAxis(steppedSmall, delta.y, 1);
-                float h2 = (steppedSmall.x - start.x) * (steppedSmall.x - start.x) +
-                           (steppedSmall.z - start.z) * (steppedSmall.z - start.z);
-                if (h2 > bestHoriz2) {
-                    best = steppedSmall;
-                    bestHoriz2 = h2;
-                }
-            }
+            };
+            consider(stepSize_);
+            consider(smallStepSize_);
         }
     }
 
+    // Prefer a free pose: if primary embedded us from a free start, revert axes.
+    if (!usedStep && CollidesAt(primary) && !CollidesAt(slideStart)) {
+        best = slideStart;
+        TryMoveAxis(best, delta.x, 0);
+        TryMoveAxis(best, delta.y, 1);
+        TryMoveAxis(best, delta.z, 2);
+    }
     position_ = best;
-    // Hitting a ceiling/floor on the final pose zeros vertical velocity.
-    if (!okY && delta.y != 0.f && best.y == primary.y)
+
+    if (!okY && !usedStep && delta.y != 0.f && best.y == primary.y)
         velocity_.y = 0.f;
 
     CheckGround();
