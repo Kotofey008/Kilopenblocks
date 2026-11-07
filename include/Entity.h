@@ -52,9 +52,13 @@ protected:
     // player can walk/jump out.
     bool TryMoveAxis(Vector& pos, float d, int axis) const;
 
-    // Quake-style step-up (StepSlideMove @ 0xe0e80): elevate, slide, snap to
-    // support top. Rejects any final pose that still collides.
-    bool TryStepSlide(Vector& pos, const Vector& start, float dx, float dz, float step) const;
+    // SlideMove stand-in (axis-separated). Sets blockedHoriz if full dx/dz not taken.
+    bool SlideMoveAxes(Vector& pos, float dx, float dy, float dz, bool& blockedHoriz) const;
+
+    // StepSlideMove @ 0xe0e80 stand-in. Writes final pose to out; returns horiz²
+    // travel from start. outLanded = true when the step-down hit a surface.
+    float TryStepSlide(Vector& out, const Vector& start, const Vector& desiredEnd,
+                       float step, bool& outLanded) const;
 
     EntitySet* set_ = nullptr;
     GridData* grid_ = nullptr;

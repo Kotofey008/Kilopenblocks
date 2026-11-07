@@ -167,72 +167,128 @@ bool Entity::TryMoveAxis(Vector& pos, float d, int axis) const {
 }
 
 // ---------------------------------------------------------------------------
-// StepSlideMove @ 0xe0e80 — matches binary control flow (pdg):
+// StepSlideMove @ 0xe0e80 — binary control flow (ghidra / pdg):
 //
-//   SlideMove(start → end)
-//   if (start.y <= end.y) && (blocked bit) && stepHeight != 0:
-//     trace end → end+(0,step,0); require clear (fraction ≥ 1)
-//     SlideMove from elevated start with elevated end
-//     drop: y = lerp(elevated.y, lowY, downFraction)   // continuous, not
-//           a long-range teleport onto distant tops
+//   result = SlideMove(start → desiredEnd)
+//   if (desiredEnd.y <= start.y) && (result blocked bit0) && stepHeight != 0:
+//     upward Trace(start → start+(0,step,0)); require fraction ≥ 1 (clear)
+//     elevStart = start + (0,step,0)
+//     elevEnd   = desiredEnd + (0,step,0)
+//     result = SlideMove(elevStart → elevEnd)
+//     down Trace(result → (result.x, desiredEnd.y, result.z))
+//     result.y = lerp(result.y, desiredEnd.y, downFraction)
+//     if downFraction < 1: flags |= 2
+//   write result to out (desiredEnd in binary is in/out)
 //
-// Voxel stand-in for the downward trace: binary-search along -step from the
-// elevated horizontal result. Only the step window is searched — never a
-// general "pull to nearest block" used for ordinary landings.
+// Entity::Move @ 0x5a810:
+//   desired = pos + delta
+//   r1 = StepSlideMove(..., stepSize, pos, desired)
+//   if horiz(r1) < horiz(delta): r2 = StepSlideMove(..., smallStep, ...); pick better
+//   pos = chosen
+//   (velocity zero for floor/ceiling is done by caller via flags / vertical shortfall)
+//
+// Voxel stand-ins: axis TryMoveAxis for SlideMove; CollidesAt for Trace clear/hit.
 // ---------------------------------------------------------------------------
-bool Entity::TryStepSlide(Vector& pos, const Vector& start, float dx, float dz,
-                          float step) const {
-    if (step <= 0.f || !grid_) return false;
-    if (dx == 0.f && dz == 0.f) return false;
 
-    // 1) Elevate from start — must be free (binary upward fraction ≥ 1).
-    Vector elevated = start;
-    elevated.y += step;
-    if (CollidesAt(elevated))
-        return false;
-
-    // 2) Horizontal slide at elevated height (strict: no "stuck" passthrough).
-    Vector slid = elevated;
-    {
-        Vector t = slid; t.x += dx;
-        if (!CollidesAt(t)) slid.x = t.x;
-        t = slid; t.z += dz;
-        if (!CollidesAt(t)) slid.z = t.z;
+// Axis-separated stand-in for SlideMove. Returns true if horizontal motion was
+// blocked (could not take full dx/dz) — corresponds to binary blocked bit 0.
+bool Entity::SlideMoveAxes(Vector& pos, float dx, float dy, float dz,
+                           bool& blockedHoriz) const {
+    blockedHoriz = false;
+    const float x0 = pos.x, z0 = pos.z;
+    TryMoveAxis(pos, dx, 0);
+    TryMoveAxis(pos, dy, 1);
+    TryMoveAxis(pos, dz, 2);
+    const float gotX = pos.x - x0;
+    const float gotZ = pos.z - z0;
+    // Incomplete horizontal progress → blocked (bit 0).
+    if (dx * dx + dz * dz > 1e-12f) {
+        const float want2 = dx * dx + dz * dz;
+        const float got2 = gotX * gotX + gotZ * gotZ;
+        if (got2 + 1e-8f < want2)
+            blockedHoriz = true;
     }
-    float moved2 = (slid.x - start.x) * (slid.x - start.x) +
-                   (slid.z - start.z) * (slid.z - start.z);
-    if (moved2 < 1e-8f)
-        return false;
+    return true;
+}
 
-    // 3) Drop within the step window only — binary search along -step.
-    //    Equivalent to the binary downward trace + fraction lerp.
-    Vector landed = slid;
-    {
-        Vector down = slid;
-        down.y -= step;
-        if (!CollidesAt(down)) {
-            landed = down;
-        } else {
-            float lo = 0.f, hi = 1.f; // 0 = at slid.y, 1 = at slid.y-step
-            for (int i = 0; i < 12; ++i) {
-                float mid = 0.5f * (lo + hi);
-                Vector t = slid;
-                t.y = slid.y - step * mid;
-                if (CollidesAt(t))
-                    hi = mid;
-                else
-                    lo = mid;
+// One full StepSlideMove for a given step height. Writes final position to out.
+// Returns squared horizontal distance travelled from start (for Move's picker).
+// outLanded: true if the step-down trace hit (fraction < 1) — floor contact.
+float Entity::TryStepSlide(Vector& out, const Vector& start, const Vector& desiredEnd,
+                           float step, bool& outLanded) const {
+    outLanded = false;
+    const float dx = desiredEnd.x - start.x;
+    const float dy = desiredEnd.y - start.y;
+    const float dz = desiredEnd.z - start.z;
+
+    // --- first SlideMove(start → desiredEnd) ---
+    Vector result = start;
+    bool blocked = false;
+    SlideMoveAxes(result, dx, dy, dz, blocked);
+
+    // Binary gate: (desiredEnd.y <= start.y) && blocked && step != 0
+    if (desiredEnd.y <= start.y && blocked && step > 0.f) {
+        // Upward must be fully clear from start (fraction ≥ 1).
+        Vector elevStart = start;
+        elevStart.y += step;
+        if (!CollidesAt(elevStart)) {
+            Vector elevEnd = desiredEnd;
+            elevEnd.y += step;
+
+            // Slide at elevated height.
+            Vector elev = elevStart;
+            bool elevBlocked = false;
+            SlideMoveAxes(elev, elevEnd.x - elevStart.x, elevEnd.y - elevStart.y,
+                          elevEnd.z - elevStart.z, elevBlocked);
+            (void)elevBlocked;
+
+            // Downward toward original desiredEnd.y (binary low target).
+            // Voxel: binary-search free y in [desiredEnd.y, elev.y].
+            const float highY = elev.y;
+            const float lowY = desiredEnd.y;
+            Vector landed = elev;
+            if (highY > lowY + 1e-6f) {
+                Vector atLow = elev;
+                atLow.y = lowY;
+                if (!CollidesAt(atLow)) {
+                    // Full clear down to desiredEnd.y — no contact.
+                    landed.y = lowY;
+                    outLanded = false;
+                } else {
+                    // Hit: approach contact from free side.
+                    float lo = 0.f, hi = 1.f; // 0 = highY, 1 = lowY
+                    for (int i = 0; i < 12; ++i) {
+                        float mid = 0.5f * (lo + hi);
+                        Vector t = elev;
+                        t.y = highY + (lowY - highY) * mid;
+                        if (CollidesAt(t))
+                            hi = mid;
+                        else
+                            lo = mid;
+                    }
+                    landed.y = highY + (lowY - highY) * lo;
+                    outLanded = true; // fraction < 1
+                }
+            } else {
+                // elevated result already at or below low target
+                if (CollidesAt(landed)) {
+                    // should not happen if elev slide was free; reject step path
+                } else {
+                    outLanded = false;
+                }
             }
-            landed = slid;
-            landed.y = slid.y - step * lo;
+
+            if (!CollidesAt(landed)) {
+                result = landed;
+            }
+            // else keep first SlideMove result
         }
     }
 
-    if (CollidesAt(landed))
-        return false;
-
-    pos = landed;
-    return true;
+    out = result;
+    const float hx = result.x - start.x;
+    const float hz = result.z - start.z;
+    return hx * hx + hz * hz;
 }
 
 void Entity::Move(const Vector& delta) {
@@ -256,63 +312,43 @@ void Entity::Move(const Vector& delta) {
         }
     }
 
-    const Vector slideStart = position_;
+    const Vector start = position_;
+    Vector desired = start;
+    desired.x += delta.x;
+    desired.y += delta.y;
+    desired.z += delta.z;
 
-    // 1) Primary axis-separated slide.
-    Vector primary = slideStart;
-    TryMoveAxis(primary, delta.x, 0);
-    bool okY = TryMoveAxis(primary, delta.y, 1);
-    TryMoveAxis(primary, delta.z, 2);
-    // Floor/ceiling contact: full vertical delta not achieved → stop vertical vel.
+    // Entity::Move: try large step, then small step if first horiz is worse than
+    // desired horiz; pick the result with greater horizontal travel from start.
+    bool landed1 = false, landed2 = false;
+    Vector r1, r2;
+    const float h1 = TryStepSlide(r1, start, desired, stepSize_, landed1);
+    float bestH = h1;
+    Vector best = r1;
+    bool bestLanded = landed1;
+
+    const float desiredH2 = delta.x * delta.x + delta.z * delta.z;
+    if (desiredH2 > 1e-12f && h1 + 1e-8f < desiredH2) {
+        const float h2 = TryStepSlide(r2, start, desired, smallStepSize_, landed2);
+        if (h2 > bestH) {
+            best = r2;
+            bestH = h2;
+            bestLanded = landed2;
+        }
+    }
+
+    // Floor / ceiling contact from vertical shortfall (primary slide path).
+    // Binary uses Move return flags; we approximate: vertical not fully applied.
     if (delta.y != 0.f) {
-        const float intendedY = slideStart.y + delta.y;
-        if (std::fabs(primary.y - intendedY) > 1e-5f)
+        const float intendedY = start.y + delta.y;
+        if (std::fabs(best.y - intendedY) > 1e-4f)
             velocity_.y = 0.f;
     }
-    (void)okY;
-
-    float primaryHoriz2 = (primary.x - slideStart.x) * (primary.x - slideStart.x) +
-                          (primary.z - slideStart.z) * (primary.z - slideStart.z);
-    float desiredHoriz2 = delta.x * delta.x + delta.z * delta.z;
-
-    // 2) Step-up (StepSlideMove @ 0xe0e80 / Entity::Move @ 0x5a810).
-    //    Binary gate: (start.y <= end.y) && blocked && stepHeight != 0.
-    //    Critical interaction with jump: when delta.y > 0 the first SlideMove
-    //    carries the player up; running step afterward elevates+drops back onto
-    //    the same surface and cancels the jump → levitation while holding jump
-    //    and strafing. Only attempt step when vertical intent is flat/down so
-    //    step cannot undo an upward impulse.
-    Vector best = primary;
-    float bestHoriz2 = primaryHoriz2;
-
-    const bool stepAllowed =
-        (delta.y <= 1e-6f) && (velocity_.y <= 1e-3f) &&
-        desiredHoriz2 > 1e-10f && primaryHoriz2 + 1e-8f < desiredHoriz2;
-
-    if (stepAllowed) {
-        auto consider = [&](float step) {
-            Vector stepped = slideStart;
-            if (!TryStepSlide(stepped, slideStart, delta.x, delta.z, step))
-                return;
-            if (CollidesAt(stepped))
-                return;
-            // Vertical residual (usually ≤ 0 here): settle; zero downward speed.
-            if (delta.y < 0.f) {
-                Vector withY = stepped;
-                if (TryMoveAxis(withY, delta.y, 1))
-                    stepped = withY;
-                velocity_.y = 0.f;
-            }
-            float h2 = (stepped.x - slideStart.x) * (stepped.x - slideStart.x) +
-                       (stepped.z - slideStart.z) * (stepped.z - slideStart.z);
-            if (h2 > bestHoriz2) {
-                best = stepped;
-                bestHoriz2 = h2;
-            }
-        };
-        consider(stepSize_);
-        consider(smallStepSize_);
-    }
+    // Step-down contact (binary flags bit 2): also kill vertical velocity.
+    // Do NOT zero vy when step path left us in air (outLanded == false) —
+    // that was the levitation bug (hover with vy=0 until gravity rebuilt).
+    if (bestLanded)
+        velocity_.y = 0.f;
 
     position_ = best;
     CheckGround();
