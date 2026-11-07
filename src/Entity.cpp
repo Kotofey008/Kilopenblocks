@@ -40,10 +40,8 @@ bool Entity::IsCollisionSolid(unsigned char t) {
 //   Trace AABB (extents at set+0x11c/+0x128) start→end
 //   onGround (+0x15) = (hit fraction < 1.0)
 //
-// Any solid under ANY part of the horizontal footprint counts — a single
-// corner of the AABB on a block edge is enough to allow jump.
-// Extra: if already intersecting solid (stuck), treat as grounded so jump
-// remains available to help escape (gameplay safety, not binary).
+// Equivalent voxel test: any solid cell under the horizontal footprint at
+// y = feetY - 0.001. NO long-range snap — only the 1mm probe matches binary.
 // ---------------------------------------------------------------------------
 bool Entity::CheckGround() {
     if (!grid_) { onGround_ = false; return false; }
@@ -68,9 +66,6 @@ bool Entity::CheckGround() {
                 onGround_ = true;
         }
     }
-    // Stuck inside solid: still allow jump / mode logic to work.
-    if (!onGround_ && CollidesAt(position_))
-        onGround_ = true;
     return onGround_;
 }
 
@@ -172,56 +167,67 @@ bool Entity::TryMoveAxis(Vector& pos, float d, int axis) const {
 }
 
 // ---------------------------------------------------------------------------
-// StepSlideMove @ 0xe0e80 — voxel AABB equivalent of binary Quake-style step:
+// StepSlideMove @ 0xe0e80 — matches binary control flow (pdg):
 //
-//   1. SlideMove(start → end)
-//   2. if blocked && stepHeight != 0:
-//        require clear path start → (start + up*step)
-//        SlideMove elevated horizontal target
-//        drop onto support surface within step range (trace down)
+//   SlideMove(start → end)
+//   if (start.y <= end.y) && (blocked bit) && stepHeight != 0:
+//     trace end → end+(0,step,0); require clear (fraction ≥ 1)
+//     SlideMove from elevated start with elevated end
+//     drop: y = lerp(elevated.y, lowY, downFraction)   // continuous, not
+//           a long-range teleport onto distant tops
 //
-// Critical: final pose MUST be collision-free. Landing snaps to the solid
-// block top (cellY+1), never into the interior of a block.
+// Voxel stand-in for the downward trace: binary-search along -step from the
+// elevated horizontal result. Only the step window is searched — never a
+// general "pull to nearest block" used for ordinary landings.
 // ---------------------------------------------------------------------------
 bool Entity::TryStepSlide(Vector& pos, const Vector& start, float dx, float dz,
                           float step) const {
     if (step <= 0.f || !grid_) return false;
     if (dx == 0.f && dz == 0.f) return false;
 
-    // 1) Elevate from start — must be free (binary upward trace fraction ≥ 1).
+    // 1) Elevate from start — must be free (binary upward fraction ≥ 1).
     Vector elevated = start;
     elevated.y += step;
     if (CollidesAt(elevated))
         return false;
 
-    // 2) Horizontal slide at elevated height.
+    // 2) Horizontal slide at elevated height (strict: no "stuck" passthrough).
     Vector slid = elevated;
-    // Use strict collision here (ignore "stuck" path): elevated must stay free.
     {
         Vector t = slid; t.x += dx;
-        if (!CollidesAt(t)) slid = t;
+        if (!CollidesAt(t)) slid.x = t.x;
         t = slid; t.z += dz;
-        if (!CollidesAt(t)) slid = t;
+        if (!CollidesAt(t)) slid.z = t.z;
     }
-
     float moved2 = (slid.x - start.x) * (slid.x - start.x) +
                    (slid.z - start.z) * (slid.z - start.z);
     if (moved2 < 1e-8f)
         return false;
 
-    // 3) Drop onto the highest solid top within the step window.
-    //    Binary: downward trace fraction → y = lerp(elevated.y, lowY, frac).
-    //    Voxel equivalent: snap feet to support surface (cellY+1).
+    // 3) Drop within the step window only — binary search along -step.
+    //    Equivalent to the binary downward trace + fraction lerp.
     Vector landed = slid;
-    float supportY = 0.f;
-    if (FindSupportY(slid, step, supportY)) {
-        landed.y = supportY;
-    } else {
-        // No support in range — drop full step only if the end is free.
-        landed.y = slid.y - step;
+    {
+        Vector down = slid;
+        down.y -= step;
+        if (!CollidesAt(down)) {
+            landed = down;
+        } else {
+            float lo = 0.f, hi = 1.f; // 0 = at slid.y, 1 = at slid.y-step
+            for (int i = 0; i < 12; ++i) {
+                float mid = 0.5f * (lo + hi);
+                Vector t = slid;
+                t.y = slid.y - step * mid;
+                if (CollidesAt(t))
+                    hi = mid;
+                else
+                    lo = mid;
+            }
+            landed = slid;
+            landed.y = slid.y - step * lo;
+        }
     }
 
-    // 4) Hard reject anything that embeds the AABB in solid.
     if (CollidesAt(landed))
         return false;
 
@@ -237,114 +243,78 @@ void Entity::Move(const Vector& delta) {
         return;
     }
 
-    const Vector start = position_;
-    const bool wasStuck = CollidesAt(start);
-
-    // Optional unstick: if embedded, try to rise onto the nearest free pose
-    // within step height before the main slide (helps after a bad step/frame).
-    if (wasStuck) {
-        float supportY = 0.f;
-        Vector probe = start;
-        // Prefer standing on top of the solid we are inside of.
-        if (FindSupportY(Vector{start.x, start.y + size_.y, start.z},
-                         size_.y + stepSize_, supportY)) {
-            probe.y = supportY;
-            if (!CollidesAt(probe))
-                position_ = probe;
-        }
-        // If still stuck, search upward for free space.
-        if (CollidesAt(position_)) {
-            for (float up = 0.05f; up <= stepSize_ + 1.01f; up += 0.05f) {
-                Vector t = start;
-                t.y = start.y + up;
-                if (!CollidesAt(t)) {
-                    position_ = t;
-                    break;
-                }
+    // Mild unstick only: nudge up if the AABB is embedded (no long-range
+    // FindSupportY teleport — that was pulling the player onto distant tops).
+    if (CollidesAt(position_)) {
+        for (float up = 0.02f; up <= 1.05f; up += 0.02f) {
+            Vector t = position_;
+            t.y += up;
+            if (!CollidesAt(t)) {
+                position_ = t;
+                break;
             }
         }
     }
 
     const Vector slideStart = position_;
 
-    // 1) Primary axis-separated slide (no step).
+    // 1) Primary axis-separated slide.
     Vector primary = slideStart;
-    bool okX = TryMoveAxis(primary, delta.x, 0);
+    TryMoveAxis(primary, delta.x, 0);
     bool okY = TryMoveAxis(primary, delta.y, 1);
-    bool okZ = TryMoveAxis(primary, delta.z, 2);
-    if (!okY && delta.y != 0.f)
-        velocity_.y = 0.f;
+    TryMoveAxis(primary, delta.z, 2);
+    // Floor/ceiling contact: full vertical delta not achieved → stop vertical vel.
+    if (delta.y != 0.f) {
+        const float intendedY = slideStart.y + delta.y;
+        if (std::fabs(primary.y - intendedY) > 1e-5f)
+            velocity_.y = 0.f;
+    }
+    (void)okY;
 
     float primaryHoriz2 = (primary.x - slideStart.x) * (primary.x - slideStart.x) +
                           (primary.z - slideStart.z) * (primary.z - slideStart.z);
     float desiredHoriz2 = delta.x * delta.x + delta.z * delta.z;
 
-    // 2) Step-up when horizontal travel was incomplete (Entity::Move @ 0x5a810).
-    //    Skip while ascending (jump): step was re-snapping onto surfaces every
-    //    frame with jump held → levitation / zeroed upward velocity.
+    // 2) Step-up (StepSlideMove @ 0xe0e80 / Entity::Move @ 0x5a810).
+    //    Binary gate: (start.y <= end.y) && blocked && stepHeight != 0.
+    //    Critical interaction with jump: when delta.y > 0 the first SlideMove
+    //    carries the player up; running step afterward elevates+drops back onto
+    //    the same surface and cancels the jump → levitation while holding jump
+    //    and strafing. Only attempt step when vertical intent is flat/down so
+    //    step cannot undo an upward impulse.
     Vector best = primary;
     float bestHoriz2 = primaryHoriz2;
-    bool usedStep = false;
-    const bool ascending = (delta.y > 1e-5f) || (velocity_.y > 1e-3f);
 
-    if (!ascending && desiredHoriz2 > 1e-10f &&
-        primaryHoriz2 + 1e-8f < desiredHoriz2) {
-        const bool notPureFall =
-            !(delta.x == 0.f && delta.z == 0.f && delta.y < 0.f);
-        if (notPureFall) {
-            auto consider = [&](float step) {
-                Vector stepped = slideStart;
-                if (!TryStepSlide(stepped, slideStart, delta.x, delta.z, step))
-                    return;
-                // Landed on a surface — kill downward / residual vertical speed.
-                if (delta.y < 0.f)
-                    velocity_.y = 0.f;
-                if (CollidesAt(stepped))
-                    return;
-                float h2 = (stepped.x - slideStart.x) * (stepped.x - slideStart.x) +
-                           (stepped.z - slideStart.z) * (stepped.z - slideStart.z);
-                if (h2 > bestHoriz2) {
-                    best = stepped;
-                    bestHoriz2 = h2;
-                    usedStep = true;
-                }
-            };
-            consider(stepSize_);
-            consider(smallStepSize_);
-        }
-    }
+    const bool stepAllowed =
+        (delta.y <= 1e-6f) && (velocity_.y <= 1e-3f) &&
+        desiredHoriz2 > 1e-10f && primaryHoriz2 + 1e-8f < desiredHoriz2;
 
-    if (!usedStep && CollidesAt(primary) && !CollidesAt(slideStart)) {
-        best = slideStart;
-        TryMoveAxis(best, delta.x, 0);
-        TryMoveAxis(best, delta.y, 1);
-        TryMoveAxis(best, delta.z, 2);
-    }
-    position_ = best;
-
-    // Floor contact: binary search may leave us a hair above the top, or a
-    // blocked full-down step used to reject the move entirely. Snap onto the
-    // highest support within a small window so onGround is true next frame
-    // (eliminates the inter-jump delay).
-    if (velocity_.y <= 0.f) {
-        float supportY = 0.f;
-        const float snapWindow = std::max(stepSize_, 0.25f);
-        // Probe from slightly above feet so a top equal to feet.y is included.
-        Vector probe = position_;
-        probe.y += 0.02f;
-        if (FindSupportY(probe, snapWindow + 0.02f, supportY)) {
-            if (position_.y >= supportY - 1e-3f &&
-                position_.y <= supportY + snapWindow) {
-                position_.y = supportY;
+    if (stepAllowed) {
+        auto consider = [&](float step) {
+            Vector stepped = slideStart;
+            if (!TryStepSlide(stepped, slideStart, delta.x, delta.z, step))
+                return;
+            if (CollidesAt(stepped))
+                return;
+            // Vertical residual (usually ≤ 0 here): settle; zero downward speed.
+            if (delta.y < 0.f) {
+                Vector withY = stepped;
+                if (TryMoveAxis(withY, delta.y, 1))
+                    stepped = withY;
                 velocity_.y = 0.f;
             }
-        }
+            float h2 = (stepped.x - slideStart.x) * (stepped.x - slideStart.x) +
+                       (stepped.z - slideStart.z) * (stepped.z - slideStart.z);
+            if (h2 > bestHoriz2) {
+                best = stepped;
+                bestHoriz2 = h2;
+            }
+        };
+        consider(stepSize_);
+        consider(smallStepSize_);
     }
 
-    if (!okY && !usedStep && delta.y != 0.f &&
-        std::fabs(best.y - primary.y) < 1e-6f && !ascending)
-        velocity_.y = 0.f;
-
+    position_ = best;
     CheckGround();
 }
 
@@ -574,8 +544,8 @@ void EntityPlayer::FixedUpdate() {
     } else {
         // Walk — SimplePlayer mode 0:
         //   airborne: integrate gravity
-        //   on ground + jump: set vy = Jump (hold-to-rejump on land is OK once
-        //     onGround is only true while supported — see landing snap in Move)
+        //   on ground + jump: set vy = Jump (hold-to-rejump on land is OK when
+        //     CheckGround is the 1mm probe only — no long-range surface snap)
         // Guard velocity_.y <= 0 so a same-frame onGround flicker cannot stack
         // jump impulses into levitation.
         if (!onGround_) {
