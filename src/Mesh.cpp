@@ -48,12 +48,18 @@ void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
 // neighbour offset).
 // ---------------------------------------------------------------------------
 int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
-    // NeedFaceXP @ 0x833d0 template: material = table[selfType], jump on mat[+0x01].
-    // Full jump table unrecovered; material-driven occlusion approximates binary.
+    // NeedFaceXP @ 0x833d0 — material class jump (simplified, structure preserved).
+    //
+    // Non-solid rendering (no full-cube solid faces / mutual face cull like water):
+    //   • alpha (All / glass FTL) 
+    //   • class 0 with height ∉ {0,16} (slabs)
+    //   • classes 1..10 (cross, torch, ladder, fence, stairs, door, lamp, gate, trapdoor)
+    // Neighbours must not keep faces that these cells cover; pairs of such
+    // cells cull shared faces the same way WaterNeedFace culls water|water.
     int selfIdx = grid.CoordToIndex(x, y, z);
     if (selfIdx < 0) return 0;
     unsigned char selfType = grid.cellTypes[selfIdx];
-    if (selfType == 0) return 0; // air has no faces
+    if (selfType == 0) return 0;
 
     int nx = x, ny = y, nz = z;
     switch (face) {
@@ -63,51 +69,93 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
         default: return 0;
     }
     int nIdx = grid.CoordToIndex(nx, ny, nz);
-    if (nIdx < 0) return 1; // world edge → emit
+    if (nIdx < 0) return 1;
 
     unsigned char nType = grid.cellTypes[nIdx];
     const Material* selfMat = grid.GetMaterial((int)selfType);
     const Material* nMat = grid.GetMaterial((int)nType);
 
-    // Full-cube opaque occlusion (NeedFace neighbour test).
-    // From blocks.txt samples:
-    //   Stone: Col=1 All=0 FTL=0 height=0x10 class=0 → occludes
-    //   Glass: Col=1 All=0 FTL=1 → does not
-    //   Leaves: Col=1 All=1 FTL=1 → does not
-    //   Water: Col=0 FTL=1 → does not
-    //   Slab: Col=1 height=8 FTL=9 → partial (not full occlude)
-    //   Stairs: class=6 → partial
-    auto fullOccludes = [&](unsigned char t, const Material* mat) -> bool {
+    auto isFullOpaqueSolid = [](unsigned char t, const Material* mat) -> bool {
         if (t == 0) return false;
-        if (mat) {
-            uint8_t cls = mat->prop01();
-            if (cls != 0) return false;                 // non-solid classes
-            if (!mat->col()) return false;              // no collision
-            if (mat->allFaces()) return false;          // leaves-style
-            if (mat->height() != 0x10) return false;    // slab / partial
-            if (mat->flowPerm(0) != 0) return false;    // FTL!=0 → passable/transparent
+        if (!mat) {
+            if (t == 5 || t == 11 || t == 10 || t == 20) return false;
+            if (t == 12 || t == 13 || t == 14 || t == 17 || t == 18) return false;
             return true;
         }
-        if (t == 5 || t == 11) return false;
-        if (t == 10 || t == 20 || t == 17 || t == 18) return false;
-        if (t == 12 || t == 13 || t == 14) return false;
+        if (mat->prop01() != 0) return false;
+        if (!mat->col()) return false;
+        if (mat->allFaces()) return false;
+        if (mat->height() != 0x10) return false;
+        if (mat->flowPerm(0) != 0) return false; // glass
         return true;
     };
 
-    if (!fullOccludes(nType, nMat)) return 1;
+    // Specialized / alpha / partial — not drawn as full solid cubes.
+    auto isNonSolidModel = [](unsigned char t, const Material* mat) -> bool {
+        if (t == 0) return false;
+        if (!mat) {
+            if (t == 5 || t == 11 || t == 10 || t == 20) return true;
+            if (t == 12 || t == 13 || t == 14 || t == 17 || t == 18) return true;
+            return false;
+        }
+        uint8_t cls = mat->prop01();
+        if (cls >= 1 && cls <= 10) return true;
+        if (cls == 0) {
+            uint8_t ht = mat->height();
+            if (ht != 0 && ht != 0x10) return true;     // slab
+            if (mat->allFaces()) return true;           // leaves alpha
+            if (mat->flowPerm(0) != 0) return true;     // glass alpha
+            if (!mat->col()) return true;               // water-like
+        }
+        return false;
+    };
 
-    // Neighbour is full opaque. Partial self geometry still emits (return 2).
+    // Neighbour covers this face → cull (no see-through hole).
+    auto coversFace = [&](unsigned char t, const Material* mat) -> bool {
+        if (t == 0) return false;
+        if (isFullOpaqueSolid(t, mat)) return true;
+        if (!mat) return false;
+        uint8_t cls = mat->prop01();
+        // Decorative cross/torch never cover
+        if (cls == 1 || cls == 2 || cls == 4) return false;
+        // Ladder / fence / stairs / door / gate / trapdoor / slab / alpha with Col
+        if (cls >= 3 && cls <= 10) return mat->col() || cls == 3;
+        if (cls == 0) {
+            if (!mat->col()) return false; // water
+            if (mat->allFaces()) return true;
+            if (mat->flowPerm(0) != 0) return true; // glass
+            uint8_t ht = mat->height();
+            if (ht != 0 && ht != 0x10) return true; // slab
+            return ht == 0x10;
+        }
+        return false;
+    };
+
+    const bool selfNS = isNonSolidModel(selfType, selfMat);
+    const bool neighNS = isNonSolidModel(nType, nMat);
+
+    // Like water|water: non-solid models do not emit faces against each other.
+    if (selfNS && neighNS)
+        return 0;
+
+    // Neighbour geometry covers this face → cull.
+    if (coversFace(nType, nMat)) {
+        // Partial self (slab/stairs/door/trapdoor) still needs geometry vs air only;
+        // against a covering neighbour there is no exposed face.
+        return 0;
+    }
+
+    // Exposed to air / non-covering neighbour.
     if (selfMat) {
         uint8_t cls = selfMat->prop01();
         uint8_t ht = selfMat->height();
-        if (cls == 6 || cls == 7 || cls == 10) return 2; // stairs / door / trapdoor
-        if (cls == 0 && ht != 0 && ht < 0x10) return 2;  // slab
-        if (!selfMat->col() || selfMat->allFaces() || selfMat->flowPerm(0) != 0)
-            return 1; // transparent self against solid
+        if (cls == 6 || cls == 7 || cls == 10) return 2;
+        if (cls == 0 && ht != 0 && ht < 0x10) return 2;
+        if (selfNS) return 1; // glass, leaves, fence, … emit against air
     }
-
-    (void)selfType;
-    return 0; // solid vs solid → cull
+    if (isFullOpaqueSolid(selfType, selfMat))
+        return 1;
+    return 1;
 }
 
 bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
