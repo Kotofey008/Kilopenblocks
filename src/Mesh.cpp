@@ -48,6 +48,8 @@ void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
 // neighbour offset).
 // ---------------------------------------------------------------------------
 int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
+    // NeedFaceXP @ 0x833d0 template: material = table[selfType], jump on mat[+0x01].
+    // Full jump table unrecovered; material-driven occlusion approximates binary.
     int selfIdx = grid.CoordToIndex(x, y, z);
     if (selfIdx < 0) return 0;
     unsigned char selfType = grid.cellTypes[selfIdx];
@@ -61,42 +63,67 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
         default: return 0;
     }
     int nIdx = grid.CoordToIndex(nx, ny, nz);
-    // Out of world → emit face (sky/edge)
-    if (nIdx < 0) return 1;
+    if (nIdx < 0) return 1; // world edge → emit
 
     unsigned char nType = grid.cellTypes[nIdx];
-    // Binary: if neighbour fully occludes (opaque solid same/compatible) → 0
-    // Transparent/non-solid neighbour types always need face (return 1)
-    // Types treated as non-occluding (recovered from IsSolid + NeedFace paths):
-    //   0 air, 5 water, 10/20 leaves, flowers/mushrooms, 11 glass, 17/18 torch
-    auto occludes = [](unsigned char t) -> bool {
-        if (t == 0 || t == 5 || t == 11) return false;
-        if (t == 10 || t == 20) return false; // leaves — LeavesQuality may change this
-        if (t == 17 || t == 18) return false; // torch
-        // flowers / mushrooms (decorative cross meshes, not solid cubes)
+    const Material* selfMat = grid.GetMaterial((int)selfType);
+    const Material* nMat = grid.GetMaterial((int)nType);
+
+    // Full-cube opaque occlusion (NeedFace neighbour test).
+    // From blocks.txt samples:
+    //   Stone: Col=1 All=0 FTL=0 height=0x10 class=0 → occludes
+    //   Glass: Col=1 All=0 FTL=1 → does not
+    //   Leaves: Col=1 All=1 FTL=1 → does not
+    //   Water: Col=0 FTL=1 → does not
+    //   Slab: Col=1 height=8 FTL=9 → partial (not full occlude)
+    //   Stairs: class=6 → partial
+    auto fullOccludes = [&](unsigned char t, const Material* mat) -> bool {
+        if (t == 0) return false;
+        if (mat) {
+            uint8_t cls = mat->prop01();
+            if (cls != 0) return false;                 // non-solid classes
+            if (!mat->col()) return false;              // no collision
+            if (mat->allFaces()) return false;          // leaves-style
+            if (mat->height() != 0x10) return false;    // slab / partial
+            if (mat->flowPerm(0) != 0) return false;    // FTL!=0 → passable/transparent
+            return true;
+        }
+        if (t == 5 || t == 11) return false;
+        if (t == 10 || t == 20 || t == 17 || t == 18) return false;
         if (t == 12 || t == 13 || t == 14) return false;
-        return true; // solid cube
+        return true;
     };
 
-    if (!occludes(nType)) return 1;
+    if (!fullOccludes(nType, nMat)) return 1;
 
-    // Neighbour is solid. Binary NeedFaceXP cases (verified returns):
-    //   0 = cull
-    //   1 = emit full face
-    //   2 = special/partial (prop+0x02==0 paths, type mismatch with neigh)
-    //   3 = observed in one jump-table case (state&7==3 related)
-    // Without material table (+0xe8 stride 34), return-2/3 paths stay closed.
-    // Solid-vs-solid → 0 (cull) matches the common opaque case.
+    // Neighbour is full opaque. Partial self geometry still emits (return 2).
+    if (selfMat) {
+        uint8_t cls = selfMat->prop01();
+        uint8_t ht = selfMat->height();
+        if (cls == 6 || cls == 7 || cls == 10) return 2; // stairs / door / trapdoor
+        if (cls == 0 && ht != 0 && ht < 0x10) return 2;  // slab
+        if (!selfMat->col() || selfMat->allFaces() || selfMat->flowPerm(0) != 0)
+            return 1; // transparent self against solid
+    }
+
     (void)selfType;
-    return 0;
+    return 0; // solid vs solid → cull
 }
 
 bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return false;
     unsigned char t = grid.cellTypes[idx];
-    // Keep consistent with NeedFace occludes()
-    if (t == 0 || t == 5 || t == 11) return false;
+    if (t == 0) return false;
+    const Material* mat = grid.GetMaterial((int)t);
+    if (mat) {
+        // Collision solid: Col set and not a pure decoration class
+        uint8_t cls = mat->prop01();
+        if (cls == 1 || cls == 2 || cls == 3) return false; // flower/torch/ladder
+        if (!mat->col()) return false;
+        return true;
+    }
+    if (t == 5 || t == 11) return false;
     if (t == 10 || t == 20 || t == 17 || t == 18) return false;
     if (t == 12 || t == 13 || t == 14) return false;
     return true;

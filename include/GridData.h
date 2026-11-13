@@ -44,34 +44,57 @@ struct GridDataTraceResult {
 };
 
 
-// GridData::Material — 34 bytes (0x22). Recovered from Material::Init @ 0x98640
-// and LoadMaterials @ 0x987d0 (parses assets/scenes/blocks.txt text).
+// GridData::Material — 34 bytes (0x22).
+// Material::Init @ 0x98640, LoadMaterials @ 0x987d0 (blocks.txt via MtlDescFileName).
 // Allocation: InitMaterials sets +0xe0=0x100, +0xe8 = new byte[0x2200].
 //
-// Verified field map:
-//   +0x00 byte0          Init=0x10; LoadMaterials overwrites
-//   +0x01 prop01         type class 0..0x0a (NeedFace jump key)
-//   +0x02 prop02         opacity-related (NeedFace checks ==0)
-//   +0x03 waterBase      Min/MaxWaterHeight
-//   +0x04                Init=0x07
-//   +0x05..+0x0b         misc / flags (+0x07 setnz in LoadMaterials)
-//   +0x0c..+0x11 uFace[6] atlas U per face XP,YP,ZP,XN,YN,ZN
-//   +0x12..+0x17 vFace[6] atlas V per face
-//   +0x18..+0x1a         flags (AddMesh reads +0x18/+0x19 occlusion)
-//   +0x1b+FlowType       IsFlowAllowed permission byte (FlowType 0..5)
-//   +0x1e short          Init from Material::Init 3rd arg
-//   +0x20 short          Init=0xffff
-// FlowType index into +0x1b overlaps trailing shorts — exact ownership open.
+// blocks.txt columns → fields (ParseString 29 ints, exact from decomp):
+//   Index → slot
+//   S-Index → +0x20 (int16); invalid → 0xffff
+//   Uxp Vxp Uyp Vyp Uzp Vzp Uxn Vxn Uyn Vyn Uzn Vzn
+//     → +0x0c..+0x11 U (XP YP ZP XN YN ZN), +0x12..+0x17 V
+//   BH  → +0x00 after BMT gating (and may drive +0x03/+0x04)
+//   BMT → +0x01 class 0..0x0a (NeedFace / IsFlowAllowed jump key)
+//   MBI → +0x02 (clamp 0..6)
+//   SAU → +0x05 (!=0)
+//   Col → +0x06 (!=0)
+//   All → +0x07 (!=0)
+//   UVR → +0x08
+//   XT YT ZT → +0x09 +0x0a +0x0b
+//   W H → +0x18 +0x19 (clamp 0..16)
+//   L   → +0x1a
+//   FTL FTW → +0x1b +0x1c (flow perm base; IsFlowAllowed uses +0x1b+FlowType)
+//
+// Post-process by class (+0x01):
+//   0 + height<0xe: +0x03=height, +0x04=((0x10-height)>>1)-1
+//   6: +0x03=8, +0x04=3
+//   10: +0x03=2, +0x04=6
 #pragma pack(push, 1)
 struct Material {
     uint8_t raw[0x22];
-    uint8_t prop01() const { return raw[0x01]; }
-    uint8_t prop02() const { return raw[0x02]; }
-    uint8_t waterBase() const { return raw[0x03]; }
+    uint8_t height() const { return raw[0x00]; }       // BH-derived
+    uint8_t prop01() const { return raw[0x01]; }       // BMT class
+    uint8_t prop02() const { return raw[0x02]; }       // MBI
+    uint8_t waterBase() const { return raw[0x03]; }    // derived / water
+    uint8_t waterCompanion() const { return raw[0x04]; }
+    bool sau() const { return raw[0x05] != 0; }
+    bool col() const { return raw[0x06] != 0; }        // collision / solid-ish
+    bool allFaces() const { return raw[0x07] != 0; }
+    uint8_t uvr() const { return raw[0x08]; }
+    uint8_t xt() const { return raw[0x09]; }
+    uint8_t yt() const { return raw[0x0a]; }
+    uint8_t zt() const { return raw[0x0b]; }
     uint8_t uFace(int face) const { return raw[0x0c + (face % 6)]; }
     uint8_t vFace(int face) const { return raw[0x12 + (face % 6)]; }
+    uint8_t sizeW() const { return raw[0x18]; }
+    uint8_t sizeH() const { return raw[0x19]; }
+    uint8_t sizeL() const { return raw[0x1a]; }
     uint8_t flowPerm(int flowType) const { return raw[0x1b + (flowType % 6)]; }
+    int16_t selIndex() const {
+        return (int16_t)(raw[0x20] | (raw[0x21] << 8));
+    }
     void initDefault(int index) {
+        // Material::Init(this, 0, 0, (short)index)
         for (int i = 0; i < 0x22; ++i) raw[i] = 0;
         raw[0x00] = 0x10;
         raw[0x04] = 0x07;

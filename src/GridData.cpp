@@ -744,9 +744,7 @@ unsigned char GridData::MtlSelIndexToCell(int selIndex) const {
     // 0x98ed0: scan materials[0..count), compare int16 at +0x20 with selIndex; return type index
     if (materials.empty()) return 0;
     for (int i = 0; i < (int)materials.size(); ++i) {
-        const Material& m = materials[i];
-        int16_t si = (int16_t)(m.raw[0x20] | (m.raw[0x21] << 8));
-        if (si == (int16_t)selIndex)
+        if (materials[i].selIndex() == (int16_t)selIndex)
             return (unsigned char)i;
     }
     return 0;
@@ -755,8 +753,7 @@ unsigned char GridData::MtlSelIndexToCell(int selIndex) const {
 int GridData::CellToMtlSelIndex(unsigned char cellType) const {
     // 0x98f10: materials[cell].+0x20 as int16
     if (cellType >= materials.size()) return -1;
-    const Material& m = materials[cellType];
-    return (int)(int16_t)(m.raw[0x20] | (m.raw[0x21] << 8));
+    return (int)materials[cellType].selIndex();
 }
 
 // ConfigureState (0x997f0, 765 B) — orientation / state bit computation
@@ -835,57 +832,104 @@ bool GridData::InitMaterials() {
 }
 
 bool GridData::LoadMaterials(const char* path) {
+    // GridData::LoadMaterials @ 0x987d0 — exact column map from Ghidra decomp.
     if (materials.empty()) InitMaterials();
-    // Android assets require AAssetManager — never fopen relative paths.
     std::string text;
     if (!Assets::ReadText(path, text)) {
-        // Fallback: try as filesystem path (host tools)
         FILE* fp = std::fopen(path, "r");
         if (!fp) return false;
         char buf[1024];
         while (std::fgets(buf, sizeof(buf), fp)) text += buf;
         std::fclose(fp);
     }
-    std::istringstream in(text);
+    // Strip UTF-8 BOM once at file start (binary checks first 3 bytes).
+    size_t off = 0;
+    if (text.size() >= 3 &&
+        (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB &&
+        (unsigned char)text[2] == 0xBF) {
+        off = 3;
+    }
+    std::istringstream in(text.substr(off));
     std::string line;
     int loaded = 0;
+    int maxSel = 0;
     while (std::getline(in, line)) {
-        if (!line.empty() && (unsigned char)line[0] == 0xEF) {
-            // UTF-8 BOM on first line
-            if (line.size() >= 3) line = line.substr(3);
-        }
         const char* p = line.c_str();
         while (*p == ' ' || *p == '\t') ++p;
         if (*p == '#' || *p == '\0' || *p == '\n' || *p == '\r') continue;
         if (std::strstr(p, "Index") && std::strstr(p, "Uxp")) continue;
 
+        // 29 fields — binary ParseString requires iVar5 == 0x1d.
         int idx = -1, sIndex = -1;
-        int uxp=0,vxp=0,uyp=0,vyp=0,uzp=0,vzp=0,uxn=0,vxn=0,uyn=0,vyn=0,uzn=0,vzn=0;
-        int bh=0, bmt=0, mbi=0, sau=0, col=0, all=0, uvr=0;
-        int xt=0,yt=0,zt=0,w=0,h=0,l=0,ftl=0,ftw=0;
+        int uxp = 0, vxp = 0, uyp = 0, vyp = 0, uzp = 0, vzp = 0;
+        int uxn = 0, vxn = 0, uyn = 0, vyn = 0, uzn = 0, vzn = 0;
+        int bh = 0, bmt = 0, mbi = 0, sau = 0, col = 0, allv = 0, uvr = 0;
+        int xt = 0, yt = 0, zt = 0, w = 0, h = 0, l = 0, ftl = 0, ftw = 0;
         int n = std::sscanf(p,
             "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
             &idx, &sIndex,
-            &uxp,&vxp,&uyp,&vyp,&uzp,&vzp,&uxn,&vxn,&uyn,&vyn,&uzn,&vzn,
-            &bh,&bmt,&mbi,&sau,&col,&all,&uvr,&xt,&yt,&zt,&w,&h,&l,&ftl,&ftw);
-        // Need at least Index + S-Index + 12 UV ints
-        if (n < 14 || idx < 0 || idx >= (int)materials.size()) continue;
+            &uxp, &vxp, &uyp, &vyp, &uzp, &vzp, &uxn, &vxn, &uyn, &vyn, &uzn, &vzn,
+            &bh, &bmt, &mbi, &sau, &col, &allv, &uvr, &xt, &yt, &zt, &w, &h, &l, &ftl, &ftw);
+        if (n < 29 || idx < 0 || idx >= (int)materials.size()) continue;
+
         Material& m = materials[idx];
         m.initDefault(idx);
-        int cls = sIndex;
-        if (cls < 0 || cls > 0x0a) cls = bmt;
-        if (cls < 0 || cls > 0x0a) cls = mbi;
-        if (cls < 0 || cls > 0x0a) cls = 0;
-        m.raw[0x01] = (uint8_t)cls;
-        m.raw[0x02] = (col != 0) ? 0 : 1;
-        m.raw[0x03] = (uint8_t)(bh & 0xff);
-        // +0x20/+0x21: S-Index as int16 (MtlSelIndexToCell / CellToMtlSelIndex)
-        {
-            int16_t si = (int16_t)sIndex;
-            m.raw[0x20] = (uint8_t)(si & 0xff);
-            m.raw[0x21] = (uint8_t)((si >> 8) & 0xff);
+
+        // --- BMT / BH gating (exact control flow from decomp) ---
+        // if ((BMT < 2) || (BMT == 4)) {
+        //   if (BMT == 0) goto clamp_BH;
+        //   else BH=0, d8=0;          // BMT 1 or 4
+        // } else {
+        //   if (BMT in {2,3,5,6,7,8,9,10}) BH=0, d8=0;
+        //   else { BMT = 0; goto clamp_BH; }
+        // }
+        // clamp_BH: if BH in [1,16] d8=BH; else BH=d8=0x10
+        uint8_t d8 = 0;
+        if ((bmt < 2) || (bmt == 4)) {
+            if (bmt == 0) {
+                if ((unsigned)(bh - 1) < 0x10u) {
+                    d8 = (uint8_t)bh;
+                } else {
+                    bh = 0x10;
+                    d8 = 0x10;
+                }
+            } else {
+                // BMT == 1 or 4
+                bh = 0;
+                d8 = 0;
+            }
+        } else if (bmt == 2 || bmt == 3 || bmt == 5 || bmt == 6 || bmt == 7 ||
+                   bmt == 8 || bmt == 9 || bmt == 10) {
+            bh = 0;
+            d8 = 0;
+        } else {
+            // invalid BMT → force solid class 0 + clamp BH
+            bmt = 0;
+            if ((unsigned)(bh - 1) < 0x10u) {
+                d8 = (uint8_t)bh;
+            } else {
+                bh = 0x10;
+                d8 = 0x10;
+            }
         }
-        // UV faces order in material table: XP YP ZP XN YN ZN (binary +0x0c..+0x17)
+
+        // MBI clamp 0..6
+        if ((unsigned)mbi >= 7u) mbi = 0;
+
+        m.raw[0x00] = d8;
+        m.raw[0x01] = (uint8_t)bmt;           // class
+        m.raw[0x02] = (uint8_t)mbi;
+        m.raw[0x03] = 0;                      // may be filled by post-process
+        m.raw[0x05] = (sau != 0) ? 1 : 0;
+        m.raw[0x06] = (col != 0) ? 1 : 0;
+        m.raw[0x07] = (allv != 0) ? 1 : 0;
+        m.raw[0x08] = (uint8_t)(uvr & 0xff);
+        m.raw[0x09] = (uint8_t)(xt & 0xff);
+        m.raw[0x0a] = (uint8_t)(yt & 0xff);
+        m.raw[0x0b] = (uint8_t)(zt & 0xff);
+
+        // UV: XP YP ZP XN YN ZN
         m.raw[0x0c] = (uint8_t)(uxp & 0xff);
         m.raw[0x0d] = (uint8_t)(uyp & 0xff);
         m.raw[0x0e] = (uint8_t)(uzp & 0xff);
@@ -898,12 +942,46 @@ bool GridData::LoadMaterials(const char* path) {
         m.raw[0x15] = (uint8_t)(vxn & 0xff);
         m.raw[0x16] = (uint8_t)(vyn & 0xff);
         m.raw[0x17] = (uint8_t)(vzn & 0xff);
-        m.raw[0x07] = (all != 0) ? 1 : 0;
-        uint8_t perm = (col == 0) ? 0x0f : 0x00;
-        for (int f = 0; f < 6; ++f)
-            m.raw[0x1b + f] = perm;
+
+        // W/H clamp 0..16
+        if (w < 0) w = 0; else if (w > 0x10) w = 0x10;
+        if (h < 0) h = 0; else if (h > 0x10) h = 0x10;
+        m.raw[0x18] = (uint8_t)w;
+        m.raw[0x19] = (uint8_t)h;
+        m.raw[0x1a] = (uint8_t)(l & 0xff);
+        m.raw[0x1b] = (uint8_t)(ftl & 0xff);  // flow perm base
+        m.raw[0x1c] = (uint8_t)(ftw & 0xff);
+
+        // S-Index → +0x20; out of range → 0xffff
+        if (sIndex < 0 || sIndex >= (int)materials.size()) {
+            m.raw[0x20] = 0xff;
+            m.raw[0x21] = 0xff;
+        } else {
+            int16_t si = (int16_t)sIndex;
+            m.raw[0x20] = (uint8_t)(si & 0xff);
+            m.raw[0x21] = (uint8_t)((si >> 8) & 0xff);
+            if (sIndex + 1 > maxSel) maxSel = sIndex + 1;
+        }
+
+        // Post-process by class (+0x01) — drives waterBase / companion
+        uint8_t cls = m.raw[0x01];
+        if (cls == 0) {
+            uint8_t ht = m.raw[0x00];
+            if (ht < 0x0e) {
+                m.raw[0x03] = ht;
+                m.raw[0x04] = (uint8_t)(((0x10 - (unsigned)ht) >> 1) - 1);
+            }
+        } else if (cls == 6) {
+            m.raw[0x03] = 8;
+            m.raw[0x04] = 3;
+        } else if (cls == 10) {
+            m.raw[0x03] = 2;
+            m.raw[0x04] = 6;
+        }
+
         ++loaded;
     }
+    (void)maxSel; // binary stores max sel at GridData+0xe4; optional for now
     return loaded > 0;
 }
 
