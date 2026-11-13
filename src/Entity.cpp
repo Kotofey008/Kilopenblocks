@@ -25,10 +25,16 @@ Matrix4 Entity::GetTransform(int) {
 // Water, air, decorative plants and leaves do not block or support.
 // ---------------------------------------------------------------------------
 bool Entity::IsCollisionSolid(unsigned char t) {
+    // Prefer material table when GridData is wired; this static path is fallback.
     return t != BlockId::Air && t != BlockId::Water &&
            t != BlockId::Flower1 && t != BlockId::Mushroom1 &&
            t != BlockId::Mushroom2 && t != BlockId::Leaves1 &&
            t != BlockId::Leaves2;
+}
+
+static bool AabbOverlap(float ax0, float ay0, float az0, float ax1, float ay1, float az1,
+                        float bx0, float by0, float bz0, float bx1, float by1, float bz1) {
+    return ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0 && az0 < bz1 && az1 > bz0;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,24 +52,40 @@ bool Entity::IsCollisionSolid(unsigned char t) {
 bool Entity::CheckGround() {
     if (!grid_) { onGround_ = false; return false; }
 
-    const float kGroundEps = 0.001f; // binary constant 0x107e28
+    // Binary: 1mm downward AABB probe. Contact if any collision box intersects
+    // the probe volume under the feet footprint.
+    const float kGroundEps = 0.001f;
     const float halfW = size_.x * 0.5f;
     const float halfD = size_.z * 0.5f;
-    const float sampleY = position_.y - kGroundEps;
-    const int y0 = (int)std::floor(sampleY);
+    const float px0 = position_.x - halfW;
+    const float px1 = position_.x + halfW;
+    const float pz0 = position_.z - halfD;
+    const float pz1 = position_.z + halfD;
+    const float py0 = position_.y - kGroundEps;
+    const float py1 = position_.y;
 
-    const int ix0 = (int)std::floor(position_.x - halfW);
-    const int ix1 = (int)std::floor(position_.x + halfW - 1e-6f);
-    const int iz0 = (int)std::floor(position_.z - halfD);
-    const int iz1 = (int)std::floor(position_.z + halfD - 1e-6f);
+    const int ix0 = (int)std::floor(px0);
+    const int ix1 = (int)std::floor(px1 - 1e-6f);
+    const int iz0 = (int)std::floor(pz0);
+    const int iz1 = (int)std::floor(pz1 - 1e-6f);
+    const int iy0 = (int)std::floor(py0);
+    const int iy1 = (int)std::floor(py1 - 1e-9f);
 
     onGround_ = false;
-    for (int bx = ix0; bx <= ix1 && !onGround_; ++bx) {
-        for (int bz = iz0; bz <= iz1 && !onGround_; ++bz) {
-            int idx = grid_->CoordToIndex(bx, y0, bz);
-            if (idx < 0) continue;
-            if (IsCollisionSolid(grid_->cellTypes[idx]))
+    GridData::CellAabb boxes[4];
+    for (int by = iy0; by <= iy1 && !onGround_; ++by)
+    for (int bx = ix0; bx <= ix1 && !onGround_; ++bx)
+    for (int bz = iz0; bz <= iz1 && !onGround_; ++bz) {
+        int idx = grid_->CoordToIndex(bx, by, bz);
+        if (idx < 0) continue;
+        int n = grid_->GetCellCollisionBoxArray(idx, boxes, 4);
+        for (int i = 0; i < n; ++i) {
+            if (AabbOverlap(px0, py0, pz0, px1, py1, pz1,
+                            boxes[i].mn.x, boxes[i].mn.y, boxes[i].mn.z,
+                            boxes[i].mx.x, boxes[i].mx.y, boxes[i].mx.z)) {
                 onGround_ = true;
+                break;
+            }
         }
     }
     return onGround_;
@@ -74,21 +96,28 @@ bool Entity::CollidesAt(const Vector& pos) const {
     const float halfW = size_.x * 0.5f;
     const float halfD = size_.z * 0.5f;
     const float h = size_.y;
-    // Feet exactly on a block top (integer Y) must NOT count the block below:
-    // solid cell y occupies [y, y+1), top surface is y+1.0 → floor(feet)=y+1.
-    const int x0 = (int)std::floor(pos.x - halfW);
-    const int x1 = (int)std::floor(pos.x + halfW - 1e-6f);
-    const int y0 = (int)std::floor(pos.y);
-    const int y1 = (int)std::floor(pos.y + h - 1e-6f);
-    const int z0 = (int)std::floor(pos.z - halfD);
-    const int z1 = (int)std::floor(pos.z + halfD - 1e-6f);
+    const float px0 = pos.x - halfW, px1 = pos.x + halfW;
+    const float py0 = pos.y, py1 = pos.y + h;
+    const float pz0 = pos.z - halfD, pz1 = pos.z + halfD;
+    const int x0 = (int)std::floor(px0);
+    const int x1 = (int)std::floor(px1 - 1e-6f);
+    const int y0 = (int)std::floor(py0);
+    const int y1 = (int)std::floor(py1 - 1e-6f);
+    const int z0 = (int)std::floor(pz0);
+    const int z1 = (int)std::floor(pz1 - 1e-6f);
+    GridData::CellAabb boxes[4];
     for (int bx = x0; bx <= x1; ++bx)
     for (int by = y0; by <= y1; ++by)
     for (int bz = z0; bz <= z1; ++bz) {
         int idx = grid_->CoordToIndex(bx, by, bz);
         if (idx < 0) continue;
-        if (IsCollisionSolid(grid_->cellTypes[idx]))
-            return true;
+        int n = grid_->GetCellCollisionBoxArray(idx, boxes, 4);
+        for (int i = 0; i < n; ++i) {
+            if (AabbOverlap(px0, py0, pz0, px1, py1, pz1,
+                            boxes[i].mn.x, boxes[i].mn.y, boxes[i].mn.z,
+                            boxes[i].mx.x, boxes[i].mx.y, boxes[i].mx.z))
+                return true;
+        }
     }
     return false;
 }
@@ -109,15 +138,20 @@ bool Entity::FindSupportY(const Vector& pos, float maxDrop, float& outY) const {
     const int yHi = (int)std::floor(pos.y - 1e-5f);
     float best = -1e30f;
     bool found = false;
+    const float px0 = pos.x - halfW, px1 = pos.x + halfW;
+    const float pz0 = pos.z - halfD, pz1 = pos.z + halfD;
+    GridData::CellAabb boxes[4];
     for (int by = yLo; by <= yHi; ++by) {
-        const float top = (float)(by + 1);
-        if (top <= minY + 1e-5f || top > pos.y + 1e-4f)
-            continue;
         for (int bx = ix0; bx <= ix1; ++bx) {
             for (int bz = iz0; bz <= iz1; ++bz) {
                 int idx = grid_->CoordToIndex(bx, by, bz);
                 if (idx < 0) continue;
-                if (IsCollisionSolid(grid_->cellTypes[idx])) {
+                int n = grid_->GetCellCollisionBoxArray(idx, boxes, 4);
+                for (int i = 0; i < n; ++i) {
+                    if (px1 <= boxes[i].mn.x || px0 >= boxes[i].mx.x) continue;
+                    if (pz1 <= boxes[i].mn.z || pz0 >= boxes[i].mx.z) continue;
+                    float top = boxes[i].mx.y;
+                    if (top <= minY + 1e-5f || top > pos.y + 1e-4f) continue;
                     if (top > best) best = top;
                     found = true;
                 }

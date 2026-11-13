@@ -149,7 +149,14 @@ public:
     bool PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
                     const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
     bool BreakBlock(const GridDataTraceResult& tr);
-    void GetCellSelectionBox(int, Vector&, Vector&);
+    void GetCellSelectionBox(int cellIndex, Vector& outMin, Vector& outMax);
+    // GetCellCollisionBoxArray @ 0x8xx — up to 4 world-space AABBs for physics.
+    // Returns count written to outMins/outMaxs (arrays of size >= 4).
+    // 0 = no collision (air, water, plants, Col=0, …).
+    struct CellAabb { Vector mn; Vector mx; };
+    int GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut) const;
+    // True if material has collision (Col flag) and is not a pure decoration class.
+    bool CellHasCollision(int cellIndex) const;
     void ActivateCell(int, const Vector&);
     void Invalidate();
     void MarkModifiedRegions();

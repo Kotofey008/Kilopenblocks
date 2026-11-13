@@ -294,11 +294,182 @@ bool GridData::IsUnderwater(const Vector& pos) const {
     return pos.y < surfaceY;
 }
 
-bool GridData::OnLadder(const Vector&, const Vector&, const Vector&) const {
-    return false; // OnLadder @ 0x7b090 not fully recovered
+// OnLadder @ 0x7b090 — class-3 ladder cells overlapping body AABB.
+bool GridData::OnLadder(const Vector& feet, const Vector& bodySize, const Vector& /*offset*/) const {
+    const float halfW = bodySize.x * 0.5f;
+    const float halfD = bodySize.z * 0.5f;
+    const float h = bodySize.y > 0.f ? bodySize.y : 1.5f;
+    const int x0 = (int)std::floor(feet.x - halfW);
+    const int x1 = (int)std::floor(feet.x + halfW - 1e-6f);
+    const int y0 = (int)std::floor(feet.y);
+    const int y1 = (int)std::floor(feet.y + h - 1e-6f);
+    const int z0 = (int)std::floor(feet.z - halfD);
+    const int z1 = (int)std::floor(feet.z + halfD - 1e-6f);
+    for (int y = y0; y <= y1; ++y)
+    for (int x = x0; x <= x1; ++x)
+    for (int z = z0; z <= z1; ++z) {
+        int idx = CoordToIndex(x, y, z);
+        if (idx < 0) continue;
+        const Material* m = GetMaterial((int)cellTypes[idx]);
+        if (m && m->prop01() == 3)
+            return true;
+    }
+    return false;
 }
 
-void GridData::GetCellSelectionBox(int, Vector&, Vector&) {}
+static void IndexToWorld(const GridData& g, int cellIndex, int& x, int& y, int& z) {
+    int lx = cellIndex % g.sizeX;
+    int t = cellIndex / g.sizeX;
+    int ly = t % g.sizeY;
+    int lz = t / g.sizeY;
+    x = lx + g.originX;
+    y = ly + g.originY;
+    z = lz + g.originZ;
+}
+
+void GridData::GetCellSelectionBox(int cellIndex, Vector& outMin, Vector& outMax) {
+    CellAabb boxes[4];
+    int n = GetCellCollisionBoxArray(cellIndex, boxes, 4);
+    if (n <= 0) {
+        int x = 0, y = 0, z = 0;
+        IndexToWorld(*this, cellIndex, x, y, z);
+        outMin = Vector((float)x, (float)y, (float)z);
+        outMax = Vector((float)x + 1.f, (float)y + 1.f, (float)z + 1.f);
+        return;
+    }
+    outMin = boxes[0].mn;
+    outMax = boxes[0].mx;
+    for (int i = 1; i < n; ++i) {
+        outMin.x = std::min(outMin.x, boxes[i].mn.x);
+        outMin.y = std::min(outMin.y, boxes[i].mn.y);
+        outMin.z = std::min(outMin.z, boxes[i].mn.z);
+        outMax.x = std::max(outMax.x, boxes[i].mx.x);
+        outMax.y = std::max(outMax.y, boxes[i].mx.y);
+        outMax.z = std::max(outMax.z, boxes[i].mx.z);
+    }
+}
+
+bool GridData::CellHasCollision(int cellIndex) const {
+    if (cellIndex < 0 || cellIndex >= (int)cellTypes.size()) return false;
+    unsigned char t = cellTypes[cellIndex];
+    if (t == 0) return false;
+    const Material* m = GetMaterial((int)t);
+    if (!m) {
+        return t != 5 && t != 11 && t != 10 && t != 20 &&
+               t != 12 && t != 13 && t != 14 && t != 17 && t != 18;
+    }
+    uint8_t cls = m->prop01();
+    if (cls == 1 || cls == 2 || cls == 4) return false;
+    if (!m->col()) return false;
+    return true;
+}
+
+int GridData::GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut) const {
+    if (!out || maxOut <= 0 || cellIndex < 0 || cellIndex >= (int)cellTypes.size())
+        return 0;
+    unsigned char t = cellTypes[cellIndex];
+    if (t == 0) return 0;
+    const Material* m = GetMaterial((int)t);
+    int cx = 0, cy = 0, cz = 0;
+    IndexToWorld(*this, cellIndex, cx, cy, cz);
+    float ox = (float)cx, oy = (float)cy, oz = (float)cz;
+    if (!m) {
+        if (!CellHasCollision(cellIndex)) return 0;
+        out[0].mn = Vector(ox, oy, oz);
+        out[0].mx = Vector(ox + 1.f, oy + 1.f, oz + 1.f);
+        return 1;
+    }
+    uint8_t cls = m->prop01();
+    if (cls == 1 || cls == 2 || cls == 4) return 0;
+    if (!m->col()) return 0;
+
+    unsigned short st = (cellIndex < (int)cellStates.size()) ? cellStates[cellIndex] : 0;
+    int n = 0;
+    auto push = [&](float x0, float y0, float z0, float x1, float y1, float z1) {
+        if (n >= maxOut) return;
+        out[n].mn = Vector(x0, y0, z0);
+        out[n].mx = Vector(x1, y1, z1);
+        ++n;
+    };
+
+    if (cls == 0) {
+        int ht = (int)m->height();
+        if (ht <= 0 || ht > 16) ht = 16;
+        float h = (float)ht / 16.f;
+        float y0 = oy, y1 = oy + h;
+        if (st & 4) { y1 = oy + 1.f; y0 = y1 - h; }
+        push(ox, y0, oz, ox + 1.f, y1, oz + 1.f);
+        return n;
+    }
+    if (cls == 3) {
+        int facing = st & 7;
+        float th = 3.f / 16.f;
+        if (facing == 0) push(ox, oy, oz, ox+1, oy+1, oz+th);
+        else if (facing == 2) push(ox, oy, oz, ox+th, oy+1, oz+1);
+        else if (facing == 3) push(ox+1-th, oy, oz, ox+1, oy+1, oz+1);
+        else push(ox, oy, oz+1-th, ox+1, oy+1, oz+1);
+        return n;
+    }
+    if (cls == 5) {
+        push(ox + 6.f/16.f, oy, oz + 6.f/16.f, ox + 10.f/16.f, oy + 1.f, oz + 10.f/16.f);
+        return n;
+    }
+    if (cls == 6) {
+        int facing = st & 3;
+        bool up = (st & 4) != 0;
+        float yLow0 = up ? oy + 0.5f : oy;
+        float yLow1 = yLow0 + 0.5f;
+        float yHigh0 = up ? oy : oy + 0.5f;
+        float yHigh1 = yHigh0 + 0.5f;
+        push(ox, yLow0, oz, ox + 1.f, yLow1, oz + 1.f);
+        float hx0=ox, hx1=ox+1, hz0=oz, hz1=oz+1;
+        if (facing == 0) hz0 = oz + 0.5f;
+        else if (facing == 1) hz1 = oz + 0.5f;
+        else if (facing == 2) hx0 = ox + 0.5f;
+        else hx1 = ox + 0.5f;
+        push(hx0, yHigh0, hz0, hx1, yHigh1, hz1);
+        return n;
+    }
+    if (cls == 7) {
+        int facing = st & 3;
+        if (st & 4) facing = (facing + 1) & 3;
+        float th = 3.f / 16.f;
+        if (facing == 0) push(ox, oy, oz, ox+1, oy+1, oz+th);
+        else if (facing == 1) push(ox, oy, oz+1-th, ox+1, oy+1, oz+1);
+        else if (facing == 2) push(ox, oy, oz, ox+th, oy+1, oz+1);
+        else push(ox+1-th, oy, oz, ox+1, oy+1, oz+1);
+        return n;
+    }
+    if (cls == 8) {
+        push(ox+4.f/16.f, oy+4.f/16.f, oz+4.f/16.f, ox+12.f/16.f, oy+12.f/16.f, oz+12.f/16.f);
+        return n;
+    }
+    if (cls == 9) {
+        push(ox + 6.f/16.f, oy, oz + 6.f/16.f, ox + 10.f/16.f, oy + 1.f, oz + 10.f/16.f);
+        int facing = st & 3;
+        if (facing <= 1)
+            push(ox, oy + 5.f/16.f, oz + 6.f/16.f, ox+1, oy + 12.f/16.f, oz + 10.f/16.f);
+        else
+            push(ox + 6.f/16.f, oy + 5.f/16.f, oz, ox + 10.f/16.f, oy + 12.f/16.f, oz+1);
+        return n;
+    }
+    if (cls == 10) {
+        int facing = st & 3;
+        bool open = (st & 4) != 0;
+        float th = 3.f / 16.f;
+        if (!open) {
+            float y0 = (st & 8) ? oy + 13.f/16.f : oy;
+            push(ox, y0, oz, ox+1, y0 + th, oz+1);
+        } else if (facing == 0) push(ox, oy, oz, ox+1, oy+1, oz+th);
+        else if (facing == 1) push(ox, oy, oz+1-th, ox+1, oy+1, oz+1);
+        else if (facing == 2) push(ox, oy, oz, ox+th, oy+1, oz+1);
+        else push(ox+1-th, oy, oz, ox+1, oy+1, oz+1);
+        return n;
+    }
+    push(ox, oy, oz, ox+1, oy+1, oz+1);
+    return n;
+}
+
 void GridData::ActivateCell(int, const Vector&) {}
 
 GridData::LeavesQuality GridData::GetLeavesQuality() const {

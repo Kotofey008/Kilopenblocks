@@ -684,7 +684,29 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
 
         const Material* mat = grid.GetMaterial((int)t);
         unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
+        // Water/liquid: binary still has class 0, but liquid surface is AddWaterFace only.
+        // Do not emit solid AddBlockFace for fluid cells (rollback solid water cubes).
         const bool liquid = IsWaterCell(grid, wx, wy, wz) || t == 5 || (st & 0x2000) != 0;
+        if (liquid) {
+            MeshBuffer& dst = waterOut ? *waterOut : solidOut;
+            float h = WaterHeightFrac(grid, wx, wy, wz);
+            if (h > 0.f) {
+                for (int face = 0; face < 6; ++face) {
+                    if (WaterNeedFace(grid, wx, wy, wz, face) == 0) continue;
+                    float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
+                    const Material* wm = grid.GetMaterial(5);
+                    if (wm) FaceUV(*wm, face, u0, v0, u1, v1);
+                    else Texture::TileUV(6, 0, u0, v0, u1, v1);
+                    uint32_t col = 0xA0FFFFFF;
+                    if (lights) {
+                        uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
+                        col = (lc & 0x00FFFFFFu) | 0xA0000000u;
+                    }
+                    EmitWaterFace(grid, dst, wx, wy, wz, face, u0, v0, u1, v1, col);
+                }
+            }
+            continue;
+        }
 
         // Special model classes (not in face set {0,5,6,7,8,9,10})
         if (mat) {
@@ -720,24 +742,6 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             }
         }
 
-        if (liquid) {
-            MeshBuffer& dst = waterOut ? *waterOut : solidOut;
-            float h = WaterHeightFrac(grid, wx, wy, wz);
-            if (h <= 0.f) continue;
-            for (int face = 0; face < 6; ++face) {
-                if (WaterNeedFace(grid, wx, wy, wz, face) == 0) continue;
-                float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-                const Material* wm = grid.GetMaterial(5);
-                if (wm) FaceUV(*wm, face, u0, v0, u1, v1);
-                else Texture::TileUV(6, 0, u0, v0, u1, v1);
-                uint32_t col = 0xA0FFFFFF;
-                if (lights) {
-                    uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
-                    col = (lc & 0x00FFFFFFu) | 0xA0000000u;
-                }
-                EmitWaterFace(grid, dst, wx, wy, wz, face, u0, v0, u1, v1, col);
-            }
-        }
     }
 }
 
