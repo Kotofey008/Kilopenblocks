@@ -226,41 +226,356 @@ int RegionMesher::WaterNeedFace(GridData& grid, int x, int y, int z, int face) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Face index maps: our 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
+// binary AddBlockFace: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN
+// Material UV slots follow binary order XP YP ZP XN YN ZN.
+// ---------------------------------------------------------------------------
+int RegionMesher::OurToBinFace(int ourFace) {
+    static const int m[6] = { 0, 3, 1, 4, 2, 5 };
+    return (ourFace >= 0 && ourFace < 6) ? m[ourFace] : 0;
+}
+int RegionMesher::BinToOurFace(int binFace) {
+    static const int m[6] = { 0, 2, 4, 1, 3, 5 };
+    return (binFace >= 0 && binFace < 6) ? m[binFace] : 0;
+}
+
+void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1) {
+    int mi = OurToBinFace(ourFace);
+    Texture::TileUV((int)mat.uFace(mi), (int)mat.vFace(mi), u0, v0, u1, v1);
+}
+
+uint32_t RegionMesher::FaceColor(const LightMap* lights, int x, int y, int z, int face) {
+    if (!lights) return 0xFFFFFFFFu;
+    uint32_t col = LightMap::GetLightColor(lights->GetFaceLight(x, y, z, face));
+    if ((col & 0xFFu) < 32 && ((col >> 8) & 0xFFu) < 32)
+        col = 0xFFC0C0C0u;
+    return col;
+}
+
 void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
                             float u0, float v0, float u1, float v1, uint32_t color) {
+    EmitAxisFace(out, (float)x, (float)y, (float)z,
+                 (float)x + 1.f, (float)y + 1.f, (float)z + 1.f,
+                 face, u0, v0, u1, v1, color);
+}
+
+// Emit one face of an AABB [x0,x1]×[y0,y1]×[z0,z1] (world cell units).
+void RegionMesher::EmitAxisFace(MeshBuffer& out, float x0, float y0, float z0,
+                                float x1, float y1, float z1, int ourFace,
+                                float u0, float v0, float u1, float v1, uint32_t color) {
     PCT1Vertex v[4];
     auto set = [&](int i, float px, float py, float pz, float u, float vv) {
         v[i].x = px; v[i].y = py; v[i].z = pz;
         v[i].color = color; v[i].u = u; v[i].v = vv;
     };
-    float fx = (float)x, fy = (float)y, fz = (float)z;
-    switch (face) {
-        case 0:
-            set(0, fx+1, fy,   fz,   u0, v1); set(1, fx+1, fy+1, fz,   u0, v0);
-            set(2, fx+1, fy+1, fz+1, u1, v0); set(3, fx+1, fy,   fz+1, u1, v1); break;
-        case 1:
-            set(0, fx, fy,   fz+1, u0, v1); set(1, fx, fy+1, fz+1, u0, v0);
-            set(2, fx, fy+1, fz,   u1, v0); set(3, fx, fy,   fz,   u1, v1); break;
-        case 2:
-            set(0, fx,   fy+1, fz,   u0, v1); set(1, fx,   fy+1, fz+1, u0, v0);
-            set(2, fx+1, fy+1, fz+1, u1, v0); set(3, fx+1, fy+1, fz,   u1, v1); break;
-        case 3:
-            set(0, fx,   fy, fz+1, u0, v1); set(1, fx,   fy, fz,   u0, v0);
-            set(2, fx+1, fy, fz,   u1, v0); set(3, fx+1, fy, fz+1, u1, v1); break;
-        case 4:
-            set(0, fx+1, fy,   fz+1, u0, v1); set(1, fx+1, fy+1, fz+1, u0, v0);
-            set(2, fx,   fy+1, fz+1, u1, v0); set(3, fx,   fy,   fz+1, u1, v1); break;
-        case 5:
-            set(0, fx,   fy,   fz, u0, v1); set(1, fx,   fy+1, fz, u0, v0);
-            set(2, fx+1, fy+1, fz, u1, v0); set(3, fx+1, fy,   fz, u1, v1); break;
+    switch (ourFace) {
+        case 0: // +X at x1
+            set(0, x1, y0, z0, u0, v1); set(1, x1, y1, z0, u0, v0);
+            set(2, x1, y1, z1, u1, v0); set(3, x1, y0, z1, u1, v1); break;
+        case 1: // -X at x0
+            set(0, x0, y0, z1, u0, v1); set(1, x0, y1, z1, u0, v0);
+            set(2, x0, y1, z0, u1, v0); set(3, x0, y0, z0, u1, v1); break;
+        case 2: // +Y at y1
+            set(0, x0, y1, z0, u0, v1); set(1, x0, y1, z1, u0, v0);
+            set(2, x1, y1, z1, u1, v0); set(3, x1, y1, z0, u1, v1); break;
+        case 3: // -Y at y0
+            set(0, x0, y0, z1, u0, v1); set(1, x0, y0, z0, u0, v0);
+            set(2, x1, y0, z0, u1, v0); set(3, x1, y0, z1, u1, v1); break;
+        case 4: // +Z at z1
+            set(0, x1, y0, z1, u0, v1); set(1, x1, y1, z1, u0, v0);
+            set(2, x0, y1, z1, u1, v0); set(3, x0, y0, z1, u1, v1); break;
+        case 5: // -Z at z0
+            set(0, x0, y0, z0, u0, v1); set(1, x0, y1, z0, u0, v0);
+            set(2, x1, y1, z0, u1, v0); set(3, x1, y0, z0, u1, v1); break;
         default: return;
     }
     out.PushQuad(v);
 }
 
-// AddWaterFace @ 0x8cc70 — per-corner heights (GetWaterBlockFaceYP style) so
-// neighbouring liquid cells share edge elevations (no cracks). YP is emitted
-// with both windings so the surface is visible from below water.
+// AddCross @ 0x8d750 — two crossed quads (or PushTwoSidedQuads for class 1).
+// UV from mat[+0x0e]/[+0x14] (ZP U/V tile). Position offset XT/YT/ZT (signed bytes).
+// Class 1: two-sided single pair; class 4: PushQuads + PushBackQuads.
+void RegionMesher::AddCross(MeshBuffer& out, int x, int y, int z,
+                            const Material& mat, const LightMap* lights) {
+    float u0, v0, u1, v1;
+    // binary uses param_4[0xe] and [0x14] = Uzp / Vzp tiles
+    Texture::TileUV((int)mat.raw[0x0e], (int)mat.raw[0x14], u0, v0, u1, v1);
+    // XT YT ZT are signed offsets in 1/16 cell units (char at +0x09..+0x0b)
+    float ox = (float)x + (int8_t)mat.raw[0x09] / 16.f;
+    float oy = (float)y + (int8_t)mat.raw[0x0a] / 16.f;
+    float oz = (float)z + (int8_t)mat.raw[0x0b] / 16.f;
+    uint32_t col = FaceColor(lights, x, y, z, 2);
+    // Cross in XZ: plane diagonals spanning full cell height
+    PCT1Vertex q[4];
+    auto push = [&](float x0, float y0, float z0, float x1, float y1, float z1,
+                    float x2, float y2, float z2, float x3, float y3, float z3) {
+        q[0] = {x0,y0,z0,col,u0,v1}; q[1] = {x1,y1,z1,col,u0,v0};
+        q[2] = {x2,y2,z2,col,u1,v0}; q[3] = {x3,y3,z3,col,u1,v1};
+        out.PushQuad(q);
+    };
+    // Diagonal 1: (0,0)-(1,1)  and back-face for two-sided
+    push(ox, oy, oz,  ox, oy+1, oz,  ox+1, oy+1, oz+1,  ox+1, oy, oz+1);
+    push(ox+1, oy, oz+1,  ox+1, oy+1, oz+1,  ox, oy+1, oz,  ox, oy, oz);
+    // Diagonal 2: (0,1)-(1,0)
+    push(ox+1, oy, oz,  ox+1, oy+1, oz,  ox, oy+1, oz+1,  ox, oy, oz+1);
+    push(ox, oy, oz+1,  ox, oy+1, oz+1,  ox+1, oy+1, oz,  ox+1, oy, oz);
+}
+
+// AddTorch @ 0x8db10 — thin 6-face stem; orientation from state&7 via rodata table.
+// Recovered: PushQuads with 6 faces, UV from mat[+0x0e]/[+0x14], base at cell origin.
+void RegionMesher::AddTorch(MeshBuffer& out, GridData& grid, int x, int y, int z,
+                            const Material& mat, const LightMap* lights) {
+    int idx = grid.CoordToIndex(x, y, z);
+    unsigned short st = (idx >= 0 && idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
+    int orient = st & 7; // 0=floor, 1..4 walls (binary table)
+    float u0, v0, u1, v1;
+    Texture::TileUV((int)mat.raw[0x0e], (int)mat.raw[0x14], u0, v0, u1, v1);
+    uint32_t col = FaceColor(lights, x, y, z, 2);
+    // Stem cross-section ~2/16, height ~10/16 standing; wall-mounted tilt simplified
+    float cx = (float)x + 0.5f, cy = (float)y, cz = (float)z + 0.5f;
+    float hw = 1.f / 16.f; // half width
+    float h = 10.f / 16.f;
+    float y0 = cy, y1 = cy + h;
+    if (orient >= 1 && orient <= 4) {
+        // wall torch: shorter stick protruding from face
+        h = 8.f / 16.f;
+        y0 = cy + 3.f / 16.f;
+        y1 = y0 + h;
+        float d = 3.f / 16.f;
+        if (orient == 1) { cx = (float)x + d; }      // +X wall inward
+        else if (orient == 2) { cx = (float)x + 1.f - d; }
+        else if (orient == 3) { cz = (float)z + d; }
+        else { cz = (float)z + 1.f - d; }
+    }
+    // four side faces + top
+    EmitAxisFace(out, cx-hw, y0, cz-hw, cx+hw, y1, cz+hw, 0, u0, v0, u1, v1, col);
+    EmitAxisFace(out, cx-hw, y0, cz-hw, cx+hw, y1, cz+hw, 1, u0, v0, u1, v1, col);
+    EmitAxisFace(out, cx-hw, y0, cz-hw, cx+hw, y1, cz+hw, 4, u0, v0, u1, v1, col);
+    EmitAxisFace(out, cx-hw, y0, cz-hw, cx+hw, y1, cz+hw, 5, u0, v0, u1, v1, col);
+    EmitAxisFace(out, cx-hw, y0, cz-hw, cx+hw, y1, cz+hw, 2, u0, v0, u1, v1, col);
+}
+
+// AddLadder @ 0x8dc50 — single plane against wall from state&7.
+void RegionMesher::AddLadder(MeshBuffer& out, GridData& grid, int x, int y, int z,
+                             const Material& mat, const LightMap* lights) {
+    int idx = grid.CoordToIndex(x, y, z);
+    unsigned short st = (idx >= 0 && idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
+    int orient = st & 7;
+    float u0, v0, u1, v1;
+    Texture::TileUV((int)mat.raw[0x0e], (int)mat.raw[0x14], u0, v0, u1, v1);
+    uint32_t col = FaceColor(lights, x, y, z, 2);
+    float fx = (float)x, fy = (float)y, fz = (float)z;
+    float t = 1.f / 16.f; // thickness off wall
+    PCT1Vertex q[4];
+    auto push = [&](float x0, float y0, float z0, float x1, float y1, float z1,
+                    float x2, float y2, float z2, float x3, float y3, float z3) {
+        q[0] = {x0,y0,z0,col,u0,v1}; q[1] = {x1,y1,z1,col,u0,v0};
+        q[2] = {x2,y2,z2,col,u1,v0}; q[3] = {x3,y3,z3,col,u1,v1};
+        out.PushQuad(q);
+        // back face
+        q[0] = {x3,y3,z3,col,u1,v1}; q[1] = {x2,y2,z2,col,u1,v0};
+        q[2] = {x1,y1,z1,col,u0,v0}; q[3] = {x0,y0,z0,col,u0,v1};
+        out.PushQuad(q);
+    };
+    // orient 0..3 ≈ -Z +Z -X +X (matches common ladder encodings)
+    if (orient == 0) {
+        push(fx, fy, fz+t, fx, fy+1, fz+t, fx+1, fy+1, fz+t, fx+1, fy, fz+t);
+    } else if (orient == 1) {
+        push(fx+1, fy, fz+1-t, fx+1, fy+1, fz+1-t, fx, fy+1, fz+1-t, fx, fy, fz+1-t);
+    } else if (orient == 2) {
+        push(fx+t, fy, fz+1, fx+t, fy+1, fz+1, fx+t, fy+1, fz, fx+t, fy, fz);
+    } else {
+        push(fx+1-t, fy, fz, fx+1-t, fy+1, fz, fx+1-t, fy+1, fz+1, fx+1-t, fy, fz+1);
+    }
+}
+
+// AddBlockFace @ 0x877a0 — geometry by Material class (+0x01).
+// Class 0: full cube or slab (height from +0x00 / state bit 4 upside-down).
+// Class 5: fence posts + bars.
+// Class 6: stairs (state&3 orientation, state&4 upside-down).
+// Class 7: door (state bits orientation / open / upper).
+// Class 8: small lamp (inset cube).
+// Class 9: fence gate.
+// Class 10: trapdoor.
+void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, int z,
+                                const Material& mat, int ourFace, int needFlags,
+                                const LightMap* lights) {
+    (void)needFlags;
+    int idx = grid.CoordToIndex(x, y, z);
+    unsigned short st = (idx >= 0 && idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
+    uint8_t cls = mat.prop01();
+    float u0, v0, u1, v1;
+    FaceUV(mat, ourFace, u0, v0, u1, v1);
+    uint32_t col = FaceColor(lights, x, y, z, ourFace);
+    float fx = (float)x, fy = (float)y, fz = (float)z;
+
+    if (cls == 0) {
+        // Solid / slab. height units 0..16 in +0x00; state&4 → top slab.
+        int ht = (int)mat.height();
+        if (ht <= 0 || ht > 16) ht = 16;
+        float y0 = fy, y1 = fy + (float)ht / 16.f;
+        if (st & 4) { // upside-down slab path from binary
+            y1 = fy + 1.f;
+            y0 = y1 - (float)ht / 16.f;
+        }
+        // Full cube fast path
+        if (ht >= 16 && !(st & 4)) {
+            EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col);
+            return;
+        }
+        EmitAxisFace(out, fx, y0, fz, fx+1, y1, fz+1, ourFace, u0, v0, u1, v1, col);
+        return;
+    }
+
+    if (cls == 5) {
+        // Fence: center post always; bars toward solid/fence neighbours on side faces.
+        const float p0 = 6.f/16.f, p1 = 10.f/16.f;
+        if (ourFace == 2 || ourFace == 3) {
+            EmitAxisFace(out, fx+p0, fy, fz+p0, fx+p1, fy+1, fz+p1, ourFace, u0, v0, u1, v1, col);
+        } else {
+            // post sides only for matching axis
+            EmitAxisFace(out, fx+p0, fy, fz+p0, fx+p1, fy+1, fz+p1, ourFace, u0, v0, u1, v1, col);
+            // connecting bar if neighbour is solid/fence
+            int nx = x, ny = y, nz = z;
+            if (ourFace == 0) nx++; else if (ourFace == 1) nx--;
+            else if (ourFace == 4) nz++; else if (ourFace == 5) nz--;
+            bool neighFence = false;
+            {
+                int ni = grid.CoordToIndex(nx, ny, nz);
+                if (ni >= 0) {
+                    const Material* nm = grid.GetMaterial((int)grid.cellTypes[ni]);
+                    if (nm && nm->prop01() == 5) neighFence = true;
+                }
+            }
+            if (IsSolid(grid, nx, ny, nz) || neighFence) {
+                float yb0 = fy + 6.f/16.f, yb1 = fy + 9.f/16.f;
+                if (ourFace == 0)
+                    EmitAxisFace(out, fx+p1, yb0, fz+p0, fx+1, yb1, fz+p1, ourFace, u0, v0, u1, v1, col);
+                else if (ourFace == 1)
+                    EmitAxisFace(out, fx, yb0, fz+p0, fx+p0, yb1, fz+p1, ourFace, u0, v0, u1, v1, col);
+                else if (ourFace == 4)
+                    EmitAxisFace(out, fx+p0, yb0, fz+p1, fx+p1, yb1, fz+1, ourFace, u0, v0, u1, v1, col);
+                else if (ourFace == 5)
+                    EmitAxisFace(out, fx+p0, yb0, fz, fx+p1, yb1, fz+p0, ourFace, u0, v0, u1, v1, col);
+            }
+        }
+        return;
+    }
+
+    if (cls == 6) {
+        // Stairs: state&3 = facing (0=+Z 1=-Z 2=+X 3=-X), state&4 = upside-down.
+        int facing = st & 3;
+        bool upside = (st & 4) != 0;
+        // Emit two half-slabs forming a stair step relative to face.
+        // Bottom half always; top half only on the high side.
+        float yLow0 = upside ? fy + 0.5f : fy;
+        float yLow1 = yLow0 + 0.5f;
+        float yHigh0 = upside ? fy : fy + 0.5f;
+        float yHigh1 = yHigh0 + 0.5f;
+        // Which faces get the high step
+        bool highFace = false;
+        if (facing == 0 && ourFace == 4) highFace = true;      // +Z high
+        if (facing == 1 && ourFace == 5) highFace = true;
+        if (facing == 2 && ourFace == 0) highFace = true;
+        if (facing == 3 && ourFace == 1) highFace = true;
+        // Side faces: both halves with split AABB
+        if (ourFace == 2 || ourFace == 3) {
+            // top/bottom: full footprint at high/low height
+            if (ourFace == 2) {
+                EmitAxisFace(out, fx, yHigh1, fz, fx+1, yHigh1, fz+1, ourFace, u0, v0, u1, v1, col);
+            } else {
+                EmitAxisFace(out, fx, yLow0, fz, fx+1, yLow0, fz+1, ourFace, u0, v0, u1, v1, col);
+            }
+            return;
+        }
+        // For horizontal faces: emit low slab full, high slab on high half
+        EmitAxisFace(out, fx, yLow0, fz, fx+1, yLow1, fz+1, ourFace, u0, v0, u1, v1, col);
+        // high step occupies half the cell toward facing
+        float hx0=fx, hx1=fx+1, hz0=fz, hz1=fz+1;
+        if (facing == 0) { hz0 = fz + 0.5f; }
+        else if (facing == 1) { hz1 = fz + 0.5f; }
+        else if (facing == 2) { hx0 = fx + 0.5f; }
+        else { hx1 = fx + 0.5f; }
+        EmitAxisFace(out, hx0, yHigh0, hz0, hx1, yHigh1, hz1, ourFace, u0, v0, u1, v1, col);
+        (void)highFace;
+        return;
+    }
+
+    if (cls == 7) {
+        // Door: thin plane; state&3 facing, bit3 open, bit4 upper half (binary-ish).
+        int facing = st & 3;
+        bool open = (st & 4) != 0;
+        float t = 3.f / 16.f;
+        if (open) {
+            // swing 90° — approximate as orthogonal plane
+            facing = (facing + 1) & 3;
+        }
+        if (facing == 0 && (ourFace == 4 || ourFace == 5))
+            EmitAxisFace(out, fx, fy, fz, fx+1, fy+1, fz+t, ourFace, u0, v0, u1, v1, col);
+        else if (facing == 1 && (ourFace == 4 || ourFace == 5))
+            EmitAxisFace(out, fx, fy, fz+1-t, fx+1, fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+        else if (facing == 2 && (ourFace == 0 || ourFace == 1))
+            EmitAxisFace(out, fx, fy, fz, fx+t, fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+        else if (facing == 3 && (ourFace == 0 || ourFace == 1))
+            EmitAxisFace(out, fx+1-t, fy, fz, fx+1, fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+        else if (ourFace == 2 || ourFace == 3) {
+            // top/bottom thin strip
+            if (facing <= 1)
+                EmitAxisFace(out, fx, fy, (facing==0?fz:fz+1-t), fx+1, fy+1, (facing==0?fz+t:fz+1), ourFace, u0, v0, u1, v1, col);
+            else
+                EmitAxisFace(out, (facing==2?fx:fx+1-t), fy, fz, (facing==2?fx+t:fx+1), fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+        }
+        return;
+    }
+
+    if (cls == 8) {
+        // Small lamp — inset cube 4/16..12/16
+        float a = 4.f/16.f, b = 12.f/16.f;
+        EmitAxisFace(out, fx+a, fy+a, fz+a, fx+b, fy+b, fz+b, ourFace, u0, v0, u1, v1, col);
+        return;
+    }
+
+    if (cls == 9) {
+        // Fence gate — similar to fence but with gate panel in middle height
+        const float p0 = 6.f/16.f, p1 = 10.f/16.f;
+        EmitAxisFace(out, fx+p0, fy, fz+p0, fx+p1, fy+1, fz+p1, ourFace, u0, v0, u1, v1, col);
+        float yb0 = fy + 5.f/16.f, yb1 = fy + 12.f/16.f;
+        int facing = st & 3;
+        if ((facing <= 1 && (ourFace == 4 || ourFace == 5)) ||
+            (facing >= 2 && (ourFace == 0 || ourFace == 1))) {
+            EmitAxisFace(out, fx, yb0, fz, fx+1, yb1, fz+1, ourFace, u0, v0, u1, v1, col);
+        }
+        return;
+    }
+
+    if (cls == 10) {
+        // Trapdoor: flat 3/16 slab; state&4 open → vertical against wall.
+        int facing = st & 3;
+        bool open = (st & 4) != 0;
+        if (!open) {
+            float y0 = (st & 8) ? fy + 13.f/16.f : fy;
+            float y1 = y0 + 3.f/16.f;
+            EmitAxisFace(out, fx, y0, fz, fx+1, y1, fz+1, ourFace, u0, v0, u1, v1, col);
+        } else {
+            float t = 3.f/16.f;
+            if (facing == 0)
+                EmitAxisFace(out, fx, fy, fz, fx+1, fy+1, fz+t, ourFace, u0, v0, u1, v1, col);
+            else if (facing == 1)
+                EmitAxisFace(out, fx, fy, fz+1-t, fx+1, fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+            else if (facing == 2)
+                EmitAxisFace(out, fx, fy, fz, fx+t, fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+            else
+                EmitAxisFace(out, fx+1-t, fy, fz, fx+1, fy+1, fz+1, ourFace, u0, v0, u1, v1, col);
+        }
+        return;
+    }
+
+    // Fallback: full face
+    EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col);
+}
+
+// AddWaterFace — kept from prior recovery (corner heights, dual YP)
 void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, int z, int face,
                                  float u0, float v0, float u1, float v1, uint32_t color) {
     float h00 = WaterCornerHeight(grid, x, y, z, 0, 0);
@@ -277,16 +592,10 @@ void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, 
         v[i].color = color; v[i].u = u; v[i].v = vv;
     };
     float fx = (float)x, fy = (float)y, fz = (float)z;
-
     auto push = [&]() { out.PushQuad(v); };
-    auto pushFlip = [&]() {
-        // reverse winding for back face
-        PCT1Vertex t = v[1]; v[1] = v[3]; v[3] = t;
-        out.PushQuad(v);
-    };
 
     switch (face) {
-        case 0: { // +X  edge heights h10, h11
+        case 0: {
             float t0 = fy + h10, t1 = fy + h11;
             float vt0 = v0 + (v1 - v0) * (1.f - h10);
             float vt1 = v0 + (v1 - v0) * (1.f - h11);
@@ -294,7 +603,7 @@ void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, 
             set(2, fx+1, t1, fz+1, u1, vt1); set(3, fx+1, fy, fz+1, u1, v1);
             push(); break;
         }
-        case 1: { // -X  h00, h01
+        case 1: {
             float t0 = fy + h01, t1 = fy + h00;
             float vt0 = v0 + (v1 - v0) * (1.f - h01);
             float vt1 = v0 + (v1 - v0) * (1.f - h00);
@@ -302,33 +611,34 @@ void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, 
             set(2, fx, t1, fz,   u1, vt1); set(3, fx, fy, fz,   u1, v1);
             push(); break;
         }
-        case 2: { // +Y surface — dual sided
+        case 2: {
             set(0, fx,   fy+h00, fz,   u0, v1);
             set(1, fx,   fy+h01, fz+1, u0, v0);
             set(2, fx+1, fy+h11, fz+1, u1, v0);
             set(3, fx+1, fy+h10, fz,   u1, v1);
             push();
-            // back face for underwater view looking up
-            set(0, fx,   fy+h00, fz,   u0, v1);
-            set(1, fx+1, fy+h10, fz,   u1, v1);
-            set(2, fx+1, fy+h11, fz+1, u1, v0);
-            set(3, fx,   fy+h01, fz+1, u0, v0);
+            // dual-sided
+            set(0, fx+1, fy+h10, fz,   u1, v1);
+            set(1, fx+1, fy+h11, fz+1, u1, v0);
+            set(2, fx,   fy+h01, fz+1, u0, v0);
+            set(3, fx,   fy+h00, fz,   u0, v1);
             push();
             break;
         }
-        case 3: // -Y bottom
+        case 3: {
             set(0, fx,   fy, fz+1, u0, v1); set(1, fx,   fy, fz,   u0, v0);
             set(2, fx+1, fy, fz,   u1, v0); set(3, fx+1, fy, fz+1, u1, v1);
             push(); break;
-        case 4: { // +Z  h01, h11
-            float t0 = fy + h11, t1 = fy + h01;
-            float vt0 = v0 + (v1 - v0) * (1.f - h11);
-            float vt1 = v0 + (v1 - v0) * (1.f - h01);
-            set(0, fx+1, fy, fz+1, u0, v1); set(1, fx+1, t0, fz+1, u0, vt0);
-            set(2, fx,   t1, fz+1, u1, vt1); set(3, fx,   fy, fz+1, u1, v1);
+        }
+        case 4: {
+            float t0 = fy + h01, t1 = fy + h11;
+            float vt0 = v0 + (v1 - v0) * (1.f - h01);
+            float vt1 = v0 + (v1 - v0) * (1.f - h11);
+            set(0, fx+1, fy, fz+1, u0, v1); set(1, fx+1, t1, fz+1, u0, vt1);
+            set(2, fx,   t0, fz+1, u1, vt0); set(3, fx,   fy, fz+1, u1, v1);
             push(); break;
         }
-        case 5: { // -Z  h00, h10
+        case 5: {
             float t0 = fy + h00, t1 = fy + h10;
             float vt0 = v0 + (v1 - v0) * (1.f - h00);
             float vt1 = v0 + (v1 - v0) * (1.f - h10);
@@ -336,75 +646,9 @@ void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, 
             set(2, fx+1, t1, fz, u1, vt1); set(3, fx+1, fy, fz, u1, v1);
             push(); break;
         }
-        default: return;
+        default: break;
     }
-    (void)pushFlip;
 }
-
-// ---------------------------------------------------------------------------
-// NON-ORIGINAL: EmitGreedyQuad is NOT present in the binary mesher path.
-// Region::AddMesh emits faces individually via NeedFace* + AddBlockFace.
-// Kept isolated for reference only; RegionMesher::Build must not call it.
-// ---------------------------------------------------------------------------
-#if 0  // disabled — non-original greedy path
-static void EmitGreedyQuad(MeshBuffer& out, int face,
-                           int x0, int y0, int z0, int du, int dv,
-                           float uu0, float vv0, float uu1, float vv1, uint32_t color) {
-    PCT1Vertex v[4];
-    auto set = [&](int i, float px, float py, float pz, float u, float vv) {
-        v[i].x = px; v[i].y = py; v[i].z = pz;
-        v[i].color = color; v[i].u = u; v[i].v = vv;
-    };
-    // Tile UVs across the merged area (repeat atlas tile)
-    float tile = 1.f / 16.f;
-    // For simplicity keep single-tile UV range scaled by size (looks stretched on multi-tile merges)
-    // Better: UV length = du/dv so texture repeats
-    float su = (float)du, sv = (float)dv;
-    float u0 = uu0, v0 = vv0, u1 = uu0 + su * (uu1 - uu0), v1 = vv0 + sv * (vv1 - vv0);
-
-    switch (face) {
-        case 0: // +X  plane at x0+1; axes y,z
-            set(0, x0+1, y0,      z0,      u0, v1);
-            set(1, x0+1, y0+dv,   z0,      u0, v0);
-            set(2, x0+1, y0+dv,   z0+du,   u1, v0);
-            set(3, x0+1, y0,      z0+du,   u1, v1);
-            break;
-        case 1: // -X
-            set(0, x0, y0,      z0+du, u0, v1);
-            set(1, x0, y0+dv,   z0+du, u0, v0);
-            set(2, x0, y0+dv,   z0,    u1, v0);
-            set(3, x0, y0,      z0,    u1, v1);
-            break;
-        case 2: // +Y  axes x,z
-            set(0, x0,    y0+1, z0,    u0, v1);
-            set(1, x0,    y0+1, z0+dv, u0, v0);
-            set(2, x0+du, y0+1, z0+dv, u1, v0);
-            set(3, x0+du, y0+1, z0,    u1, v1);
-            break;
-        case 3: // -Y
-            set(0, x0,    y0, z0+dv, u0, v1);
-            set(1, x0,    y0, z0,    u0, v0);
-            set(2, x0+du, y0, z0,    u1, v0);
-            set(3, x0+du, y0, z0+dv, u1, v1);
-            break;
-        case 4: // +Z  axes x,y
-            set(0, x0+du, y0,    z0+1, u0, v1);
-            set(1, x0+du, y0+dv, z0+1, u0, v0);
-            set(2, x0,    y0+dv, z0+1, u1, v0);
-            set(3, x0,    y0,    z0+1, u1, v1);
-            break;
-        case 5: // -Z
-            set(0, x0,    y0,    z0, u0, v1);
-            set(1, x0,    y0+dv, z0, u0, v0);
-            set(2, x0+du, y0+dv, z0, u1, v0);
-            set(3, x0+du, y0,    z0, u1, v1);
-            break;
-        default: return;
-    }
-    out.PushQuad(v);
-}
-
-#endif // non-original greedy
 
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                          const std::vector<BlockDef>& defs, MeshBuffer& out,
@@ -415,12 +659,19 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                          const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
                          MeshBuffer* waterOut, const LightMap* lights) {
-    // Region::AddMesh: solids → NeedFace* + AddBlockFace;
-    // liquids → WaterNeedFace* + AddWaterFace (separate translucent pass).
+    // Region::AddMesh @ 0x9b090 control flow (verified from Ghidra):
+    //   type = types[cell]; if 0 → skip
+    //   mat = materials[type]
+    //   class = mat[+0x01]
+    //   if class not in {0,5,6,7,8,9,0xa}:
+    //     1|4 → AddCross; 2 → AddTorch; 3 → AddLadder; done
+    //   else:
+    //     for each face bit: NeedFace* → AddBlockFace(face, flags)
+    //   if state fluid bits: WaterNeedFace* → AddWaterFace
     solidOut.Clear();
     if (waterOut) waterOut->Clear();
     const int S = 16;
-    static const int kFaceToMat[6] = { 0, 3, 1, 4, 2, 5 };
+    (void)defs;
 
     for (int z = 0; z < S; ++z)
     for (int y = 0; y < S; ++y)
@@ -429,25 +680,56 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         int cidx = grid.CoordToIndex(wx, wy, wz);
         if (cidx < 0) continue;
         unsigned char t = grid.cellTypes[cidx];
-        if (t == 0) continue; // air
+        if (t == 0) continue;
 
-        const bool liquid = IsWaterCell(grid, wx, wy, wz) || t == 5;
+        const Material* mat = grid.GetMaterial((int)t);
+        unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
+        const bool liquid = IsWaterCell(grid, wx, wy, wz) || t == 5 || (st & 0x2000) != 0;
+
+        // Special model classes (not in face set {0,5,6,7,8,9,10})
+        if (mat) {
+            uint8_t cls = mat->prop01();
+            if (cls == 1 || cls == 4) {
+                AddCross(solidOut, wx, wy, wz, *mat, lights);
+                // still allow liquid overlay below
+            } else if (cls == 2) {
+                AddTorch(solidOut, grid, wx, wy, wz, *mat, lights);
+            } else if (cls == 3) {
+                AddLadder(solidOut, grid, wx, wy, wz, *mat, lights);
+            } else if (cls == 0 || cls == 5 || cls == 6 || cls == 7 ||
+                       cls == 8 || cls == 9 || cls == 10) {
+                for (int face = 0; face < 6; ++face) {
+                    int nf = NeedFace(grid, wx, wy, wz, face);
+                    if (nf == 0) continue;
+                    AddBlockFace(solidOut, grid, wx, wy, wz, *mat, face, nf, lights);
+                }
+            } else {
+                // unknown class → treat as solid faces
+                for (int face = 0; face < 6; ++face) {
+                    int nf = NeedFace(grid, wx, wy, wz, face);
+                    if (nf == 0) continue;
+                    AddBlockFace(solidOut, grid, wx, wy, wz, *mat, face, nf, lights);
+                }
+            }
+        } else {
+            for (int face = 0; face < 6; ++face) {
+                if (NeedFace(grid, wx, wy, wz, face) == 0) continue;
+                float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
+                Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
+                EmitFace(solidOut, wx, wy, wz, face, u0, v0, u1, v1, FaceColor(lights, wx, wy, wz, face));
+            }
+        }
 
         if (liquid) {
             MeshBuffer& dst = waterOut ? *waterOut : solidOut;
             float h = WaterHeightFrac(grid, wx, wy, wz);
             if (h <= 0.f) continue;
             for (int face = 0; face < 6; ++face) {
-                if (WaterNeedFace(grid, wx, wy, wz, face) == 0)
-                    continue;
+                if (WaterNeedFace(grid, wx, wy, wz, face) == 0) continue;
                 float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-                const Material* mat = grid.GetMaterial(5);
-                if (mat) {
-                    int mi = kFaceToMat[face];
-                    Texture::TileUV((int)mat->uFace(mi), (int)mat->vFace(mi), u0, v0, u1, v1);
-                } else {
-                    Texture::TileUV(6, 0, u0, v0, u1, v1); // blocks.txt water UV
-                }
+                const Material* wm = grid.GetMaterial(5);
+                if (wm) FaceUV(*wm, face, u0, v0, u1, v1);
+                else Texture::TileUV(6, 0, u0, v0, u1, v1);
                 uint32_t col = 0xA0FFFFFF;
                 if (lights) {
                     uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
@@ -455,34 +737,9 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                 }
                 EmitWaterFace(grid, dst, wx, wy, wz, face, u0, v0, u1, v1, col);
             }
-            continue;
-        }
-
-        // Solid / leaves / etc.
-        for (int face = 0; face < 6; ++face) {
-            if (NeedFace(grid, wx, wy, wz, face) == 0)
-                continue;
-            float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-            const Material* mat = grid.GetMaterial((int)t);
-            if (mat) {
-                int mi = kFaceToMat[face];
-                Texture::TileUV((int)mat->uFace(mi), (int)mat->vFace(mi), u0, v0, u1, v1);
-            } else if (t < defs.size()) {
-                GetFaceUV(defs[t], face, u0, v0, u1, v1);
-            } else {
-                Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
-            }
-            uint32_t col = 0xFFFFFFFFu;
-            if (lights) {
-                col = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
-                if ((col & 0xFFu) < 32 && ((col >> 8) & 0xFFu) < 32)
-                    col = 0xFFC0C0C0u;
-            }
-            EmitFace(solidOut, wx, wy, wz, face, u0, v0, u1, v1, col);
         }
     }
 }
-
 
 // DrawPrimitive @ 0xcfa30 — GLES client arrays, PCT1Vertex stride 24
 #if defined(__ANDROID__)
