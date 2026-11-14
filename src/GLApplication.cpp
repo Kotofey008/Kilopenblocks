@@ -2,7 +2,9 @@
 #include "GLApplication.h"
 #include "Assets.h"
 #include "UIElement.h"
+#include "Loc.h"
 #include <android/native_window.h>
+#include <android/configuration.h>
 #include <android/log.h>
 #include <EGL/egl.h>
 #include <GLES/gl.h>
@@ -66,6 +68,16 @@ void GLApplication::OnCreateGLContext() {
 
     // Parse start.scene first so GridModel paths drive texture/material load
     // (binary: GridModel::SetProperties then LoadResources → LoadTextures/Effects)
+    // Binary: GLApplication loads loc/<GetLanguageCodeString()>.csv (AConfiguration language)
+    {
+        char lang[3] = {'e', 'n', 0};
+        if (mApp && mApp->config) {
+            AConfiguration_getLanguage(mApp->config, lang);
+            lang[2] = 0;
+        }
+        Localization::Instance().InitFromSystem(lang);
+        LOGI("system language '%.2s'", lang);
+    }
     game_.InitUI();
 
     {

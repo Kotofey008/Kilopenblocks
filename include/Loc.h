@@ -14,7 +14,9 @@ public:
         return inst;
     }
 
-    bool LoadLanguage(const char* langCode); // "en", "pl"
+    bool LoadLanguage(const char* langCode); // "en", "pl", ...
+    // Binary: loc/<GetLanguageCodeString()>.csv then fallback en (GLApplication Localize init)
+    bool InitFromSystem(const char* systemLang);
     const std::string& CurrentLang() const { return lang_; }
 
     // Resolve "/Key/Fallback" or "Key" → translated string (or fallback/key).

@@ -6,7 +6,6 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
-#include <cstdio>
 #include <strings.h> // strcasecmp
 
 // Observed static world-size table (values still approximate; symbol s_WorldSizesHi size 72)
@@ -29,7 +28,9 @@ void Game::InitUI() {
     // Original @ 0x66350 — loads UI scene objects + HUD/menu from assets
     // start.scene FileName "Screen/ui/hud.txt" / "Screen/ui/menu.txt" → assets/ui/
     // Localize table (GLApplication::Localize @ 0x6fd50) from assets/loc/<lang>.csv
-    Localization::Instance().LoadLanguage("en");
+    // Language is set by GLApplication before InitUI via InitFromSystem; default en here.
+    if (Localization::Instance().CurrentLang().empty())
+        Localization::Instance().LoadLanguage("en");
     scene_.Load("scenes/start.scene");
     ApplySceneConfigs();
     LoadUIPanelsFromScene();
@@ -286,6 +287,72 @@ void Game::CloseMenu() {
     SetPanelVisiblePattern("terrain_options_*", false);
 }
 
+
+void Game::HandleTouchMove(int x, int y) {
+    float fx = (float)x, fy = (float)y;
+    for (auto& p : uiPanels_) {
+        if (!p.visible || !p.loaded) continue;
+        for (auto& e : p.doc.All()) {
+            if (e.type != UIElement::Type::Slider || !e.isDragging) continue;
+            // Dragging slider: update value from pointer along axis
+            float v = e.currentValue;
+            if (e.horizontal) {
+                float thumbW = e.children.empty() ? 0.f : e.children[0]->screenRect.w;
+                float range = e.screenRect.w - thumbW;
+                if (range < 1.f) range = 1.f;
+                v = (fx - e.screenRect.x - thumbW * 0.5f) / range;
+            } else {
+                float thumbH = e.children.empty() ? 0.f : e.children[0]->screenRect.h;
+                float range = e.screenRect.h - thumbH;
+                if (range < 1.f) range = 1.f;
+                v = 1.f - (fy - e.screenRect.y - thumbH * 0.5f) / range;
+            }
+            if (v < 0.f) v = 0.f;
+            if (v > 1.f) v = 1.f;
+            e.currentValue = v;
+            p.doc.LayoutSliders();
+            // Bind known sliders
+            if (e.name == "sensitivity") {
+                // Binary maps 0..1 slider → sensitivity; label "1" at mid.
+                // Approximate: value*2 so 0.5 → 1.0 (default).
+                pendingSensitivity_ = v * 2.f;
+                if (pendingSensitivity_ < 0.05f) pendingSensitivity_ = 0.05f;
+                if (UIElement* lab = p.doc.Find("sensitivity_v")) {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%.2g", pendingSensitivity_);
+                    lab->text = buf;
+                }
+            }
+            return;
+        }
+    }
+}
+
+void Game::HandleTouchRelease(int x, int y) {
+    (void)x; (void)y;
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        for (auto& e : p.doc.All()) {
+            if (e.isDragging) {
+                e.isDragging = false;
+                e.pressed = false;
+                for (auto* c : e.children) {
+                    if (c) c->pressed = false;
+                }
+                // Apply sensitivity on release if this was the sensitivity slider
+                if (e.name == "sensitivity") {
+                    sensitivity_ = pendingSensitivity_;
+                    float s = sensitivity_;
+                    if (s > 0.f && s < 0.05f) s = 1.f / s;
+                    if (s < 0.01f) s = 0.01f;
+                    if (s > 5.f) s = 5.f;
+                    input_.SetTouchSensitivity(s);
+                }
+            }
+        }
+    }
+}
+
 void Game::HandleTouchPress(int x, int y) {
     // Original: ElementClickedMessage dispatch on the UISceneObject that owns the hit element
     float fx = (float)x, fy = (float)y;
@@ -311,6 +378,21 @@ void Game::HandleTouchPress(int x, int y) {
     }
 
     const std::string& n = hit->name;
+
+    // Slider thumb drag (Draggable child of UISliderElement)
+    if (hit->draggable || hit->type == UIElement::Type::Slider) {
+        UIElement* slider = (hit->type == UIElement::Type::Slider) ? hit
+            : panel->doc.FindSliderForThumb(hit);
+        if (slider && slider->type == UIElement::Type::Slider) {
+            slider->isDragging = true;
+            slider->pressed = true;
+            if (hit->draggable) hit->pressed = true;
+            // Immediate update for press position
+            HandleTouchMove(x, y);
+            return;
+        }
+    }
+
     // Match ElementClickedMessage first token against element name (wildcard supported)
     for (const auto& msg : panel->clickMsgs) {
         size_t semi = msg.find(';');
@@ -896,8 +978,22 @@ void Game::EnterGameSettings() {
 
 // Game::EnterControlsSettings @ 0x66f00 — push sensitivity into controls UI
 void Game::EnterControlsSettings() {
-    // Binary: FindObject controls_options_ui, SetValue sensitivity slider
+    // Binary: FindObject controls_options_ui, SetValue sensitivity slider (0..1)
     pendingSensitivity_ = sensitivity_;
+    float v = sensitivity_ * 0.5f; // inverse of drag mapping (0.5 → 1.0)
+    if (v < 0.f) v = 0.f;
+    if (v > 1.f) v = 1.f;
+    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "controls_options_ui")) {
+        if (UIElement* s = p->doc.Find("sensitivity")) {
+            s->currentValue = v;
+            p->doc.LayoutSliders();
+        }
+        if (UIElement* lab = p->doc.Find("sensitivity_v")) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2g", sensitivity_);
+            lab->text = buf;
+        }
+    }
 }
 
 // Game::EnterGraphicsSettings @ 0x64130

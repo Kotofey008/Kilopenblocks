@@ -51,6 +51,12 @@ public:
     std::vector<UIElement*> children;
     bool pressed = false;
     bool selected = false; // State[1] — palette slot / page tab
+    bool draggable = false; // Draggable = 1 (slider thumb)
+    // UISliderElement fields (binary +0x1e0 value, +0x1e4 horizontal, +0x1e8 lineWidth)
+    float currentValue = 0.f; // 0..1
+    bool horizontal = true;
+    float lineWidth = 8.f;
+    bool isDragging = false;
 
     UIStyle styleDefault;          // State[0].Default
     UIStyle stylePressed;          // State[0].Pressed
@@ -73,6 +79,9 @@ public:
     void ResolveAll(float screenW, float screenH);
     // Override $-vars from GameUIMetrics and scale geometry from design-800
     void ApplyMetrics(const GameUIMetrics& m);
+    // Position slider thumbs from CurrentValue; call after ResolveAll
+    void LayoutSliders();
+    UIElement* FindSliderForThumb(UIElement* thumb);
     void SetVisiblePrefix(const std::string& prefix, bool visible);
     void SetAllVisible(bool visible);
     UIElement* Find(const char* name);

@@ -88,6 +88,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event) {
                 int x = (int)AMotionEvent_getX(event, i);
                 int y = (int)AMotionEvent_getY(event, i);
                 in.TouchMoveEvent((unsigned)id, x, y);
+                g_glApp->GetGame().HandleTouchMove(x, y);
             }
         } else {
             int id = AMotionEvent_getPointerId(event, idx);
@@ -98,8 +99,10 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event) {
                 g_glApp->GetGame().HandleTouchPress(x, y);
             }
             else if (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP
-                     || masked == AMOTION_EVENT_ACTION_CANCEL)
+                     || masked == AMOTION_EVENT_ACTION_CANCEL) {
                 in.TouchReleaseEvent((unsigned)id, x, y);
+                g_glApp->GetGame().HandleTouchRelease(x, y);
+            }
         }
         return 1;
     }

@@ -176,6 +176,8 @@ public:
     void CloseMenu();
     // Called from input path after InputMgr::TouchPressEvent
     void HandleTouchPress(int x, int y);
+    void HandleTouchMove(int x, int y);
+    void HandleTouchRelease(int x, int y);
 
     // UISceneObject panels from start.scene (name → document). Used by RenderHUD.
     // Visibility is panel-level (matches "menu_* SetVisible" patterns on scene object names).

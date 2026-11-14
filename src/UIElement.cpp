@@ -181,6 +181,17 @@ bool UIDocument::LoadFromText(const std::string& text) {
         else if (key == "Text") cur->text = val;
         else if (key == "Font") cur->fontName = val;
         else if (key == "HitTest") cur->hitTest = (val == "1" || val == "true" || val == "True");
+        else if (key == "CurrentValue") {
+            cur->currentValue = parseFloatOrVar(val, *this);
+            if (cur->currentValue < 0.f) cur->currentValue = 0.f;
+            if (cur->currentValue > 1.f) cur->currentValue = 1.f;
+        } else if (key == "Horizontal") {
+            cur->horizontal = (val == "1" || val == "true" || val == "True");
+        } else if (key == "LineWidth") {
+            cur->lineWidth = parseFloatOrVar(val, *this);
+        } else if (key == "Draggable") {
+            cur->draggable = (val == "1" || val == "true" || val == "True");
+        }
         else if (key == "Visible") cur->visible = (val != "0" && val != "false");
         else if (key == "XAlign") cur->xAlign = std::strtof(val.c_str(), nullptr);
         else if (key == "YAlign") cur->yAlign = std::strtof(val.c_str(), nullptr);
@@ -390,6 +401,7 @@ void UIDocument::ResolveAll(float screenW, float screenH) {
     }
     // Second pass: any root that is pure design-sized background already handled.
     // Children with AutoResizeX/Y expand with their parent (e.g. "frame").
+    LayoutSliders();
 }
 
 void UIDocument::SetVisiblePrefix(const std::string& prefix, bool visible) {
@@ -427,6 +439,50 @@ UIElement* UIDocument::HitTest(float x, float y) {
 // Full binary DrawBackground is 4750 B (multi-frame borders, clipping FRect).
 // We emit the same visual components: fill, frame rings, label via Font.
 // ---------------------------------------------------------------------------
+
+UIElement* UIDocument::FindSliderForThumb(UIElement* thumb) {
+    if (!thumb || !thumb->parent) return nullptr;
+    if (thumb->parent->type == UIElement::Type::Slider)
+        return thumb->parent;
+    return nullptr;
+}
+
+void UIDocument::LayoutSliders() {
+    // Binary: slider thumb (child 0) position tracks CurrentValue along axis.
+    // Horizontal: x = trackX + value * (trackW - thumbW); vertical analogous.
+    for (auto& e : elements_) {
+        if (e.type != UIElement::Type::Slider) continue;
+        if (e.children.empty()) continue;
+        UIElement* thumb = e.children[0];
+        float tw = e.screenRect.w;
+        float th = e.screenRect.h;
+        float kw = thumb->sizeW > 0 ? thumb->sizeW : (thumb->screenRect.w > 0 ? thumb->screenRect.w : 0);
+        float kh = thumb->sizeH > 0 ? thumb->sizeH : (thumb->screenRect.h > 0 ? thumb->screenRect.h : 0);
+        float v = e.currentValue;
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        if (e.horizontal) {
+            float range = tw - kw;
+            if (range < 0.f) range = 0.f;
+            float x = e.screenRect.x + v * range;
+            float y = e.screenRect.y + (th - kh) * 0.5f;
+            thumb->screenRect = {x, y, kw, kh};
+            // Keep design pos consistent for parent-relative logic
+            thumb->posX = v * range;
+            thumb->posY = (th - kh) * 0.5f;
+        } else {
+            float range = th - kh;
+            if (range < 0.f) range = 0.f;
+            // Vertical: value 0 at bottom
+            float y = e.screenRect.y + (1.f - v) * range;
+            float x = e.screenRect.x + (tw - kw) * 0.5f;
+            thumb->screenRect = {x, y, kw, kh};
+            thumb->posX = (tw - kw) * 0.5f;
+            thumb->posY = (1.f - v) * range;
+        }
+    }
+}
+
 void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
 #if !defined(__ANDROID__)
     (void)screenW; (void)screenH; (void)fonts;
@@ -516,6 +572,26 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
         // frame2 is the selection ring drawn outside the rect.
         drawQuad(x, y, w, h, st.backgroundColor);
 
+        // UISliderElement::DrawBackground — track line between end frames when LineWidth>0
+        if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f &&
+            ((st.backgroundColor >> 24) & 0xff) != 0) {
+            uint32_t lineCol = st.frame1Color;
+            if (((lineCol >> 24) & 0xff) < 0x20)
+                lineCol = 0x78DCDCDCu;
+            float lw = e.lineWidth;
+            if (e.horizontal) {
+                float ly = y + (h - lw) * 0.5f;
+                float pad = h * 0.5f; // inset roughly half height (thumb radius)
+                if (pad * 2.f > w) pad = 0.f;
+                drawQuad(x + pad, ly, w - pad * 2.f, lw, lineCol);
+            } else {
+                float lx = x + (w - lw) * 0.5f;
+                float pad = w * 0.5f;
+                if (pad * 2.f > h) pad = 0.f;
+                drawQuad(lx, y + pad, lw, h - pad * 2.f, lineCol);
+            }
+        }
+
         auto drawFrameRing = [&](float fx, float fy, float fw, float fh, float thick, uint32_t col) {
             if (thick <= 0.f || fw <= 0.f || fh <= 0.f) return;
             if (((col >> 24) & 0xff) == 0) return;
@@ -534,12 +610,11 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
             drawFrameRing(x, y, w, h, f0, f0col);
         }
 
+        // Binary: only draw frame rings when Width>0 AND color alpha != 0.
+        // Do not invent minimum thickness (was forcing f1=2) — matches design $buttonFrame*Width.
         float f1 = st.frame1Width;
         uint32_t fcol = st.frame1Color;
-        if (f1 < 1.f && e.hitTest && !isMtlSlot) f1 = 2.f;
-        if (f1 > 0.f) {
-            if (((fcol >> 24) & 0xff) < 0x20) fcol = (fcol & 0x00FFFFFFu) | 0xA0000000u;
-            // Inset frame1 inside frame0 so double-border matches binary look
+        if (f1 > 0.f && (((fcol >> 24) & 0xff) != 0)) {
             float inset = f0 > 0.f ? f0 : 0.f;
             drawFrameRing(x + inset, y + inset, w - inset * 2.f, h - inset * 2.f, f1, fcol);
         }
