@@ -183,6 +183,13 @@ bool UIDocument::LoadFromText(const std::string& text) {
         else if (key == "Visible") cur->visible = (val != "0" && val != "false");
         else if (key == "XAlign") cur->xAlign = std::strtof(val.c_str(), nullptr);
         else if (key == "YAlign") cur->yAlign = std::strtof(val.c_str(), nullptr);
+        else if (key == "AutoResizeX") {
+            float v = parseFloatOrVar(val, *this);
+            cur->autoResizeX = (v != 0.f);
+        } else if (key == "AutoResizeY") {
+            float v = parseFloatOrVar(val, *this);
+            cur->autoResizeY = (v != 0.f);
+        }
         else if (key == "Size") parseSizeOrPos(val, *this, cur->sizeW, cur->sizeH);
         else if (key == "Position") parseSizeOrPos(val, *this, cur->posX, cur->posY);
         // ---- State[0] Default ----
@@ -286,6 +293,8 @@ std::string UIElement::DisplayText() const {
 }
 
 void UIElement::ResolveLayout(float screenW, float screenH) {
+    // Layout in screen pixels. AutoResizeX/Y grow with parent; fixed Size keeps
+    // design pixels (no global stretch — matches original: buttons stay 110×110).
     float pw = screenW, ph = screenH, px = 0, py = 0;
     if (parent) {
         pw = parent->screenRect.w;
@@ -293,8 +302,11 @@ void UIElement::ResolveLayout(float screenW, float screenH) {
         px = parent->screenRect.x;
         py = parent->screenRect.y;
     }
-    float w = sizeW > 0 ? sizeW : pw;
-    float h = sizeH > 0 ? sizeH : ph;
+    float w = sizeW;
+    float h = sizeH;
+    if (autoResizeX || w <= 0.f) w = pw;
+    if (autoResizeY || h <= 0.f) h = ph;
+    // Position = offset from aligned origin inside parent
     float x = px + (pw - w) * xAlign + posX;
     float y = py + (ph - h) * yAlign + posY;
     screenRect.x = x; screenRect.y = y; screenRect.w = w; screenRect.h = h;
@@ -303,20 +315,37 @@ void UIElement::ResolveLayout(float screenW, float screenH) {
 }
 
 void UIDocument::ResolveAll(float screenW, float screenH) {
+    // Design vars still available for $screenSize references when parsing sizes,
+    // but we do NOT scale every rect by screen/design. Root frame_background gets
+    // the real screen size via empty/auto size; AutoResize children follow parent.
     float designW = GetVar("screenSize", 800.f);
     float designH = GetVar("screenSize#h", 480.f);
     if (designW < 1.f) designW = 800.f;
     if (designH < 1.f) designH = 480.f;
-    const float sx = screenW / designW;
-    const float sy = screenH / designH;
-    for (auto* r : roots_)
-        r->ResolveLayout(designW, designH);
-    for (auto& e : elements_) {
-        e.screenRect.x *= sx;
-        e.screenRect.y *= sy;
-        e.screenRect.w *= sx;
-        e.screenRect.h *= sy;
+    (void)designW; (void)designH;
+
+    // Override root sizes that were set to $screenSize/$windowSize design constants
+    // so the top frame fills the real viewport (ResizeToViewport behaviour).
+    for (auto* r : roots_) {
+        if (!r) continue;
+        // frame_background / top-level without parent: fill screen
+        if (!r->parent) {
+            if (r->sizeW <= 0.f || r->name.find("frame_background") != std::string::npos ||
+                r->name == "frame_background") {
+                r->sizeW = screenW;
+                r->sizeH = screenH;
+            }
+            // If size was design 800×480 and AutoResize on child "frame", still
+            // expand background to screen so AutoResize children fill it.
+            if (r->name.find("background") != std::string::npos || r->children.empty() == false) {
+                r->sizeW = screenW;
+                r->sizeH = screenH;
+            }
+        }
+        r->ResolveLayout(screenW, screenH);
     }
+    // Second pass: any root that is pure design-sized background already handled.
+    // Children with AutoResizeX/Y expand with their parent (e.g. "frame").
 }
 
 void UIDocument::SetVisiblePrefix(const std::string& prefix, bool visible) {

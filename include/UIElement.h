@@ -43,6 +43,8 @@ public:
     float xAlign = 0.f, yAlign = 0.f;
     float posX = 0, posY = 0;
     float sizeW = 0, sizeH = 0;
+    bool autoResizeX = false; // AutoResizeX — grow with parent width
+    bool autoResizeY = false; // AutoResizeY — grow with parent height
     UIRect screenRect;
     UIElement* parent = nullptr;
     std::vector<UIElement*> children;

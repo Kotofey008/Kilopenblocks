@@ -58,6 +58,11 @@ jobs:
             -j$(nproc)
 
       - name: Package signed APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euxo pipefail
           ROOT=$(pwd)
@@ -101,33 +106,54 @@ jobs:
 
           $ZIPALIGN -f 4 build/base.apk build/aligned.apk
 
-          KEYSTORE=build/debug.keystore
-          if [ ! -f "$KEYSTORE" ]; then
+          # ---- Signing ----
+          # Prefer repository secrets (stable signature across builds).
+          # Fallback to a throwaway debug keystore only when secrets are absent
+          # (e.g. PRs from forks that cannot access secrets).
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "Using repository keystore from secrets"
+            KEYSTORE=build/release.keystore
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE"
+            KS_PASS="${ANDROID_KEYSTORE_PASSWORD}"
+            KEY_PASS="${ANDROID_KEY_PASSWORD}"
+            ALIAS="${ANDROID_KEY_ALIAS}"
+            OUT_APK=build/ExplorationLite-reimpl.apk
+          else
+            echo "WARNING: ANDROID_KEYSTORE_BASE64 secret not set — generating ephemeral debug keystore"
+            KEYSTORE=build/debug.keystore
             keytool -genkeypair -v -keystore "$KEYSTORE" -storepass android \
               -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
               -validity 10000 -dname "CN=Debug,O=Android,C=US"
+            KS_PASS=android
+            KEY_PASS=android
+            ALIAS=androiddebugkey
+            OUT_APK=build/ExplorationLite-reimpl-debug.apk
           fi
 
           if [ -n "$APKSIGNER" ]; then
-            $APKSIGNER sign --ks "$KEYSTORE" --ks-pass pass:android \
-              --key-pass pass:android --ks-key-alias androiddebugkey \
-              --out build/ExplorationLite-reimpl-debug.apk build/aligned.apk
-            $APKSIGNER verify build/ExplorationLite-reimpl-debug.apk
+            $APKSIGNER sign --ks "$KEYSTORE" --ks-pass "pass:$KS_PASS" \
+              --key-pass "pass:$KEY_PASS" --ks-key-alias "$ALIAS" \
+              --out "$OUT_APK" build/aligned.apk
+            $APKSIGNER verify "$OUT_APK"
           else
             jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
-              -keystore "$KEYSTORE" -storepass android -keypass android \
-              build/aligned.apk androiddebugkey
-            cp build/aligned.apk build/ExplorationLite-reimpl-debug.apk
+              -keystore "$KEYSTORE" -storepass "$KS_PASS" -keypass "$KEY_PASS" \
+              build/aligned.apk "$ALIAS"
+            cp build/aligned.apk "$OUT_APK"
           fi
+
+          # Never leave the keystore in the workspace / artifact
+          rm -f "$KEYSTORE"
 
           ls -la build/*.apk
           echo "APK contents:"
-          unzip -l build/ExplorationLite-reimpl-debug.apk | head -40
+          unzip -l "$OUT_APK" | head -40
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ExplorationLite-reimpl
           path: |
+            **/build/ExplorationLite-reimpl.apk
             **/build/ExplorationLite-reimpl-debug.apk
             **/libs/**/libExplorationLite.so
