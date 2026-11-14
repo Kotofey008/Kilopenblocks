@@ -236,6 +236,32 @@ bool Texture::UploadGL() const {
 #endif
 }
 
+
+void Texture::ConvertGrayscaleToAlphaMask() {
+    if (pixels_.empty() || width_ == 0 || height_ == 0) return;
+    const size_t n = (size_t)width_ * (size_t)height_;
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t* p = &pixels_[i * 4];
+        // Luminance as alpha (palette is gray); keep AA edges.
+        uint8_t a = p[0];
+        if (p[1] > a) a = p[1];
+        if (p[2] > a) a = p[2];
+        p[0] = 255;
+        p[1] = 255;
+        p[2] = 255;
+        p[3] = a;
+    }
+    // Re-upload if already on GPU
+#if defined(__ANDROID__)
+    if (glId_) {
+        glBindTexture(GL_TEXTURE_2D, glId_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)width_, (GLsizei)height_,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+#endif
+}
+
 void Texture::InvalidateGL() {
 #if defined(__ANDROID__)
     // Context is already gone — do not glDeleteTextures on a dead context.

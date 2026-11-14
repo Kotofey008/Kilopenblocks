@@ -101,6 +101,10 @@ bool Font::Load(const char* metricsPath, const char* texturePath) {
     } else if (texturePath) {
         texture_.LoadPNGAsset(texturePath);
     }
+    // font_N.png has no tRNS — black cells are opaque unless converted (matches
+    // binary alpha-blend text path with gray→alpha atlas).
+    if (texture_.Valid())
+        texture_.ConvertGrayscaleToAlphaMask();
 
     loaded_ = !glyphs_.empty();
     return loaded_;

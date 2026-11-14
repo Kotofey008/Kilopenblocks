@@ -17,6 +17,8 @@ public:
     void Unbind() const;
     // Android: EGL context lost → glId invalid. Keep pixels_, drop id, re-upload on Bind.
     void InvalidateGL();
+    // Font atlases: RGB luminance → alpha, RGB forced to white (no tRNS in PNG).
+    void ConvertGrayscaleToAlphaMask();
     bool EnsureUploaded() const;
     unsigned Width() const { return width_; }
     unsigned Height() const { return height_; }
