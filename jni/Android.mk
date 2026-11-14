@@ -25,7 +25,8 @@ LOCAL_SRC_FILES := \
     ../src/Lighting.cpp \
     ../src/Clouds.cpp \
     ../src/Font.cpp \
-    ../src/SkyBox.cpp
+    ../src/SkyBox.cpp \
+    ../src/Loc.cpp
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/../include
 LOCAL_LDLIBS     := -llog -landroid -lEGL -lGLESv1_CM -lz

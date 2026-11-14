@@ -1,5 +1,6 @@
 #include "UIElement.h"
 #include "Assets.h"
+#include "Loc.h"
 #include <sstream>
 #include <cstdlib>
 #include <cctype>
@@ -278,42 +279,10 @@ bool UIDocument::LoadAsset(const char* assetPath) {
 
 std::string UIElement::DisplayText() const {
     if (text.empty()) return "";
-    // Format "/LocKey/Label" — prefer middle key for ASCII-safe labels when
-    // the trailing label is unicode (arrows) not present in the bitmap font.
-    std::string key, label;
-    if (text.size() > 1 && text[0] == '/') {
-        size_t mid = text.find('/', 1);
-        if (mid != std::string::npos) {
-            key = text.substr(1, mid - 1);
-            label = text.substr(mid + 1);
-        } else {
-            label = text.substr(1);
-        }
-    } else {
-        label = text;
-    }
-    // Map known HUD keys to short ASCII (font atlas is 8-bit Sans)
-    if (key == "MoveForward") return "Fwd";
-    if (key == "MoveBack") return "Back";
-    if (key == "MoveLeft") return "Left";
-    if (key == "MoveRight") return "Right";
-    if (key == "Jump") return "Jump";
-    if (key == "Delete") return "Break";
-    if (key == "Add") return "Place";
-    if (key == "Menu") return "Menu";
-    if (key == "Toggle") return "Fly";
-    if (key == "NewTerrain") return "New";
-    if (key == "SelectTerrain") return "Load";
-    if (key == "Options") return "Opts";
-    // If label is pure ASCII printable, use it
-    bool ascii = true;
-    for (unsigned char c : label) {
-        if (c == '\n') continue;
-        if (c < 0x20 || c > 0x7E) { ascii = false; break; }
-    }
-    if (ascii && !label.empty()) return label;
-    if (!key.empty()) return key;
-    return label;
+    // Binary: Text = "/LocKey/Fallback" → GLApplication::Localize (0x6fd50)
+    // looks up LocKey in loc/<lang>.csv; on miss uses the Fallback segment.
+    // Newlines from CSV are preserved (multi-line button labels like "New\nTerrain").
+    return Localization::Instance().Localize(text);
 }
 
 void UIElement::ResolveLayout(float screenW, float screenH) {
@@ -469,55 +438,89 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
         // menu_mtl_N: hit targets over material grid — no text; frames only when selected later
         bool isMtlSlot = (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10);
 
-        // DrawBackground fill
+        // DrawBackground fill (UIElement::DrawBackground @ 0xf3b60)
+        // Outer frame0 (often 4px) is a soft border; frame1 is the hard outline;
+        // frame2 is the selection ring drawn outside the rect.
         drawQuad(x, y, w, h, st.backgroundColor);
 
-        // Frame ring (always draw for interactive buttons — even if fill is transparent)
-        float f1 = st.frame1Width;
-        uint32_t fcol = st.frame1Color;
-        if (f1 < 1.f && e.hitTest && !isMtlSlot) f1 = 2.f; // ensure visible outline
-        if (f1 > 0.f) {
-            if (((fcol >> 24) & 0xff) < 0x20) fcol = (fcol & 0x00FFFFFFu) | 0xA0000000u;
-            drawQuad(x, y, w, f1, fcol);
-            drawQuad(x, y + h - f1, w, f1, fcol);
-            drawQuad(x, y, f1, h, fcol);
-            drawQuad(x + w - f1, y, f1, h, fcol);
+        auto drawFrameRing = [&](float fx, float fy, float fw, float fh, float thick, uint32_t col) {
+            if (thick <= 0.f || fw <= 0.f || fh <= 0.f) return;
+            if (((col >> 24) & 0xff) == 0) return;
+            drawQuad(fx, fy, fw, thick, col);
+            drawQuad(fx, fy + fh - thick, fw, thick, col);
+            drawQuad(fx, fy, thick, fh, col);
+            drawQuad(fx + fw - thick, fy, thick, fh, col);
+        };
+
+        float f0 = st.frame0Width;
+        if (f0 > 0.f) {
+            // Outer frame uses a dimmer variant of frame1 when no explicit color
+            uint32_t f0col = st.frame1Color;
+            uint32_t a = (f0col >> 24) & 0xff;
+            if (a > 0x40) f0col = (f0col & 0x00FFFFFFu) | ((a / 2) << 24);
+            drawFrameRing(x, y, w, h, f0, f0col);
         }
 
-        // Selection frame (State[1] BackgroundFrame[2] — $selectionFrameColor on menu_mtl_*)
-        // Drawn outside the button edge so it reads as a highlight ring.
+        float f1 = st.frame1Width;
+        uint32_t fcol = st.frame1Color;
+        if (f1 < 1.f && e.hitTest && !isMtlSlot) f1 = 2.f;
+        if (f1 > 0.f) {
+            if (((fcol >> 24) & 0xff) < 0x20) fcol = (fcol & 0x00FFFFFFu) | 0xA0000000u;
+            // Inset frame1 inside frame0 so double-border matches binary look
+            float inset = f0 > 0.f ? f0 : 0.f;
+            drawFrameRing(x + inset, y + inset, w - inset * 2.f, h - inset * 2.f, f1, fcol);
+        }
+
+        // Selection frame (State[1] BackgroundFrame[2] — $selectionFrameColor)
         float f2 = st.frame2Width;
         uint32_t f2col = st.frame2Color;
         if (f2 > 0.f && (((f2col >> 24) & 0xff) > 0)) {
-            float ox = x - f2, oy = y - f2, ow = w + f2 * 2.f, oh = h + f2 * 2.f;
-            drawQuad(ox, oy, ow, f2, f2col);
-            drawQuad(ox, oy + oh - f2, ow, f2, f2col);
-            drawQuad(ox, oy, f2, oh, f2col);
-            drawQuad(ox + ow - f2, oy, f2, oh, f2col);
+            drawFrameRing(x - f2, y - f2, w + f2 * 2.f, h + f2 * 2.f, f2, f2col);
         }
 
-        // DrawText (ASCII labels; unicode arrows may be absent from font atlas)
+        // DrawText — multi-line labels (CSV may contain newlines)
         std::string label = e.DisplayText();
-        // Strip newlines from multi-line labels
-        for (char& ch : label) if (ch == '\n') ch = ' ';
         if (!label.empty() && textFont && textFont->IsLoaded()) {
+            // Split into lines
+            std::vector<std::string> lines;
+            {
+                std::string cur;
+                for (char ch : label) {
+                    if (ch == '\n' || ch == '\r') {
+                        if (ch == '\r') continue;
+                        lines.push_back(cur);
+                        cur.clear();
+                    } else {
+                        cur.push_back(ch);
+                    }
+                }
+                lines.push_back(cur);
+            }
             float scale = 1.f;
-            float tw = textFont->MeasureWidth(label.c_str(), 1.f);
-            float th = textFont->LineHeight();
-            if (tw > 1.f && tw * scale > w * 0.85f) scale = (w * 0.85f) / tw;
-            if (th * scale > h * 0.7f && th > 0.f) scale = (h * 0.7f) / th;
-            if (scale < 0.5f) scale = 0.5f;
-            float tx = x + (w - tw * scale) * 0.5f;
-            float ty = y + (h - th * scale) * 0.5f;
+            float maxLineW = 0.f;
+            for (const auto& ln : lines)
+                maxLineW = std::max(maxLineW, textFont->MeasureWidth(ln.c_str(), 1.f));
+            float lineH = textFont->LineHeight();
+            float blockH = lineH * (float)lines.size();
+            if (maxLineW > 1.f && maxLineW * scale > w * 0.90f) scale = (w * 0.90f) / maxLineW;
+            if (blockH * scale > h * 0.85f && blockH > 0.f) scale = (h * 0.85f) / blockH;
+            if (scale < 0.45f) scale = 0.45f;
+            float ty0 = y + (h - blockH * scale) * 0.5f;
             uint32_t shadow = argbToRgbaPack(st.textShadowColor);
             uint32_t col = argbToRgbaPack(st.textColor);
-            // Ensure text is visible
             if (((st.textColor >> 24) & 0xff) < 0x40)
                 col = argbToRgbaPack(0xFFDCDCDCu);
-            textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), label.c_str(),
-                                    scale, shadow, TextAlign::Left);
-            textFont->AddTextToMesh(textMesh, Vector(tx, ty, 0), label.c_str(),
-                                    scale, col, TextAlign::Left);
+            for (size_t li = 0; li < lines.size(); ++li) {
+                const std::string& ln = lines[li];
+                if (ln.empty()) continue;
+                float tw = textFont->MeasureWidth(ln.c_str(), 1.f);
+                float tx = x + (w - tw * scale) * 0.5f;
+                float ty = ty0 + (float)li * lineH * scale;
+                textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), ln.c_str(),
+                                        scale, shadow, TextAlign::Left);
+                textFont->AddTextToMesh(textMesh, Vector(tx, ty, 0), ln.c_str(),
+                                        scale, col, TextAlign::Left);
+            }
         }
     }
 

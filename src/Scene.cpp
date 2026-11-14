@@ -236,6 +236,10 @@ bool Scene::Load(const std::string& path) {
             else if (key == "FileName") currentUI->fileName = val;
             else if (key == "Visible") currentUI->visible = parseBool(val);
             else if (key == "Position") parseVec3(val, currentUI->position);
+            else if (key.size() > 22 && key.compare(0, 22, "ElementClickedMessage[") == 0) {
+                // ElementClickedMessage[N]:String = "..."
+                currentUI->elementClickedMessages.push_back(val);
+            }
             currentUI->props.values[key] = val;
         }
     }

@@ -1,4 +1,5 @@
 #include "Game.h"
+#include "Loc.h"
 #include <cmath>
 #include <iostream>
 #include <sstream>
@@ -26,6 +27,8 @@ Game::~Game() {}
 void Game::InitUI() {
     // Original @ 0x66350 — loads UI scene objects + HUD/menu from assets
     // start.scene FileName "Screen/ui/hud.txt" / "Screen/ui/menu.txt" → assets/ui/
+    // Localize table (GLApplication::Localize @ 0x6fd50) from assets/loc/<lang>.csv
+    Localization::Instance().LoadLanguage("en");
     scene_.Load("scenes/start.scene");
     ApplySceneConfigs();
     LoadUIPanelsFromScene();
@@ -66,120 +69,44 @@ void Game::InitUI() {
 // name prefixes. Element clicks match the first token of each message.
 // ---------------------------------------------------------------------------
 
+static std::string NormalizeUIAssetPath(const std::string& fileName) {
+    // start.scene uses "Screen/ui/hud.txt"; assets live under "ui/hud.txt"
+    std::string p = fileName;
+    if (p.size() >= 7 && (p.compare(0, 7, "Screen/") == 0 || p.compare(0, 7, "screen/") == 0))
+        p = p.substr(7);
+    // also accept leading slash
+    while (!p.empty() && p[0] == '/') p.erase(p.begin());
+    return p;
+}
+
 void Game::LoadUIPanelsFromScene() {
-    // Hard-coded from start.scene UISceneObject blocks (recovered, not invented).
-    // Format: sceneName, asset path under assets/, click messages.
-    struct Def {
-        const char* sceneName;
-        const char* asset;
-        const char* const* msgs;
-        int nmsgs;
-    };
-    static const char* hudMsgs[] = {
-        "hud_menu;ClearInput;hud_* SetVisible 0;menu_* SetVisible 1;Game Call SetUINeedFastResponse",
-        "hud_activate;EPS UpdateElement"
-    };
-    static const char* menuMsgs[] = {
-        "frame*;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_new_terrain;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 1;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0;Game Call FinishScreenshot",
-        "menu_full_version;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 1;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_select_terrain;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 1;options_* SetVisible 0;Game Call FinishScreenshot;Game Call EnterGameList",
-        "menu_options;ClearInput;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 1;Game Call SetUINeedFastResponse",
-        "menu_mtl_0;ClearInput;Game SelectPaletteItem 0;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_1;ClearInput;Game SelectPaletteItem 1;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_2;ClearInput;Game SelectPaletteItem 2;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_3;ClearInput;Game SelectPaletteItem 3;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_4;ClearInput;Game SelectPaletteItem 4;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_5;ClearInput;Game SelectPaletteItem 5;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_6;ClearInput;Game SelectPaletteItem 6;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_7;ClearInput;Game SelectPaletteItem 7;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_mtl_8;ClearInput;Game SelectPaletteItem 8;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;full_version_* SetVisible 0;select_terrain_* SetVisible 0;options_* SetVisible 0",
-        "menu_next_mtl_set;ClearInput;Game SelectPalettePage -2",
-        "menu_prev_mtl_set;ClearInput;Game SelectPalettePage -1",
-        "menu_mtl_set_0;Game SelectPalettePage 0",
-        "menu_mtl_set_1;Game SelectPalettePage 1",
-        "menu_mtl_set_2;Game SelectPalettePage 2",
-        "menu_mtl_set_3;Game SelectPalettePage 3",
-        "menu_mtl_set_4;Game SelectPalettePage 4",
-        "menu_mtl_set_5;Game SelectPalettePage 5",
-        "menu_mtl_set_6;Game SelectPalettePage 6"
-    };
-    static const char* newTerrainMsgs[] = {
-        "frame*;ClearInput;menu_* SetVisible 1;new_terrain_* SetVisible 0;terrain_options_* SetVisible 0",
-        "terrain_options;ClearInput;new_terrain_* SetVisible 0;terrain_options_* SetVisible 1",
-        "terrain_create;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;new_terrain_* SetVisible 0;Game CreateElement"
-    };
-    static const char* fullVersionMsgs[] = {
-        "frame*;ClearInput;menu_* SetVisible 1;full_version_* SetVisible 0"
-    };
-    static const char* selectTerrainMsgs[] = {
-        "frame*;ClearInput;menu_* SetVisible 1;select_terrain_* SetVisible 0;terrain_info_* SetVisible 0;delete_terrain_* SetVisible 0",
-        "play;ClearInput;hud_* SetVisible 1;select_terrain_* SetVisible 0;Game Call EnterGameList",
-        "file;ClearInput;select_terrain_* SetVisible 0;terrain_info_* SetVisible 1",
-        "prev;Game SelectElement 0",
-        "next;Game SelectElement 1"
-    };
-    static const char* terrainInfoMsgs[] = {
-        "frame*;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0;terrain_info_* SetVisible 0",
-        "delete;ClearInput;select_terrain_* SetVisible 0;delete_terrain_* SetVisible 1;terrain_info_* SetVisible 0",
-        "copy;ClearInput;select_terrain_* SetVisible 0;delete_terrain_* SetVisible 0;terrain_info_* SetVisible 0;Game CopyElement"
-    };
-    static const char* deleteTerrainMsgs[] = {
-        "frame*;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0",
-        "delete;ClearInput;select_terrain_* SetVisible 1;delete_terrain_* SetVisible 0;Game DeleteElement"
-    };
-    static const char* messageFrameMsgs[] = {
-        "frame*;ClearInput;menu_* SetVisible 1;message_frame_* SetVisible 0"
-    };
-    static const char* optionsMsgs[] = {
-        "frame*;ClearInput;menu_* SetVisible 1;game_options_* SetVisible 0;graphics_options_* SetVisible 0;options_* SetVisible 0",
-        "controls_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 0;controls_options_* SetVisible 1;options_* SetVisible 0;Game Call EnterControlsSettings",
-        "graphics_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 1;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call EnterGraphicsSettings",
-        "game_options;ClearInput;menu_* SetVisible 0;game_options_* SetVisible 1;graphics_options_* SetVisible 0;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call EnterGameSettings",
-        "fly_mode_toggle;ClearInput;hud_* SetVisible 1;menu_* SetVisible 0;game_options_* SetVisible 0;graphics_options_* SetVisible 0;controls_options_* SetVisible 0;options_* SetVisible 0;Game Call FlyModeToggle"
-    };
-    static const char* controlsMsgs[] = {
-        "frame*;ClearInput;options_* SetVisible 1;controls_options_* SetVisible 0",
-        "screen_size;Game Call UpdateScreenSize",
-        "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;controls_options_* SetVisible 0;Game Call ApplyControlsSettings"
-    };
-    static const char* graphicsMsgs[] = {
-        "frame*;ClearInput;options_* SetVisible 1;graphics_options_* SetVisible 0",
-        "draw_distance;Game Call UpdateDrawDistance",
-        "leaves_quality;Game Call UpdateLeavesQuality",
-        "clouds;Game Call UpdateClouds",
-        "animated_water;Game Call UpdateAnimatedWater",
-        "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;graphics_options_* SetVisible 0;Game Call ApplyGraphicsSettings"
-    };
-    static const char* gameOptsMsgs[] = {
-        "frame*;ClearInput;options_* SetVisible 1;game_options_* SetVisible 0",
-        "apply;ClearInput;hud_* SetVisible 1;options_* SetVisible 0;game_options_* SetVisible 0;Game Call ApplyGameSettings"
-    };
-
-    static const Def defs[] = {
-        { "hud_ui", "ui/hud.txt", hudMsgs, 2 },
-        { "menu_ui", "ui/menu.txt", menuMsgs, (int)(sizeof(menuMsgs)/sizeof(menuMsgs[0])) },
-        { "new_terrain_ui", "ui/menu_new_terrain.txt", newTerrainMsgs, 3 },
-        { "full_version_ui", "ui/menu_full_version.txt", fullVersionMsgs, 1 },
-        { "select_terrain_ui", "ui/menu_select_terrain.txt", selectTerrainMsgs, 5 },
-        { "terrain_info_ui", "ui/menu_terrain_info.txt", terrainInfoMsgs, 3 },
-        { "delete_terrain_ui", "ui/menu_delete_terrain.txt", deleteTerrainMsgs, 2 },
-        { "message_frame_ui", "ui/menu_message_frame.txt", messageFrameMsgs, 1 },
-        { "options_ui", "ui/menu_options.txt", optionsMsgs, 5 },
-        { "controls_options_ui", "ui/menu_controls_options.txt", controlsMsgs, 3 },
-        { "graphics_options_ui", "ui/menu_graphics_options.txt", graphicsMsgs, 6 },
-        { "game_options_ui", "ui/menu_game_options.txt", gameOptsMsgs, 2 },
-    };
-
+    // Dynamic: walk Scene::objects for UISceneObject entries produced by
+    // Scene::Load("scenes/start.scene"). No hard-coded panel list.
     uiPanels_.clear();
-    for (const auto& d : defs) {
+    for (SceneObject* obj : scene_.objects) {
+        if (!obj || obj->GetKind() != SceneObject::Kind::UI) continue;
+        auto* ui = static_cast<UISceneObject*>(obj);
+        if (ui->fileName.empty()) continue;
+
         UIPanel panel;
-        panel.sceneName = d.sceneName;
-        panel.loaded = panel.doc.LoadAsset(d.asset);
+        panel.sceneName = ui->name.empty() ? ui->fileName : ui->name;
+        std::string asset = NormalizeUIAssetPath(ui->fileName);
+        panel.loaded = panel.doc.LoadAsset(asset.c_str());
         panel.visible = false;
-        for (int i = 0; i < d.nmsgs; ++i)
-            panel.clickMsgs.push_back(d.msgs[i]);
+        panel.clickMsgs = ui->elementClickedMessages;
+        if (!panel.loaded) {
+            std::cout << "UI panel load FAILED: sceneName=" << panel.sceneName
+                      << " asset=" << asset << std::endl;
+        } else {
+            std::cout << "UI panel loaded: " << panel.sceneName
+                      << " <- " << asset
+                      << " msgs=" << panel.clickMsgs.size() << std::endl;
+        }
         uiPanels_.push_back(std::move(panel));
+    }
+    if (uiPanels_.empty()) {
+        std::cout << "LoadUIPanelsFromScene: no UISceneObjects in scene "
+                  << "(start.scene parse missing FileName/messages?)" << std::endl;
     }
 }
 

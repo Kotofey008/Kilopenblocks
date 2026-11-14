@@ -1,7 +1,17 @@
 #include "Assets.h"
 #include <cstring>
 #include <cstdio>
+#if defined(__ANDROID__)
 #include <android/log.h>
+#else
+#include <cstdio>
+#define ANDROID_LOG_INFO 0
+#define ANDROID_LOG_ERROR 0
+static inline int __android_log_print(int, const char*, const char* fmt, ...) {
+    // host: quiet
+    (void)fmt; return 0;
+}
+#endif
 
 #if defined(__ANDROID__)
 #include <android_native_app_glue.h>
