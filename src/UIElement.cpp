@@ -466,7 +466,10 @@ void UIDocument::LayoutSliders() {
             if (range < 0.f) range = 0.f;
             float x = e.screenRect.x + v * range;
             float y = e.screenRect.y + (th - kh) * 0.5f;
-            thumb->screenRect = {x, y, kw, kh};
+            thumb->screenRect.x = x;
+            thumb->screenRect.y = y;
+            thumb->screenRect.w = kw;
+            thumb->screenRect.h = kh;
             // Keep design pos consistent for parent-relative logic
             thumb->posX = v * range;
             thumb->posY = (th - kh) * 0.5f;
@@ -476,7 +479,10 @@ void UIDocument::LayoutSliders() {
             // Vertical: value 0 at bottom
             float y = e.screenRect.y + (1.f - v) * range;
             float x = e.screenRect.x + (tw - kw) * 0.5f;
-            thumb->screenRect = {x, y, kw, kh};
+            thumb->screenRect.x = x;
+            thumb->screenRect.y = y;
+            thumb->screenRect.w = kw;
+            thumb->screenRect.h = kh;
             thumb->posX = (tw - kw) * 0.5f;
             thumb->posY = (1.f - v) * range;
         }

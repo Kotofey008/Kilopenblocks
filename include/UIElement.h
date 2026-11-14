@@ -9,6 +9,8 @@
 
 struct UIRect {
     float x = 0, y = 0, w = 0, h = 0;
+    UIRect() = default;
+    UIRect(float x_, float y_, float w_, float h_) : x(x_), y(y_), w(w_), h(h_) {}
     bool Contains(float px, float py) const {
         return px >= x && py >= y && px < x + w && py < y + h;
     }
