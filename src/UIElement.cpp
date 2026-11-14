@@ -1,6 +1,7 @@
 #include "UIElement.h"
 #include "Assets.h"
 #include "Loc.h"
+#include "GameUIMetrics.h"
 #include <sstream>
 #include <cstdlib>
 #include <cctype>
@@ -292,6 +293,49 @@ std::string UIElement::DisplayText() const {
     return Localization::Instance().Localize(text);
 }
 
+
+void UIDocument::ApplyMetrics(const GameUIMetrics& m) {
+    // Design UI files are authored for 800-wide reference ($buttonSize=110).
+    // GameUIMetrics::Init scales that reference by logicalW/800.
+    const float designBtn = 110.f;
+    float s = (designBtn > 0.f) ? ((float)m.buttonSize / designBtn) : 1.f;
+    if (s < 0.25f) s = 0.25f;
+
+    m.ApplyToVars(vars_);
+    metricsFontSize_ = m.fontSize;
+
+    // Root/frame sizes: physical screen (ResizeToViewport)
+    for (auto& e : elements_) {
+        bool isRootFill = (e.name == "frame_background" || e.name == "frame" ||
+                           e.parentName.empty());
+        if (e.name == "frame_background") {
+            e.sizeW = (float)m.physicalW;
+            e.sizeH = (float)m.physicalH;
+            continue;
+        }
+        if (e.name == "frame" && e.autoResizeX && e.autoResizeY) {
+            // windowSize → physical; AutoResize still fills parent at layout
+            e.sizeW = (float)m.physicalW;
+            e.sizeH = (float)m.physicalH;
+            continue;
+        }
+        // Scale authored geometry
+        if (e.sizeW > 0.f) e.sizeW *= s;
+        if (e.sizeH > 0.f) e.sizeH *= s;
+        e.posX *= s;
+        e.posY *= s;
+        auto scaleStyle = [s](UIStyle& st) {
+            st.frame0Width *= s;
+            st.frame1Width *= s;
+            st.frame2Width *= s;
+        };
+        scaleStyle(e.styleDefault);
+        scaleStyle(e.stylePressed);
+        scaleStyle(e.styleSelected);
+        scaleStyle(e.styleSelectedPressed);
+    }
+}
+
 void UIElement::ResolveLayout(float screenW, float screenH) {
     // Layout in screen pixels. AutoResizeX/Y grow with parent; fixed Size keeps
     // design pixels (no global stretch — matches original: buttons stay 110×110).
@@ -444,7 +488,7 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
     };
 
     MeshBuffer textMesh;
-    Font* textFont = fonts.FindOrLoad("Sans", 16);
+    Font* textFont = fonts.FindOrLoad("Sans", metricsFontSize_ > 0 ? metricsFontSize_ : 16);
 
     for (const auto& e : elements_) {
         if (!e.visible) continue;

@@ -1,5 +1,6 @@
 #include "Game.h"
 #include "Loc.h"
+#include "GameUIMetrics.h"
 #include <cmath>
 #include <iostream>
 #include <sstream>
@@ -32,6 +33,8 @@ void Game::InitUI() {
     scene_.Load("scenes/start.scene");
     ApplySceneConfigs();
     LoadUIPanelsFromScene();
+    // GameUIMetrics → $buttonSize / $screenSize (Phone default)
+    ApplyUIMetrics();
     // Panels own the UIDocument; GetHud()/GetMenu() return panel docs.
     hudLoaded_ = false;
     menuLoaded_ = false;
@@ -107,6 +110,59 @@ void Game::LoadUIPanelsFromScene() {
     if (uiPanels_.empty()) {
         std::cout << "LoadUIPanelsFromScene: no UISceneObjects in scene "
                   << "(start.scene parse missing FileName/messages?)" << std::endl;
+    }
+}
+
+
+void Game::ApplyUIMetrics() {
+    int w = screenW_ > 0 ? screenW_ : 800;
+    int h = screenH_ > 0 ? screenH_ : 480;
+    uiMetrics_.Init(w, h, screenSizeEnum_);
+    // Reload panels from design assets then scale once (ApplyMetrics is not idempotent)
+    if (!uiPanels_.empty()) {
+        LoadUIPanelsFromScene();
+        for (auto& p : uiPanels_) {
+            if (!p.loaded) continue;
+            p.doc.ApplyMetrics(uiMetrics_);
+            if (p.sceneName == "hud_ui") {
+                hudLoaded_ = true;
+                p.visible = !menuOpen_;
+                p.doc.SetAllVisible(p.visible);
+            } else if (p.sceneName == "menu_ui") {
+                menuLoaded_ = true;
+                p.visible = menuOpen_;
+                p.doc.SetAllVisible(p.visible);
+            } else {
+                // keep prior visibility if any
+            }
+        }
+    }
+    std::cout << "GameUIMetrics: enum=" << (int)screenSizeEnum_
+              << " physical=" << w << "x" << h
+              << " logicalW=" << uiMetrics_.logicalW
+              << " button=" << uiMetrics_.buttonSize
+              << " font=" << uiMetrics_.fontSize << std::endl;
+}
+
+void Game::SelectScreenSize(ScreenSizeEnum e) {
+    // Game::SelectScreenSize @ 0x63ef0 → pending + ReloadUI
+    pendingScreenSize_ = (int)e;
+    screenSizeEnum_ = e;
+    // Reload panel documents from assets then apply metrics
+    for (auto& p : uiPanels_) {
+        if (p.sceneName.empty()) continue;
+    }
+    // Re-load from scene definitions
+    LoadUIPanelsFromScene();
+    ApplyUIMetrics();
+    for (auto& p : uiPanels_) {
+        if (p.sceneName == "hud_ui" && p.loaded) {
+            hudLoaded_ = true;
+            p.visible = !menuOpen_;
+            p.doc.SetAllVisible(p.visible);
+        } else if (p.sceneName == "menu_ui" && p.loaded) {
+            menuLoaded_ = true;
+        }
     }
 }
 
@@ -581,7 +637,17 @@ void Game::UpdateParameter(const char* name) {
         return;
     }
     if (::strcasecmp(name, "UpdateScreenSize") == 0) {
-        pendingScreenSize_ = (pendingScreenSize_ + 1) % 4;
+        {
+            ScreenSizeEnum allowed[3];
+            int n = GameUIMetrics::GetAllowed(screenW_, screenH_, allowed);
+            if (n < 1) n = 1;
+            int idx = 0;
+            for (int i = 0; i < n; ++i)
+                if ((int)allowed[i] == (int)screenSizeEnum_) { idx = i; break; }
+            idx = (idx + 1) % n;
+            SelectScreenSize(allowed[idx]);
+            pendingScreenSize_ = (int)allowed[idx];
+        }
         return;
     }
     if (::strcasecmp(name, "UpdateTimeOfDay") == 0) {
@@ -691,7 +757,7 @@ void Game::ApplyGameSettings() {
 
 // Game::ApplyControlsSettings @ 0x64070
 void Game::ApplyControlsSettings() {
-    if (screenSizeEnum_ != pendingScreenSize_) {
+    if ((int)screenSizeEnum_ != pendingScreenSize_) {
         screenSizeDirty_ = true;
         screenSizeEnum_ = pendingScreenSize_;
     }
@@ -895,7 +961,17 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         else if (method == "ApplyControlsSettings") ApplyControlsSettings();
         else if (method == "UpdateScreenSize") {
             // Game::SelectScreenSize path — cycle pendingScreenSize_
-            pendingScreenSize_ = (pendingScreenSize_ + 1) % 4;
+            {
+            ScreenSizeEnum allowed[3];
+            int n = GameUIMetrics::GetAllowed(screenW_, screenH_, allowed);
+            if (n < 1) n = 1;
+            int idx = 0;
+            for (int i = 0; i < n; ++i)
+                if ((int)allowed[i] == (int)screenSizeEnum_) { idx = i; break; }
+            idx = (idx + 1) % n;
+            SelectScreenSize(allowed[idx]);
+            pendingScreenSize_ = (int)allowed[idx];
+        }
         }
         else if (method == "ScreenClicked") ScreenClicked();
         else if (method == "UpdateSkyBox") UpdateSkyBox();

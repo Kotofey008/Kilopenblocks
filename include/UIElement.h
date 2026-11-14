@@ -1,6 +1,7 @@
 #pragma once
 #include "Font.h"
 #include "Mesh.h"
+#include "GameUIMetrics.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -70,6 +71,8 @@ public:
     bool LoadFromText(const std::string& text);
     bool LoadAsset(const char* assetPath);
     void ResolveAll(float screenW, float screenH);
+    // Override $-vars from GameUIMetrics and scale geometry from design-800
+    void ApplyMetrics(const GameUIMetrics& m);
     void SetVisiblePrefix(const std::string& prefix, bool visible);
     void SetAllVisible(bool visible);
     UIElement* Find(const char* name);
@@ -91,4 +94,7 @@ private:
     std::map<std::string, float> vars_;
     std::map<std::string, uint32_t> colorVars_;
     void ParseVars(const std::string& text);
+    int metricsFontSize_ = 16;
+public:
+    int MetricsFontSize() const { return metricsFontSize_; }
 };

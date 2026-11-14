@@ -7,6 +7,7 @@
 #include "Camera.h"
 #include "InputMgr.h"
 #include "UIElement.h"
+#include "GameUIMetrics.h"
 #include "Font.h"
 #include <string>
 #include <vector>
@@ -71,6 +72,8 @@ public:
 
     // Terrain / world
     void SelectTerrainType(TerrainType t);
+    void SelectScreenSize(ScreenSizeEnum e);
+    void ApplyUIMetrics();
     void UpdateTerrainType();   // from UI "Game Call UpdateTerrainType"
     void UpdateTerrainSize();
     void CreateElement();       // "Game CreateElement" — create new terrain
@@ -185,7 +188,11 @@ public:
     };
     std::vector<UIPanel>& UIPanels() { return uiPanels_; }
     const std::vector<UIPanel>& UIPanels() const { return uiPanels_; }
-    void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
+    void SetScreenSize(int w, int h) {
+        bool changed = (screenW_ != w || screenH_ != h);
+        screenW_ = w; screenH_ = h;
+        if (changed && w > 0 && h > 0) ApplyUIMetrics();
+    }
     int ScreenW() const { return screenW_; }
     int ScreenH() const { return screenH_; }
     int PalettePage() const { return palettePage_; }
@@ -232,7 +239,8 @@ private:
     float timeOfDay_ = 0.5f;
     float sensitivity_ = 1.f;       // binary +0x94 applied touch sens
     float pendingSensitivity_ = 1.f; // binary +0xd2c UI pending
-    int screenSizeEnum_ = 0;        // binary +0x90 vs +0xd28 pending
+    ScreenSizeEnum screenSizeEnum_ = ScreenSizeEnum::Phone; // binary +0x90
+    GameUIMetrics uiMetrics_;
     int pendingScreenSize_ = 0;     // binary +0xd28
     bool screenSizeDirty_ = false;  // binary +0x98
     float timeMultiplier_ = 1.f; // Globals.TimeMultiplier from start.scene
