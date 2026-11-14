@@ -759,7 +759,8 @@ void Game::ApplyGameSettings() {
 void Game::ApplyControlsSettings() {
     if ((int)screenSizeEnum_ != pendingScreenSize_) {
         screenSizeDirty_ = true;
-        screenSizeEnum_ = pendingScreenSize_;
+        screenSizeEnum_ = static_cast<ScreenSizeEnum>(pendingScreenSize_);
+        ApplyUIMetrics();
     }
     if (pendingSensitivity_ != sensitivity_) {
         sensitivity_ = pendingSensitivity_;
