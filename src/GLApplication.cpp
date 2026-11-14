@@ -115,6 +115,9 @@ void GLApplication::OnCreateGLContext() {
     skyBox_.LoadResources();
     skyBox_.EnsureStarsMesh();
     hudFont_.Load(nullptr, nullptr);
+    // Context (re)created: re-upload any textures that only held CPU pixels
+    game_.GetFonts().EnsureAllUploaded();
+    blocksAtlas_.EnsureUploaded();
     worldReady_ = true;
     lightMap_.Init(game_.GetGrid());
     EnsureRegionMeshes();
@@ -128,6 +131,14 @@ void GLApplication::OnDeleteGLContext() {
     LOGI("GLApplication::OnDeleteGLContext");
     worldReady_ = false;
     regionMeshes_.clear();
+    // EGL context is about to die — GL names become invalid. Keep CPU pixels.
+    blocksAtlas_.InvalidateGL();
+    waterTex_.InvalidateGL();
+    lavaTex_.InvalidateGL();
+    waterPal_.InvalidateGL();
+    lavaPal_.InvalidateGL();
+    hudFont_.GetTexture().InvalidateGL();
+    game_.GetFonts().InvalidateGL();
     ApplicationBase::OnDeleteGLContext();
 }
 

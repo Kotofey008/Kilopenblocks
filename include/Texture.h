@@ -15,6 +15,9 @@ public:
     bool LoadPNGAsset(const char* assetPath);
     void Bind() const;
     void Unbind() const;
+    // Android: EGL context lost → glId invalid. Keep pixels_, drop id, re-upload on Bind.
+    void InvalidateGL();
+    bool EnsureUploaded() const;
     unsigned Width() const { return width_; }
     unsigned Height() const { return height_; }
     unsigned GLId() const { return glId_; }
@@ -27,9 +30,9 @@ public:
 
 private:
     unsigned width_ = 0, height_ = 0;
-    unsigned glId_ = 0;
+    mutable unsigned glId_ = 0;
     std::vector<uint8_t> pixels_; // RGBA8888
-    bool UploadGL();
+    bool UploadGL() const;
 };
 
 // Get face UV from BlockDef: face 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z

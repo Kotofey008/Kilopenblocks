@@ -176,6 +176,9 @@ static bool DecodePNG(const std::vector<uint8_t>& file, std::vector<uint8_t>& ou
                     r = plte[pi]; g = plte[pi+1]; b = plte[pi+2];
                 }
                 if (idx < trns.size()) a = trns[idx];
+                // Bitmap fonts: transparent entries are often RGB=0. With GL_MODULATE
+                // that produces a dark fringe; treat as alpha mask (white RGB).
+                if (a < 255 && r == 0 && g == 0 && b == 0) { r = g = b = 255; }
                 writeRGBA(x, y, r, g, b, a);
             }
         }
@@ -216,7 +219,7 @@ bool Texture::LoadPNGAsset(const char* assetPath) {
     return LoadPNGFromMemory(buf.data(), buf.size());
 }
 
-bool Texture::UploadGL() {
+bool Texture::UploadGL() const {
 #if defined(__ANDROID__)
     if (pixels_.empty()) return false;
     if (!glId_) glGenTextures(1, &glId_);
@@ -233,8 +236,26 @@ bool Texture::UploadGL() {
 #endif
 }
 
+void Texture::InvalidateGL() {
+#if defined(__ANDROID__)
+    // Context is already gone — do not glDeleteTextures on a dead context.
+    glId_ = 0;
+#endif
+}
+
+bool Texture::EnsureUploaded() const {
+#if defined(__ANDROID__)
+    if (glId_) return true;
+    if (pixels_.empty()) return false;
+    return UploadGL();
+#else
+    return !pixels_.empty();
+#endif
+}
+
 void Texture::Bind() const {
 #if defined(__ANDROID__)
+    if (!glId_) EnsureUploaded();
     if (glId_) glBindTexture(GL_TEXTURE_2D, glId_);
 #endif
 }

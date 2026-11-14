@@ -579,7 +579,9 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
             if (blockH * scale > h * 0.85f && blockH > 0.f) scale = (h * 0.85f) / blockH;
             if (scale < 0.45f) scale = 0.45f;
             float ty0 = y + (h - blockH * scale) * 0.5f;
-            uint32_t shadow = argbToRgbaPack(st.textShadowColor);
+            // Binary UIElement draw: if (textShadowColor & 0xff000000) AddText(+1,+1, shadow);
+            // then AddText(pos, textColor). Offset is 1 device pixel (float 1.0 from rodata).
+            uint32_t shadowArgb = st.textShadowColor;
             uint32_t col = argbToRgbaPack(st.textColor);
             if (((st.textColor >> 24) & 0xff) < 0x40)
                 col = argbToRgbaPack(0xFFDCDCDCu);
@@ -589,8 +591,10 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
                 float tw = textFont->MeasureWidth(ln.c_str(), 1.f);
                 float tx = x + (w - tw * scale) * 0.5f;
                 float ty = ty0 + (float)li * lineH * scale;
-                textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), ln.c_str(),
-                                        scale, shadow, TextAlign::Left);
+                if ((shadowArgb & 0xff000000) != 0) {
+                    textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), ln.c_str(),
+                                            scale, argbToRgbaPack(shadowArgb), TextAlign::Left);
+                }
                 textFont->AddTextToMesh(textMesh, Vector(tx, ty, 0), ln.c_str(),
                                         scale, col, TextAlign::Left);
             }

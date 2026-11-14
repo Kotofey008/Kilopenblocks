@@ -187,3 +187,13 @@ Font* FontResource::Find(const char* faceName) const {
     }
     return nullptr;
 }
+
+void FontResource::InvalidateGL() {
+    for (auto& kv : fonts_)
+        kv.second.GetTexture().InvalidateGL();
+}
+
+void FontResource::EnsureAllUploaded() {
+    for (auto& kv : fonts_)
+        kv.second.GetTexture().EnsureUploaded();
+}

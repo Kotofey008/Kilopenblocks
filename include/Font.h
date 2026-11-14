@@ -51,6 +51,9 @@ class FontResource {
 public:
     Font* FindOrLoad(const char* faceName, int pixelSize);
     Font* Find(const char* faceName) const;
+    // After EGL context recreate: drop GL ids and re-upload from CPU pixels.
+    void InvalidateGL();
+    void EnsureAllUploaded();
 private:
     std::map<std::string, Font> fonts_;
 };
