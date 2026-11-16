@@ -572,6 +572,11 @@ void Game::SpawnPlayer() {
 void Game::OnForeground() {}
 void Game::OnBackground() {}
 
+
+// Local helpers (defined later with settings UI)
+static Game::UIPanel* FindPanelBySceneName(std::vector<Game::UIPanel>& panels, const char* name);
+static void SetPanelElementText(Game::UIPanel* panel, const char* elemName, const char* text);
+
 void Game::SelectTerrainType(TerrainType t) {
     terrainType_ = t;
     // Update "terrain_type" label on new_terrain UI (binary SetValue / Localize)
