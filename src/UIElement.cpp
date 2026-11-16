@@ -626,30 +626,48 @@ Texture* UIDocument::LoadUITexture(const char* path) {
 }
 
 // Binary UIElement::UpdateDragAction @ 0x107570
-// If parent is UISliderElement: map touch → SetCurrentValue 0..1
-// Else: clamp element position inside parent rect (free drag)
+// Drag target may be the slider itself OR its Draggable thumb child.
+// Value stored at slider+0x1e0 (currentValue); thumb pos follows via LayoutSliders.
 void UIDocument::UpdateDragAction(UIElement* e, float touchX, float touchY) {
     if (!e || !e->isDragging) return;
-    UIElement* parent = e->parent;
-    if (parent && parent->type == UIElement::Type::Slider) {
-        float v = parent->currentValue;
-        if (parent->horizontal) {
-            float thumbW = e->screenRect.w;
-            float range = parent->screenRect.w - thumbW;
+
+    UIElement* slider = nullptr;
+    UIElement* thumb = nullptr;
+    if (e->type == UIElement::Type::Slider) {
+        slider = e;
+        if (!e->children.empty()) thumb = e->children[0];
+    } else if (e->parent && e->parent->type == UIElement::Type::Slider) {
+        slider = e->parent;
+        thumb = e;
+    }
+
+    if (slider) {
+        if (!thumb && !slider->children.empty())
+            thumb = slider->children[0];
+        float thumbW = thumb ? thumb->screenRect.w : 0.f;
+        float thumbH = thumb ? thumb->screenRect.h : 0.f;
+        // Prefer design size if screenRect not yet laid out
+        if (thumb && thumbW < 1.f) thumbW = thumb->sizeW;
+        if (thumb && thumbH < 1.f) thumbH = thumb->sizeH;
+        float v = slider->currentValue;
+        if (slider->horizontal) {
+            float range = slider->screenRect.w - thumbW;
             if (range < 1.f) range = 1.f;
-            v = (touchX - parent->screenRect.x - thumbW * 0.5f) / range;
+            v = (touchX - slider->screenRect.x - thumbW * 0.5f) / range;
         } else {
-            float thumbH = e->screenRect.h;
-            float range = parent->screenRect.h - thumbH;
+            float range = slider->screenRect.h - thumbH;
             if (range < 1.f) range = 1.f;
-            v = 1.f - (touchY - parent->screenRect.y - thumbH * 0.5f) / range;
+            // Binary vertical: 0 at bottom, 1 at top
+            v = 1.f - (touchY - slider->screenRect.y - thumbH * 0.5f) / range;
         }
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
-        parent->currentValue = v;
+        slider->currentValue = v;
         LayoutSliders();
         return;
     }
+
+    UIElement* parent = e->parent;
     if (parent) {
         // Free drag clamped to parent (binary AlignRect + delta clamp)
         float w = e->screenRect.w, h = e->screenRect.h;
@@ -852,26 +870,40 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
     // if children==0 OR LineWidth==0 → base only (already done)
     // else draw track between parent insets and thumb insets
     // ------------------------------------------------------------------
+    // UISliderElement::DrawBackground @ 0x105350
+    // Parent already drew frame/fill (trough). Track line uses LineWidth (+0x1e8).
+    // Track color = parent style background (pfVar11[6]); segments avoid thumb body.
+    // Thumb (child 0) is a normal UIElement button drawn later by DrawH.
     if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f && !e.children.empty()) {
-        uint32_t lineCol = st.frame1Color;
-        if (((lineCol >> 24) & 0xff) == 0) lineCol = st.frame0Color;
-        if (((lineCol >> 24) & 0xff) == 0) lineCol = st.backgroundColor;
-        if (((lineCol >> 24) & 0xff) != 0) {
-            // Use first child (thumb) size as end-cap (binary end-frame pad)
-            float thumbW = e.children[0]->screenRect.w;
-            float thumbH = e.children[0]->screenRect.h;
-            float lw = e.lineWidth;
-            if (e.horizontal) {
-                float ly = y + (h - lw) * 0.5f;
-                float padX = thumbW * 0.5f;
-                if (padX * 2.f > w) padX = 0.f;
-                drawQuad(x + padX, ly, w - padX * 2.f, lw, lineCol);
-            } else {
-                float lx = x + (w - lw) * 0.5f;
-                float padY = thumbH * 0.5f;
-                if (padY * 2.f > h) padY = 0.f;
-                drawQuad(lx, y + padY, lw, h - padY * 2.f, lineCol);
-            }
+        UIElement* thumb = e.children[0];
+        float thumbW = thumb->screenRect.w > 0.f ? thumb->screenRect.w : thumb->sizeW;
+        float thumbH = thumb->screenRect.h > 0.f ? thumb->screenRect.h : thumb->sizeH;
+        float lw = e.lineWidth;
+        // Track uses fill/background of the slider style (binary pfVar11[6])
+        uint32_t lineCol = st.backgroundColor;
+        if (((lineCol >> 24) & 0xff) == 0)
+            lineCol = 0xFF808080; // visible fallback only if style has no fill
+        // Prefer frame color if bg fully transparent in some themes
+        if (((st.backgroundColor >> 24) & 0xff) == 0 && ((st.frame1Color >> 24) & 0xff) != 0)
+            lineCol = st.frame1Color;
+
+        if (e.horizontal) {
+            float ly = y + (h - lw) * 0.5f;
+            // Two segments: left of thumb, right of thumb
+            float t0 = thumb->screenRect.x;
+            float t1 = thumb->screenRect.x + thumbW;
+            if (t0 > x)
+                drawQuad(x, ly, t0 - x, lw, lineCol);
+            if (t1 < x + w)
+                drawQuad(t1, ly, (x + w) - t1, lw, lineCol);
+        } else {
+            float lx = x + (w - lw) * 0.5f;
+            float t0 = thumb->screenRect.y;
+            float t1 = thumb->screenRect.y + thumbH;
+            if (t0 > y)
+                drawQuad(lx, y, lw, t0 - y, lineCol);
+            if (t1 < y + h)
+                drawQuad(lx, t1, lw, (y + h) - t1, lineCol);
         }
     }
 

@@ -299,17 +299,32 @@ void Game::HandleTouchMove(int x, int y) {
             if (!e.isDragging) continue;
             // Binary UpdateDragAction: slider thumb or free-drag clamped to parent
             p.doc.UpdateDragAction(&e, fx, fy);
-            // Slider value bindings (UISliderElement parent)
-            UIElement* slider = (e.type == UIElement::Type::Slider) ? &e : e.parent;
+            // Slider value bindings — update companion *_v labels
+            UIElement* slider = (e.type == UIElement::Type::Slider) ? &e
+                : (e.parent && e.parent->type == UIElement::Type::Slider) ? e.parent : nullptr;
             if (slider && slider->type == UIElement::Type::Slider) {
+                char buf[32];
+                auto setLab = [&](const char* labName, const char* text) {
+                    if (UIElement* lab = p.doc.Find(labName)) lab->text = text;
+                };
                 if (slider->name == "sensitivity") {
                     pendingSensitivity_ = slider->currentValue * 2.f;
                     if (pendingSensitivity_ < 0.05f) pendingSensitivity_ = 0.05f;
-                    if (UIElement* lab = p.doc.Find("sensitivity_v")) {
-                        char buf[32];
-                        std::snprintf(buf, sizeof(buf), "%.2g", pendingSensitivity_);
-                        lab->text = buf;
-                    }
+                    std::snprintf(buf, sizeof(buf), "%.2g", pendingSensitivity_);
+                    setLab("sensitivity_v", buf);
+                } else if (slider->name == "terrain_size") {
+                    int lvl = (int)(slider->currentValue * 3.f + 0.5f);
+                    if (lvl < 0) lvl = 0; if (lvl > 3) lvl = 3;
+                    std::snprintf(buf, sizeof(buf), "%d", lvl);
+                    setLab("terrain_size_v", buf);
+                } else if (slider->name == "time_of_day") {
+                    timeOfDay_ = slider->currentValue;
+                    std::snprintf(buf, sizeof(buf), "%.2g", slider->currentValue);
+                    setLab("time_of_day_v", buf);
+                } else {
+                    std::string labName = slider->name + "_v";
+                    std::snprintf(buf, sizeof(buf), "%.2g", slider->currentValue);
+                    setLab(labName.c_str(), buf);
                 }
             }
             return;
@@ -375,16 +390,30 @@ void Game::HandleTouchPress(int x, int y) {
     hit->touchState |= UIElement::kTouchPressed;
     hit->touchState &= ~(UIElement::kTouchClicked | UIElement::kTouchReleased);
 
-    // Slider thumb drag (Draggable child of UISliderElement)
-    if (hit->draggable || hit->type == UIElement::Type::Slider) {
-        UIElement* slider = (hit->type == UIElement::Type::Slider) ? hit
-            : panel->doc.FindSliderForThumb(hit);
+    // Slider: hit may be trough (UISliderElement) or Draggable thumb child.
+    // Binary marks child dragging; value from touch along slider axis.
+    {
+        UIElement* slider = nullptr;
+        UIElement* thumb = nullptr;
+        if (hit->type == UIElement::Type::Slider) {
+            slider = hit;
+            if (!hit->children.empty()) thumb = hit->children[0];
+        } else if (hit->draggable) {
+            slider = panel->doc.FindSliderForThumb(hit);
+            thumb = hit;
+        }
         if (slider && slider->type == UIElement::Type::Slider) {
             slider->isDragging = true;
             slider->pressed = true;
             slider->touchState |= UIElement::kTouchPressed;
-            if (hit->draggable) hit->pressed = true;
-            // Immediate update for press position
+            if (thumb) {
+                thumb->isDragging = true;
+                thumb->pressed = true;
+                thumb->touchState |= UIElement::kTouchPressed;
+            }
+            // Jump thumb to press position (binary SetCurrentValue path)
+            panel->doc.UpdateDragAction(thumb ? thumb : slider, (float)x, (float)y);
+            // Bind labels immediately
             HandleTouchMove(x, y);
             return;
         }
@@ -1093,9 +1122,8 @@ void Game::ShowMessage(const char* text, MessagePriority) {
 }
 void Game::UpdateScreenMessages() {}
 void Game::UpdateHUDUI() {
-    // Sync UIElement::pressed / selected from input + palette state.
-    // Original: UI state machine drives State[0]/State[1] for DrawBackground.
-    // Here we set the flags; Draw uses CurrentStyle() (Default/Pressed/Selected*).
+    // Sync UIElement::pressed / selected from input + palette + options state.
+    // Binary CheckElementState / state styles: State[0] default/pressed, State[1] selected.
 
     // --- HUD: pressed from held discrete buttons ---
     UIDocument& hudDoc = GetHud();
@@ -1112,32 +1140,63 @@ void Game::UpdateHUDUI() {
         for (auto& e : hudDoc.All()) e.pressed = false;
     }
 
-    // --- Menu / palette: selected slot + page tab ---
-    if (!menuLoaded_) return;
+    const int selSlot = paletteItem_ % 9;
+    const int selPage = palettePage_;
 
-    const int selSlot = paletteItem_ % 9;   // 0..8 within page
-    const int selPage = palettePage_;       // menu_mtl_set_N
+    // Walk every loaded panel (menu, graphics, terrain, …)
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        for (auto& e : p.doc.All()) {
+            // Preserve in-progress drag/press on slider thumbs
+            if (e.isDragging)
+                continue;
 
-    UIDocument& menuDoc = GetMenu();
-    for (auto& e : menuDoc.All()) {
-        e.pressed = false;
-        e.selected = false;
+            // Palette slots + page tabs
+            if (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10) {
+                int slot = e.name[9] - '0';
+                e.selected = (slot >= 0 && slot <= 8 && slot == selSlot);
+            } else if (e.name.compare(0, 13, "menu_mtl_set_") == 0) {
+                int page = std::atoi(e.name.c_str() + 13);
+                e.selected = (page == selPage);
+            }
 
-        // menu_mtl_0..8 → selected when slot matches current palette item
-        if (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10) {
-            int slot = e.name[9] - '0';
-            if (slot >= 0 && slot <= 8)
-                e.selected = (slot == selSlot);
-            continue;
+            // Terrain type radio buttons (new_terrain panel)
+            if (e.name == "terrain_earth" || e.name == "earth")
+                e.selected = (terrainType_ == TerrainType::Earth);
+            else if (e.name == "terrain_flat" || e.name == "flat")
+                e.selected = (terrainType_ == TerrainType::Flat);
+            else if (e.name == "terrain_test" || e.name == "test")
+                e.selected = (terrainType_ == TerrainType::Test);
+
+            // Graphics option labels — show current pending/applied value in Text suffix
+            // Binary UpdateParameter rewrites element Text for draw_distance, leaves, etc.
         }
-        // menu_mtl_set_0..6 → selected page tab (State[1] fill)
-        if (e.name.compare(0, 13, "menu_mtl_set_") == 0) {
-            int page = std::atoi(e.name.c_str() + 13);
-            e.selected = (page == selPage);
-            continue;
+
+        // Update graphics option display text (binary UpdateDrawDistance / UpdateLeavesQuality)
+        if (p.sceneName.find("graphics") != std::string::npos) {
+            auto setText = [&](const char* name, const std::string& t) {
+                if (UIElement* e = p.doc.Find(name)) e->text = t;
+            };
+            static const char* kDist[] = { "Tiny", "Short", "Normal", "Far" };
+            int dd = (int)drawDistancePending_;
+            if (dd < 0) dd = 0; if (dd > 3) dd = 3;
+            setText("draw_distance",
+                    Localization::Instance().Localize("/DrawDistance/Draw Distance: ") + kDist[dd]);
+            static const char* kLeaves[] = { "Off", "Fast", "Fancy" };
+            int lq = (int)leavesQualityPending_;
+            if (lq < 0) lq = 0; if (lq > 2) lq = 2;
+            setText("leaves_quality",
+                    Localization::Instance().Localize("/LeavesQuality/Leaves: ") + kLeaves[lq]);
+            setText("clouds",
+                    Localization::Instance().Localize("/Clouds/Clouds: ") +
+                    (cloudsPending_ ? "On" : "Off"));
+            setText("animated_water",
+                    Localization::Instance().Localize("/AnimatedWater/Animated water: ") +
+                    (animatedWaterPending_ ? "On" : "Off"));
         }
     }
 }
+
 // GLApplication::SetUINeedFastResponse @ 0x6ff50 (16 B) — flag for tight UI frame
 void Game::SetUINeedFastResponse() {
     // Original sets a one-shot fast-response flag on GL app; no local state yet

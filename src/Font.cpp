@@ -61,8 +61,9 @@ bool Font::Load(const char* metricsPath, const char* texturePath) {
             int chH = 0, cellH = 0, num = 0, tw = 0, th = 0;
             if (std::sscanf(line.c_str(), "%63s %d %d %d %63s %d %d",
                             face, &chH, &cellH, &num, tex, &tw, &th) >= 5) {
-                lineHeight_ = (float)chH;
                 cellHeight_ = (float)(cellH > 0 ? cellH : chH);
+                // AlignRect / DrawText extent uses full cell so glyphs are not clipped
+                lineHeight_ = cellHeight_ > (float)chH ? cellHeight_ : (float)chH;
                 texW_ = tw > 0 ? tw : 1;
                 texH_ = th > 0 ? th : 1;
                 texName = tex;
