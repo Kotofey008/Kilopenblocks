@@ -621,10 +621,84 @@ void Game::Create() {
 
 void Game::CreateElement() { Create(); }
 
+void Game::LeaveGameList() {
+    // Game::LeaveGameList @ 0x7a040 — clear list cursor side-effects; keep vector for re-enter
+    (void)0;
+}
+
 void Game::EnterGameList() {
-    // Game::EnterGameList @ 0x6a110 (1584 B) — save scan + UpdateGameListUI
-    // Full body not ported; keep list index consistent for SelectNext/Prev
-    gameListIndex_ = 0;
+    // Game::EnterGameList @ 0x7a110 — Dir::FindFile scan of save slots, then UpdateGameListUI
+    LeaveGameList();
+    gameListSlots_.clear();
+    // Binary walks save directory; we probe known slot files world_%d.elw / save_%d.dat
+    for (int slot = 0; slot < 64; ++slot) {
+        char path[512];
+        GetSaveName(path, "world_%d.elw", slot);
+        FILE* f = std::fopen(path, "rb");
+        if (!f) {
+            GetSaveName(path, "save_%d.dat", slot);
+            f = std::fopen(path, "rb");
+        }
+        if (f) {
+            std::fclose(f);
+            gameListSlots_.push_back(slot);
+        }
+    }
+    gameListCount_ = (int)gameListSlots_.size();
+    if (gameListIndex_ < 0) gameListIndex_ = 0;
+    if (gameListCount_ > 0 && gameListIndex_ >= gameListCount_)
+        gameListIndex_ = gameListCount_ - 1;
+    if (gameListCount_ == 0) gameListIndex_ = 0;
+    UpdateGameListUI();
+}
+
+void Game::UpdateGameListUI() {
+    // Game::UpdateGameListUI @ 0x7a... — SetText/SetVisible on select_terrain + terrain_info
+    char buf[128];
+    const int n = gameListCount_;
+    const int idx = (n > 0) ? gameListIndex_ : 0;
+    int slot = (n > 0 && idx >= 0 && idx < n) ? gameListSlots_[idx] : -1;
+
+    auto setOnPanels = [&](const char* elem, const std::string& text) {
+        for (auto& p : uiPanels_) {
+            if (!p.loaded) continue;
+            if (p.sceneName.find("select_terrain") == std::string::npos &&
+                p.sceneName.find("terrain_info") == std::string::npos)
+                continue;
+            if (UIElement* e = p.doc.Find(elem))
+                e->text = text;
+        }
+    };
+    auto setVisible = [&](const char* elem, bool vis) {
+        for (auto& p : uiPanels_) {
+            if (!p.loaded) continue;
+            if (p.sceneName.find("select_terrain") == std::string::npos &&
+                p.sceneName.find("terrain_info") == std::string::npos)
+                continue;
+            if (UIElement* e = p.doc.Find(elem))
+                e->visible = vis;
+        }
+    };
+
+    if (n <= 0) {
+        std::string empty = Localization::Instance().Localize("/NoSavedGames/No saved games.");
+        setOnPanels("file", empty);
+        std::snprintf(buf, sizeof(buf), "0/0");
+        setOnPanels("index", buf);
+        setVisible("play", false);
+        setVisible("delete", false);
+        setVisible("prev", false);
+        setVisible("next", false);
+        return;
+    }
+    std::snprintf(buf, sizeof(buf), "save_%d", slot);
+    setOnPanels("file", buf);
+    std::snprintf(buf, sizeof(buf), "%d/%d", idx + 1, n);
+    setOnPanels("index", buf);
+    setVisible("play", true);
+    setVisible("delete", true);
+    setVisible("prev", idx > 0);
+    setVisible("next", idx + 1 < n);
 }
 
 void Game::InsertGame(int, int) {}
@@ -927,12 +1001,17 @@ void Game::SelectPalettePage(int page, int) {
 
 void Game::SelectNext() {
     int next = gameListIndex_ + 1;
-    if (next < gameListCount_)
+    if (next < gameListCount_) {
         gameListIndex_ = next;
+        UpdateGameListUI();
+    }
+}
 }
 void Game::SelectPrev() {
-    if (gameListIndex_ > 0)
+    if (gameListIndex_ > 0) {
         gameListIndex_ -= 1;
+        UpdateGameListUI();
+    }
 }
 void Game::FlyModeToggle() {
     SetFlying(!playerSet_.GetFlying());
@@ -1059,12 +1138,14 @@ void Game::Copy() {
 }
 
 void Game::Delete() {
-    // Binary deletes save at gameListIndex_, refreshes list
+    // Binary deletes save at gameListIndex_, refreshes list via EnterGameList scan
     if (gameListCount_ > 0 && gameListIndex_ >= 0 && gameListIndex_ < gameListCount_) {
-        RemoveSaveFiles(gameListIndex_);
-        if (gameListIndex_ >= gameListCount_ - 1 && gameListIndex_ > 0)
-            gameListIndex_ -= 1;
-        if (gameListCount_ > 0) gameListCount_ -= 1;
+        int slot = gameListSlots_[(size_t)gameListIndex_];
+        RemoveSaveFiles(slot);
+        char path[512];
+        GetSaveName(path, "world_%d.elw", slot);
+        std::remove(path);
+        EnterGameList(); // rescan + UpdateGameListUI
     }
 }
 
@@ -1094,6 +1175,7 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
         else if (method == "SetUINeedFastResponse") SetUINeedFastResponse();
         else if (method == "FinishScreenshot") FinishScreenshot();
         else if (method == "EnterGameList") EnterGameList();
+        else if (method == "LeaveGameList") LeaveGameList();
         else if (method == "EnterGameSettings") EnterGameSettings();
         else if (method == "EnterControlsSettings") EnterControlsSettings();
         else if (method == "EnterGraphicsSettings") EnterGraphicsSettings();
@@ -1139,6 +1221,33 @@ void Game::ParseAndRunCommand(const std::string& cmd) {
     // "Game CreateElement"
     if (s == "Game CreateElement") {
         CreateElement();
+        return;
+    }
+
+    // "Game Play" — load selected save slot (EnterGameList index → gameListSlots_)
+    if (s == "Game Play") {
+        int slot = 0;
+        if (gameListCount_ > 0 && gameListIndex_ >= 0 && gameListIndex_ < gameListCount_)
+            slot = gameListSlots_[(size_t)gameListIndex_];
+        activeSaveSlot_ = slot;
+        if (!LoadWorld(slot)) {
+            // empty/missing world → still enter play with generated terrain
+            Play(slot);
+        } else {
+            SpawnPlayer();
+            state_ = GameState::Playing;
+            menuOpen_ = false;
+            for (auto& p : uiPanels_) {
+                if (!p.loaded) continue;
+                if (p.sceneName == "hud_ui") {
+                    p.visible = true;
+                    p.doc.SetAllVisible(true);
+                } else {
+                    p.visible = false;
+                    p.doc.SetAllVisible(false);
+                }
+            }
+        }
         return;
     }
 

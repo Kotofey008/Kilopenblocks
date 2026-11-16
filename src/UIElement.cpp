@@ -1,3 +1,4 @@
+#include <functional>
 #include "UIElement.h"
 #include "Assets.h"
 #include "Loc.h"
@@ -228,6 +229,23 @@ bool UIDocument::LoadFromText(const std::string& text) {
             c->lineWidth = parseFloatOrVar(val, *this);
         } else if (key == "Draggable") {
             c->draggable = (val == "1" || val == "true" || val == "True");
+        } else if (key == "ModelName") {
+            c->modelName = val;
+        } else if (key == "ArrayWidth") {
+            c->arrayWidth = (int)parseFloatOrVar(val, *this);
+            if (c->arrayWidth < 1) c->arrayWidth = 1;
+        } else if (key.size() >= 10 && key.compare(0, 10, "Materials[") == 0) {
+            int idx = 0;
+            if (std::sscanf(key.c_str(), "Materials[%d]", &idx) == 1) {
+                int mid = (int)parseFloatOrVar(val, *this);
+                if ((int)c->materials.size() <= idx) c->materials.resize((size_t)idx + 1, 0);
+                c->materials[(size_t)idx] = mid;
+            }
+        } else if (key == "Materials.Size") {
+            int n = (int)parseFloatOrVar(val, *this);
+            if (n > 0) c->materials.resize((size_t)n, 0);
+        } else if (key == "Texture" || key == "Bitmap" || key == "BitmapFileName") {
+            c->textureName = val;
         }
         else if (key == "Visible") c->visible = (val != "0" && val != "false");
         else if (key == "XAlign") c->xAlign = std::strtof(val.c_str(), nullptr);
@@ -489,16 +507,30 @@ UIElement* UIDocument::Find(const char* name) {
 }
 
 UIElement* UIDocument::HitTest(float x, float y) {
-    UIElement* hit = nullptr;
-    float bestArea = 1e30f;
-    for (auto& e : elements_) {
-        if (!e.visible || !e.hitTest) continue;
-        if (!e.screenRect.Contains(x, y)) continue;
-        float area = e.screenRect.w * e.screenRect.h;
-        if (area < bestArea) { bestArea = area; hit = &e; }
-    }
-    return hit;
+    // Prefer hierarchical HitTestH (binary path used by UISceneObject)
+    return HitTestH(x, y);
 }
+
+
+// Binary UIElement::HitTestH @ 0x107220:
+//   for child in reverse: HitTestH(child); if hit return
+//   else if visible && hitTest && point in rect → this
+UIElement* UIDocument::HitTestH(float x, float y) {
+    std::function<UIElement*(UIElement*)> rec = [&](UIElement* e) -> UIElement* {
+        if (!e || !e->visible) return nullptr;
+        for (int i = (int)e->children.size() - 1; i >= 0; --i) {
+            if (UIElement* h = rec(e->children[i])) return h;
+        }
+        if (e->hitTest && e->screenRect.Contains(x, y))
+            return e;
+        return nullptr;
+    };
+    for (int i = (int)roots_.size() - 1; i >= 0; --i) {
+        if (UIElement* h = rec(roots_[i])) return h;
+    }
+    return nullptr;
+}
+
 
 // ---------------------------------------------------------------------------
 // UIElement::DrawBackground / DrawText path (simplified geometry matching styles)

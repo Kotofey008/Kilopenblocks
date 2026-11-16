@@ -78,6 +78,8 @@ public:
     void UpdateTerrainSize();
     void CreateElement();       // "Game CreateElement" — create new terrain
     void EnterGameList();
+    void LeaveGameList();
+    void UpdateGameListUI();
     void InsertGame(int a, int b);
 
     // Graphics / options (from UI messages) — addresses from binary
@@ -235,6 +237,7 @@ private:
     int palettePage_ = 0;   // binary +0xdb0 (page base, multiples of 9)
     int gameListIndex_ = 0; // binary +0x1ec — SelectNext/Prev
     int gameListCount_ = 0; // derived from vector size at +0x1f4/+0x1f8
+    std::vector<int> gameListSlots_; // slot indices found on disk (binary vector at +0x1f4)
     int activeSaveSlot_ = 0; // binary +0x1f0 used by Create/Play
     int screenW_ = 800;
     int screenH_ = 480;

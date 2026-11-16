@@ -443,6 +443,13 @@ void GLApplication::DrawMenuMaterialSlots(int /*screenW*/, int /*screenH*/) {
         char name[32];
         std::snprintf(name, sizeof(name), "menu_mtl_%d", slot);
         UIElement* el = game_.GetMenu().Find(name);
+        if (!el) {
+            for (auto& panel : game_.UIPanels()) {
+                if (!panel.visible || !panel.loaded) continue;
+                el = panel.doc.Find(name);
+                if (el) break;
+            }
+        }
         if (!el || !el->visible) continue;
         const UIRect& r = el->screenRect;
         if (r.w < 1.f || r.h < 1.f) continue;

@@ -69,6 +69,12 @@ public:
     bool horizontal = true;
     float lineWidth = 8.f;
     bool isDragging = false;
+    // UIGridModelMtl (menu.txt): ModelName, Materials[], ArrayWidth
+    std::string modelName;
+    std::vector<int> materials;
+    int arrayWidth = 3;
+    // DrawImage: optional texture name (Texture / Bitmap)
+    std::string textureName;
 
     UIStyle styleDefault;          // State[0].Default
     UIStyle stylePressed;          // State[0].Pressed
@@ -98,6 +104,8 @@ public:
     void SetAllVisible(bool visible);
     UIElement* Find(const char* name);
     UIElement* HitTest(float x, float y);
+    // Binary UIElement::HitTestH — children reverse order, then self if hitTest+visible
+    UIElement* HitTestH(float x, float y);
     const std::vector<UIElement*>& Roots() const { return roots_; }
     std::vector<UIElement>& All() { return elements_; }
     float GetVar(const std::string& name, float def = 0.f) const;
