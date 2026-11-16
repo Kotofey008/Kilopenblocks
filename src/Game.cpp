@@ -125,6 +125,7 @@ void Game::ApplyUIMetrics() {
         for (auto& p : uiPanels_) {
             if (!p.loaded) continue;
             p.doc.ApplyMetrics(uiMetrics_);
+            p.doc.ResolveAll((float)w, (float)h);
             if (p.sceneName == "hud_ui") {
                 hudLoaded_ = true;
                 p.visible = !menuOpen_;
@@ -466,6 +467,20 @@ void Game::Play(int slot) {
     }
     SpawnPlayer();
     state_ = GameState::Playing;
+    // Create/play paths in start.scene often omit "hud_* SetVisible 1"; binary shows HUD
+    // when entering Playing. Close menus and reveal on-screen controls.
+    menuOpen_ = false;
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        if (p.sceneName == "hud_ui") {
+            p.visible = true;
+            p.doc.SetAllVisible(true);
+            hudLoaded_ = true;
+        } else {
+            p.visible = false;
+            p.doc.SetAllVisible(false);
+        }
+    }
 }
 
 void Game::Update() {
@@ -559,6 +574,29 @@ void Game::OnBackground() {}
 
 void Game::SelectTerrainType(TerrainType t) {
     terrainType_ = t;
+    // Update "terrain_type" label on new_terrain UI (binary SetValue / Localize)
+    const char* key = "/TerrainTypeEarth/Earth";
+    switch (t) {
+        case TerrainType::Flat: key = "/TerrainTypeFlat/Flat"; break;
+        case TerrainType::Test: key = "/TerrainTypeTest/Test"; break;
+        default: break;
+    }
+    std::string label = std::string("/TerrainType/Terrain Type: ") ;
+    // Display "Terrain Type: <name>"
+    std::string typeName = Localization::Instance().Localize(key);
+    std::string head = Localization::Instance().Localize("/TerrainType/Terrain Type: ");
+    std::string full = head + typeName;
+    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "new_terrain_ui")) {
+        if (UIElement* e = p->doc.Find("terrain_type"))
+            e->text = full;
+    }
+    // scene name may be without _ui suffix
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        if (p.sceneName.find("new_terrain") == std::string::npos) continue;
+        if (UIElement* e = p.doc.Find("terrain_type"))
+            e->text = full;
+    }
 }
 
 void Game::UpdateTerrainType() {

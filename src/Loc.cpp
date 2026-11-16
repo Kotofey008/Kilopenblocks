@@ -35,8 +35,16 @@ bool Localization::LoadLanguage(const char* langCode) {
         while (i < n && text[i] != ',' && text[i] != '\r' && text[i] != '\n')
             ++i;
         std::string key = text.substr(keyStart, i - keyStart);
-        // trim key
+        // trim key + UTF-8 BOM if still present on first key
         while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+        while (!key.empty() && (unsigned char)key.front() == 0xEF) {
+            if (key.size() >= 3 && (unsigned char)key[1] == 0xBB && (unsigned char)key[2] == 0xBF)
+                key.erase(0, 3);
+            else
+                break;
+        }
+        if (!key.empty() && (unsigned char)key[0] == 0xEF)
+            key.erase(0, 1);
         if (i < n && text[i] == ',') ++i;
 
         std::string val;
