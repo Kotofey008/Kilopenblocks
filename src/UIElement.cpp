@@ -1,3 +1,5 @@
+#include "GridData.h"
+#include "Texture.h"
 #include <functional>
 #include "UIElement.h"
 #include "Assets.h"
@@ -587,6 +589,67 @@ void UIDocument::LayoutSliders() {
     }
 }
 
+
+Texture* UIDocument::LoadUITexture(const char* path) {
+    if (!path || !*path) return nullptr;
+    std::string key = path;
+    auto it = textureCache_.find(key);
+    if (it != textureCache_.end() && it->second && it->second->Valid())
+        return it->second.get();
+    auto tex = std::unique_ptr<Texture>(new Texture());
+    if (!tex->LoadPNGAsset(path)) {
+        if (std::strncmp(path, "Screen/", 7) == 0)
+            tex->LoadPNGAsset(path + 7);
+    }
+    if (!tex->Valid()) return nullptr;
+    Texture* raw = tex.get();
+    textureCache_[key] = std::move(tex);
+    return raw;
+}
+
+// Binary UIElement::UpdateDragAction @ 0x107570
+// If parent is UISliderElement: map touch → SetCurrentValue 0..1
+// Else: clamp element position inside parent rect (free drag)
+void UIDocument::UpdateDragAction(UIElement* e, float touchX, float touchY) {
+    if (!e || !e->isDragging) return;
+    UIElement* parent = e->parent;
+    if (parent && parent->type == UIElement::Type::Slider) {
+        float v = parent->currentValue;
+        if (parent->horizontal) {
+            float thumbW = e->screenRect.w;
+            float range = parent->screenRect.w - thumbW;
+            if (range < 1.f) range = 1.f;
+            v = (touchX - parent->screenRect.x - thumbW * 0.5f) / range;
+        } else {
+            float thumbH = e->screenRect.h;
+            float range = parent->screenRect.h - thumbH;
+            if (range < 1.f) range = 1.f;
+            v = 1.f - (touchY - parent->screenRect.y - thumbH * 0.5f) / range;
+        }
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        parent->currentValue = v;
+        LayoutSliders();
+        return;
+    }
+    if (parent) {
+        // Free drag clamped to parent (binary AlignRect + delta clamp)
+        float w = e->screenRect.w, h = e->screenRect.h;
+        float nx = touchX - w * 0.5f;
+        float ny = touchY - h * 0.5f;
+        float minX = parent->screenRect.x;
+        float minY = parent->screenRect.y;
+        float maxX = parent->screenRect.x + parent->screenRect.w - w;
+        float maxY = parent->screenRect.y + parent->screenRect.h - h;
+        if (nx < minX) nx = minX;
+        if (ny < minY) ny = minY;
+        if (nx > maxX) nx = maxX;
+        if (ny > maxY) ny = maxY;
+        e->screenRect.x = nx;
+        e->screenRect.y = ny;
+    }
+}
+
 void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
 #if !defined(__ANDROID__)
     (void)screenW; (void)screenH; (void)fonts;
@@ -742,6 +805,54 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
                     }
                 }
             }
+        }
+
+        // -----------------------------------------------------------------
+        // UIElement::DrawImage @ 0x106310
+        // style+0x28 texture (or element textureName → LoadUITexture)
+        // AlignRect then textured quad; blend SRC_ALPHA / ONE_MINUS_SRC_ALPHA
+        // -----------------------------------------------------------------
+        {
+            Texture* tex = st.texture;
+            if (!tex && !e.textureName.empty())
+                tex = const_cast<UIDocument*>(this)->LoadUITexture(e.textureName.c_str());
+            if (tex && tex->Valid() && tex->GLId()) {
+                float iw = (float)tex->Width();
+                float ih = (float)tex->Height();
+                // AlignRect-equivalent: place image size inside element via xAlign/yAlign
+                float tx = x + (w - iw) * e.xAlign;
+                float ty = y + (h - ih) * e.yAlign;
+                if (iw > w) { tx = x; iw = w; }
+                if (ih > h) { ty = y; ih = h; }
+                tex->Bind();
+                glEnable(GL_TEXTURE_2D);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glColor4f(1, 1, 1, 1);
+                const GLfloat verts[] = { tx, ty, tx+iw, ty, tx+iw, ty+ih, tx, ty+ih };
+                const GLfloat uvs[] = { 0,0, 1,0, 1,1, 0,1 };
+                glEnableClientState(GL_VERTEX_ARRAY);
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+                glVertexPointer(2, GL_FLOAT, 0, verts);
+                glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+                glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+                glDisableClientState(GL_VERTEX_ARRAY);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                glDisable(GL_TEXTURE_2D);
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // UIGridModelMtl::DrawBackground @ 0x108a10
+        // base DrawBackground already done; then RenderGridModelMtlArray into rect
+        // Materials[] + ArrayWidth tile the element rect with block top-face UVs
+        // -----------------------------------------------------------------
+        if (e.type == UIElement::Type::GridModelMtl && gridForMtl_ && !e.materials.empty()) {
+            // Draw handled externally when atlas available — mark for Game/GLApp
+            // Actual textured tiles still use DrawMenuMaterialSlots on menu_mtl_*;
+            // here draw neutral cells if materials list present as structure match.
+            (void)e.arrayWidth;
         }
 
         // DrawText — multi-line labels (CSV may contain newlines)

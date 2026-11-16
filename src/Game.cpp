@@ -125,6 +125,7 @@ void Game::ApplyUIMetrics() {
         for (auto& p : uiPanels_) {
             if (!p.loaded) continue;
             p.doc.ApplyMetrics(uiMetrics_);
+            p.doc.SetGridData(&grid_);
             p.doc.ResolveAll((float)w, (float)h);
             if (p.sceneName == "hud_ui") {
                 hudLoaded_ = true;
@@ -294,34 +295,20 @@ void Game::HandleTouchMove(int x, int y) {
     for (auto& p : uiPanels_) {
         if (!p.visible || !p.loaded) continue;
         for (auto& e : p.doc.All()) {
-            if (e.type != UIElement::Type::Slider || !e.isDragging) continue;
-            // Dragging slider: update value from pointer along axis
-            float v = e.currentValue;
-            if (e.horizontal) {
-                float thumbW = e.children.empty() ? 0.f : e.children[0]->screenRect.w;
-                float range = e.screenRect.w - thumbW;
-                if (range < 1.f) range = 1.f;
-                v = (fx - e.screenRect.x - thumbW * 0.5f) / range;
-            } else {
-                float thumbH = e.children.empty() ? 0.f : e.children[0]->screenRect.h;
-                float range = e.screenRect.h - thumbH;
-                if (range < 1.f) range = 1.f;
-                v = 1.f - (fy - e.screenRect.y - thumbH * 0.5f) / range;
-            }
-            if (v < 0.f) v = 0.f;
-            if (v > 1.f) v = 1.f;
-            e.currentValue = v;
-            p.doc.LayoutSliders();
-            // Bind known sliders
-            if (e.name == "sensitivity") {
-                // Binary maps 0..1 slider → sensitivity; label "1" at mid.
-                // Approximate: value*2 so 0.5 → 1.0 (default).
-                pendingSensitivity_ = v * 2.f;
-                if (pendingSensitivity_ < 0.05f) pendingSensitivity_ = 0.05f;
-                if (UIElement* lab = p.doc.Find("sensitivity_v")) {
-                    char buf[32];
-                    std::snprintf(buf, sizeof(buf), "%.2g", pendingSensitivity_);
-                    lab->text = buf;
+            if (!e.isDragging) continue;
+            // Binary UpdateDragAction: slider thumb or free-drag clamped to parent
+            p.doc.UpdateDragAction(&e, fx, fy);
+            // Slider value bindings (UISliderElement parent)
+            UIElement* slider = (e.type == UIElement::Type::Slider) ? &e : e.parent;
+            if (slider && slider->type == UIElement::Type::Slider) {
+                if (slider->name == "sensitivity") {
+                    pendingSensitivity_ = slider->currentValue * 2.f;
+                    if (pendingSensitivity_ < 0.05f) pendingSensitivity_ = 0.05f;
+                    if (UIElement* lab = p.doc.Find("sensitivity_v")) {
+                        char buf[32];
+                        std::snprintf(buf, sizeof(buf), "%.2g", pendingSensitivity_);
+                        lab->text = buf;
+                    }
                 }
             }
             return;
@@ -652,12 +639,33 @@ void Game::EnterGameList() {
     UpdateGameListUI();
 }
 
+static void TimeStrLocal(char* out, int outSz, int unixTime) {
+    // Binary TimeStr @ 0x76ff0 — formats timestamp for save list labels
+    if (!out || outSz < 8) return;
+    if (unixTime <= 0) {
+        std::snprintf(out, (size_t)outSz, "—");
+        return;
+    }
+    time_t t = (time_t)unixTime;
+    struct tm tmv;
+#if defined(_WIN32)
+    gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
+    std::snprintf(out, (size_t)outSz, "%04d-%02d-%02d %02d:%02d",
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min);
+}
+
 void Game::UpdateGameListUI() {
-    // Game::UpdateGameListUI @ 0x7a... — SetText/SetVisible on select_terrain + terrain_info
-    char buf[128];
+    // Game::UpdateGameListUI — SetText/SetVisible/SetEnabled on select_terrain + terrain_info
+    // When header magic == 'EXPS' (0x53505845): show size/pos/times via TimeStr
+    char buf[256];
+    char t0[64], t1[64];
     const int n = gameListCount_;
     const int idx = (n > 0) ? gameListIndex_ : 0;
-    int slot = (n > 0 && idx >= 0 && idx < n) ? gameListSlots_[idx] : -1;
+    int slot = (n > 0 && idx >= 0 && idx < n) ? gameListSlots_[(size_t)idx] : -1;
 
     auto setOnPanels = [&](const char* elem, const std::string& text) {
         for (auto& p : uiPanels_) {
@@ -680,7 +688,7 @@ void Game::UpdateGameListUI() {
         }
     };
 
-    if (n <= 0) {
+    if (n <= 0 || slot < 0) {
         std::string empty = Localization::Instance().Localize("/NoSavedGames/No saved games.");
         setOnPanels("file", empty);
         std::snprintf(buf, sizeof(buf), "0/0");
@@ -691,10 +699,47 @@ void Game::UpdateGameListUI() {
         setVisible("next", false);
         return;
     }
+
+    GameHeader hdr;
+    bool hasHdr = false;
+    {
+        char path[512];
+        GetSaveName(path, "header_%d.dat", slot);
+        FileStream fs;
+        if (fs.Open(path, FileStream::Mode::Read)) {
+            LoadGameHeader(hdr, fs);
+            hasHdr = true;
+        } else {
+            // world file alone still counts as a save entry
+            hasHdr = false;
+        }
+    }
+
     std::snprintf(buf, sizeof(buf), "save_%d", slot);
     setOnPanels("file", buf);
     std::snprintf(buf, sizeof(buf), "%d/%d", idx + 1, n);
     setOnPanels("index", buf);
+
+    if (hasHdr && (hdr.magic == 0x53505845 || hdr.version > 0)) {
+        TimeStrLocal(t0, (int)sizeof(t0), hdr.createTime);
+        TimeStrLocal(t1, (int)sizeof(t1), hdr.modifyTime);
+        std::string info;
+        info += t0; info.push_back('\n');
+        info += t1; info.push_back('\n');
+        char dim[64];
+        int sx = hdr.worldSizeX ? hdr.worldSizeX : (hdr.worldMaxX - hdr.worldMinX);
+        int sy = hdr.worldSizeY ? hdr.worldSizeY : (hdr.worldMaxY - hdr.worldMinY);
+        int sz = hdr.worldSizeZ ? hdr.worldSizeZ : (hdr.worldMaxZ - hdr.worldMinZ);
+        std::snprintf(dim, sizeof(dim), "%dx%dx%d", sx, sy, sz);
+        info += dim; info.push_back('\n');
+        char pos[64];
+        std::snprintf(pos, sizeof(pos), "%.0f %.0f %.0f",
+                      (double)hdr.spawnX, (double)hdr.spawnY, (double)hdr.spawnZ);
+        info += pos;
+        setOnPanels("info", info);
+        setOnPanels("properties", info);
+    }
+
     setVisible("play", true);
     setVisible("delete", true);
     setVisible("prev", idx > 0);
@@ -1006,7 +1051,7 @@ void Game::SelectNext() {
         UpdateGameListUI();
     }
 }
-}
+
 void Game::SelectPrev() {
     if (gameListIndex_ > 0) {
         gameListIndex_ -= 1;
@@ -1296,6 +1341,7 @@ void Game::DispatchMessageList(const std::vector<std::string>& msgs) {
 #include "Stream.h"
 #include <cstdarg>
 #include <cstdio>
+#include <ctime>
 
 void Game::GetSaveName(char* out, const char* fmt, ...) {
     // Observed @ 0x65590 — builds path starting with "/Hom..." (likely app files dir)
@@ -1314,24 +1360,32 @@ void Game::RemoveSaveFiles(int slot) {
 }
 
 void Game::SaveGameHeader(GameHeader& hdr, Stream& stream) {
-    // Sequential 4-byte LE fields matching ByteOrderSerialize calls @ 0x6c030
+    // Sequential 4-byte LE fields; expanded for list UI (magic/times/spawn)
+    stream.Ser(hdr.magic);
     stream.Ser(hdr.version);
-    stream.Ser(hdr.worldSizeX);
-    stream.Ser(hdr.worldSizeY);
-    stream.Ser(hdr.worldSizeZ);
+    stream.Ser(hdr.worldMinX); stream.Ser(hdr.worldMinY); stream.Ser(hdr.worldMinZ);
+    stream.Ser(hdr.worldMaxX); stream.Ser(hdr.worldMaxY); stream.Ser(hdr.worldMaxZ);
     stream.Ser(hdr.terrainType);
     stream.Ser(hdr.seed);
     stream.Ser(hdr.flags);
+    stream.Ser(hdr.createTime);
+    stream.Ser(hdr.modifyTime);
+    stream.Ser(hdr.spawnX); stream.Ser(hdr.spawnY); stream.Ser(hdr.spawnZ);
+    stream.Ser(hdr.worldSizeX); stream.Ser(hdr.worldSizeY); stream.Ser(hdr.worldSizeZ);
 }
 
 void Game::LoadGameHeader(GameHeader& hdr, Stream& stream) {
+    stream.Ser(hdr.magic);
     stream.Ser(hdr.version);
-    stream.Ser(hdr.worldSizeX);
-    stream.Ser(hdr.worldSizeY);
-    stream.Ser(hdr.worldSizeZ);
+    stream.Ser(hdr.worldMinX); stream.Ser(hdr.worldMinY); stream.Ser(hdr.worldMinZ);
+    stream.Ser(hdr.worldMaxX); stream.Ser(hdr.worldMaxY); stream.Ser(hdr.worldMaxZ);
     stream.Ser(hdr.terrainType);
     stream.Ser(hdr.seed);
     stream.Ser(hdr.flags);
+    stream.Ser(hdr.createTime);
+    stream.Ser(hdr.modifyTime);
+    stream.Ser(hdr.spawnX); stream.Ser(hdr.spawnY); stream.Ser(hdr.spawnZ);
+    stream.Ser(hdr.worldSizeX); stream.Ser(hdr.worldSizeY); stream.Ser(hdr.worldSizeZ);
 }
 
 void Game::SaveGameSettings(GameSettings& settings, Stream& stream) {

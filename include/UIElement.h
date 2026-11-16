@@ -1,10 +1,13 @@
 #pragma once
 #include "Font.h"
+class Texture;
+class GridData;
 #include "Mesh.h"
 #include "GameUIMetrics.h"
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <cstdint>
 
 struct UIRect {
@@ -40,7 +43,10 @@ struct UIStyle {
     uint32_t backgroundColor = 0;
     uint32_t textColor = 0xFFDCDCDC;
     uint32_t textShadowColor = 0x641E1E1E;
+    // binary style +0x28 — Texture*/TAObject* used by DrawImage
+    Texture* texture = nullptr;
 };
+
 
 class UIElement {
 public:
@@ -116,6 +122,11 @@ public:
     // Original draw path stand-in for UIElement::Draw → DrawBackground + DrawText
     // (full 4.7KB DrawBackground not ported; frame+fill+text matches observed style fields)
     void Draw(float screenW, float screenH, FontResource& fonts) const;
+    void SetGridData(GridData* g) { gridForMtl_ = g; }
+    GridData* GetGridData() const { return gridForMtl_; }
+    // Binary UpdateDragAction @ 0x107570 — drag thumb / free drag inside parent
+    void UpdateDragAction(UIElement* e, float touchX, float touchY);
+    Texture* LoadUITexture(const char* path);
 
 private:
     std::vector<UIElement> elements_;
@@ -124,6 +135,8 @@ private:
     std::map<std::string, uint32_t> colorVars_;
     void ParseVars(const std::string& text);
     int metricsFontSize_ = 16;
+    GridData* gridForMtl_ = nullptr;
+    std::map<std::string, std::unique_ptr<Texture>> textureCache_;
 public:
     int MetricsFontSize() const { return metricsFontSize_; }
 };

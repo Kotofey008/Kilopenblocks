@@ -26,14 +26,19 @@ class Stream;
 // GameHeader layout recovered from SaveGameHeader sequential ByteOrderSerialize of 4-byte fields
 // Offsets 0,4,8,0xc,0x10,0x14,0x18,... — exact field names still partial
 struct GameHeader {
-    int version = 133;          // inferred from app version 1.3.3
-    int worldSizeX = 0;
-    int worldSizeY = 0;
-    int worldSizeZ = 0;
+    // Layout recovered from UpdateGameListUI / SaveGameHeader field use in binary
+    int magic = 0x53505845;     // 'EXPS' when valid save (binary compares 0x53505845)
+    int version = 133;
+    int worldMinX = 0, worldMinY = 0, worldMinZ = 0;
+    int worldMaxX = 0, worldMaxY = 0, worldMaxZ = 0;
     int terrainType = 0;
     int seed = 0;
     int flags = 0;
-    // more fields present in original; expanded as recovered
+    int createTime = 0;         // unix-ish; TimeStr in UpdateGameListUI
+    int modifyTime = 0;
+    float spawnX = 0, spawnY = 0, spawnZ = 0;
+    // legacy aliases used by older Ser paths
+    int worldSizeX = 0, worldSizeY = 0, worldSizeZ = 0;
 };
 
 struct GameSettings {
