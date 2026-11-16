@@ -404,6 +404,8 @@ void GLApplication::RenderHUD(int screenW, int screenH) {
         for (auto& p : game_.UIPanels()) {
             if (!p.visible || !p.loaded) continue;
             p.doc.ResolveAll((float)screenW, (float)screenH);
+            p.doc.SetGridData(&game_.GetGrid());
+            p.doc.SetBlocksAtlas(&blocksAtlas_);
             p.doc.Draw((float)screenW, (float)screenH, game_.GetFonts());
             if (p.sceneName == "menu_ui") drewMenu = true;
         }

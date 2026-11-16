@@ -650,17 +650,13 @@ void UIDocument::UpdateDragAction(UIElement* e, float touchX, float touchY) {
     }
 }
 
+
 void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
 #if !defined(__ANDROID__)
     (void)screenW; (void)screenH; (void)fonts;
     return;
 #else
-    // ------------------------------------------------------------------
-    // Critical: world pass leaves GL_COLOR_ARRAY / GL_TEXTURE_COORD_ARRAY
-    // enabled and blocksAtlas bound. With those client states active,
-    // glColor4f is ignored and untextured quads sample the block atlas.
-    // Original UI path draws after 3D with a clean 2D state.
-    // ------------------------------------------------------------------
+    // Binary UISceneObject::RenderUI → UIElement::DrawH from roots
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glDisable(GL_LIGHTING);
@@ -677,7 +673,88 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // 0x302 / 0x303
+
+    // Hierarchical DrawH from roots (binary @ 0x107080)
+    for (UIElement* root : roots_) {
+        if (!root) continue;
+        DrawH(root, 0.f, 0.f, screenW, screenH, 0.f, 0.f, screenW, screenH, fonts);
+    }
+    // Also draw orphan elements not linked into roots (safety)
+    for (const auto& e : elements_) {
+        if (e.parent || !e.visible) continue;
+        bool inRoots = false;
+        for (UIElement* r : roots_) if (r == &e) { inRoots = true; break; }
+        if (!inRoots)
+            DrawH(const_cast<UIElement*>(&e), 0.f, 0.f, screenW, screenH,
+                  0.f, 0.f, screenW, screenH, fonts);
+    }
+
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glColor4f(1, 1, 1, 1);
+#endif
+}
+
+// Binary UIElement::DrawH @ 0x107080:
+//   AlignRect within parent → store pos @ +0x1c0/+0x1c4
+//   CheckRect vs clip → if visible Draw (vtable)
+//   for each child DrawH(child, this rect, clip)
+void UIDocument::DrawH(UIElement* e, float parentX, float parentY, float parentW, float parentH,
+                       float clipX, float clipY, float clipW, float clipH,
+                       FontResource& fonts) const {
+#if !defined(__ANDROID__)
+    (void)e; (void)parentX; (void)parentY; (void)parentW; (void)parentH;
+    (void)clipX; (void)clipY; (void)clipW; (void)clipH; (void)fonts;
+    return;
+#else
+    if (!e || !e->visible) return;
+    (void)parentX; (void)parentY; (void)parentW; (void)parentH;
+
+    // screenRect already resolved by ResolveAll (AlignRect baked in)
+    float x = e->screenRect.x, y = e->screenRect.y, w = e->screenRect.w, h = e->screenRect.h;
+    if (w < 1.f || h < 1.f) {
+        // still recurse children (layout containers)
+        for (UIElement* c : e->children)
+            DrawH(c, x, y, w, h, clipX, clipY, clipW, clipH, fonts);
+        return;
+    }
+
+    // CheckRect: intersect element with clip
+    float ix = x > clipX ? x : clipX;
+    float iy = y > clipY ? y : clipY;
+    float ix2 = (x + w) < (clipX + clipW) ? (x + w) : (clipX + clipW);
+    float iy2 = (y + h) < (clipY + clipH) ? (y + h) : (clipY + clipH);
+    float iw = ix2 - ix, ih = iy2 - iy;
+    if (iw > 0.f && ih > 0.f) {
+        // Scissor clip (binary FRect clip on mesh path)
+        // GL scissor origin is bottom-left; our ortho is top-left → convert
+        // For simplicity apply scissor in window Y-down by flipping using parent screenH from clip root
+        DrawElement(*e, ix, iy, iw, ih, fonts);
+    }
+
+    // Children inherit this element's rect as parent; clip stays intersected
+    float childClipX = (iw > 0.f) ? ix : clipX;
+    float childClipY = (ih > 0.f) ? iy : clipY;
+    float childClipW = (iw > 0.f) ? iw : clipW;
+    float childClipH = (ih > 0.f) ? ih : clipH;
+    for (UIElement* c : e->children)
+        DrawH(c, x, y, w, h, childClipX, childClipY, childClipW, childClipH, fonts);
+#endif
+}
+
+void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float clipW, float clipH,
+                             FontResource& fonts) const {
+#if !defined(__ANDROID__)
+    (void)e; (void)clipX; (void)clipY; (void)clipW; (void)clipH; (void)fonts;
+    return;
+#else
+    (void)clipX; (void)clipY; (void)clipW; (void)clipH;
+
+    // Layout-only frames
+    if (e.name == "frame_background" || e.name == "frame") return;
+    if (e.name == "menu_mtl_sets") return;
 
     auto splitARGB = [](uint32_t c, float& r, float& g, float& b, float& a) {
         a = ((c >> 24) & 0xff) / 255.f;
@@ -685,7 +762,6 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
         g = ((c >>  8) & 0xff) / 255.f;
         b = ( c        & 0xff) / 255.f;
     };
-    // Pack as little-endian RGBA bytes for glColorPointer UNSIGNED_BYTE
     auto argbToRgbaPack = [](uint32_t argb) -> uint32_t {
         uint32_t a = (argb >> 24) & 0xff;
         uint32_t r = (argb >> 16) & 0xff;
@@ -695,8 +771,7 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
     };
     auto drawQuad = [&](float x, float y, float w, float h, uint32_t argb) {
         if (w <= 0.f || h <= 0.f) return;
-        uint32_t aa = (argb >> 24) & 0xff;
-        if (aa == 0) return;
+        if (((argb >> 24) & 0xff) == 0) return;
         float r,g,b,a; splitARGB(argb, r,g,b,a);
         glDisable(GL_TEXTURE_2D);
         glDisableClientState(GL_COLOR_ARRAY);
@@ -710,233 +785,237 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
         glColor4f(1, 1, 1, 1);
     };
 
-    MeshBuffer textMesh;
-    Font* textFont = fonts.FindOrLoad("Sans", metricsFontSize_ > 0 ? metricsFontSize_ : 16);
+    const UIStyle& st = e.CurrentStyle();
+    float x = e.screenRect.x, y = e.screenRect.y, w = e.screenRect.w, h = e.screenRect.h;
 
-    for (const auto& e : elements_) {
-        if (!e.visible) continue;
-        if (e.screenRect.w < 1.f || e.screenRect.h < 1.f) continue;
+    if (e.name.find("crosshair") != std::string::npos) {
+        drawQuad(x, y, w, h, 0xFFFFFFFFu);
+        return;
+    }
 
-        // Layout-only frames: skip drawing (still used for layout / hit parents)
-        if (e.name == "frame_background" || e.name == "frame") continue;
-        if (e.name == "menu_mtl_sets") continue; // container
-        // GM0 material panel is drawn separately via DrawMaterialSlots (block atlas)
-
-        const UIStyle& st = e.CurrentStyle();
-        float x = e.screenRect.x, y = e.screenRect.y, w = e.screenRect.w, h = e.screenRect.h;
-
-        if (e.name.find("crosshair") != std::string::npos) {
-            drawQuad(x, y, w, h, 0xFFFFFFFFu);
-            continue;
+    // ------------------------------------------------------------------
+    // UIElement::DrawBackground @ 0x103b60 (~4707B)
+    // for i in 0..2: if width!=0 inset; if color alpha draw ring
+    // then fill remaining with backgroundColor
+    // ------------------------------------------------------------------
+    {
+        float fx = x, fy = y, fw = w, fh = h;
+        float widths[3] = { st.frame0Width, st.frame1Width, st.frame2Width };
+        uint32_t colors[3] = { st.frame0Color, st.frame1Color, st.frame2Color };
+        bool anyFrameW = (widths[0] != 0.f || widths[1] != 0.f || widths[2] != 0.f);
+        if (((st.backgroundColor >> 24) & 0xff) != 0 || anyFrameW) {
+            for (int i = 0; i < 3; ++i) {
+                float bw = widths[i];
+                if (bw == 0.f) continue;
+                float ox = fx, oy = fy, ow = fw, oh = fh;
+                fx += bw; fy += bw;
+                fw -= bw * 2.f; fh -= bw * 2.f;
+                if (fw < 0.f) fw = 0.f;
+                if (fh < 0.f) fh = 0.f;
+                uint32_t col = colors[i];
+                if (((col >> 24) & 0xff) == 0) continue;
+                if (ow > 0.f && oh > 0.f) {
+                    drawQuad(ox, oy, ow, bw, col);
+                    drawQuad(ox, oy + oh - bw, ow, bw, col);
+                    float midH = oh - 2.f * bw;
+                    if (midH > 0.f) {
+                        drawQuad(ox, oy + bw, bw, midH, col);
+                        drawQuad(ox + ow - bw, oy + bw, bw, midH, col);
+                    }
+                }
+            }
+            if (((st.backgroundColor >> 24) & 0xff) != 0 && fw > 0.f && fh > 0.f)
+                drawQuad(fx, fy, fw, fh, st.backgroundColor);
         }
+    }
 
-        // Skip pure image/model placeholders that have no text and transparent bg
-        // menu_mtl_N: hit targets over material grid — no text; frames only when selected later
-        bool isMtlSlot = (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10);
-
-        // -----------------------------------------------------------------
-        // UIElement::DrawBackground @ 0x103b60 (binary, ~4707B)
-        // Style = GetCurrentStateStyles() + GetCurrentStyle()*0x2c
-        // for i in 0..2:
-        //   width = style.frame[i].width; color = style.frame[i].color
-        //   if width != 0: inset working rect on all sides by width
-        //   if color alpha != 0: emit frame ring (outer-before-inset vs inner)
-        // if backgroundColor alpha != 0: fill remaining rect
-        // UISliderElement::DrawBackground: track line when LineWidth>0 + children
-        // -----------------------------------------------------------------
-        {
-            const UIStyle& st = e.CurrentStyle();
-            float fx = x, fy = y, fw = w, fh = h;
-            float widths[3] = { st.frame0Width, st.frame1Width, st.frame2Width };
-            uint32_t colors[3] = { st.frame0Color, st.frame1Color, st.frame2Color };
-
-            // Early-out matching binary: no bg alpha AND all frame widths 0 → return
-            bool anyFrameW = (widths[0] != 0.f || widths[1] != 0.f || widths[2] != 0.f);
-            if (((st.backgroundColor >> 24) & 0xff) == 0 && !anyFrameW) {
-                // still may draw text
+    // ------------------------------------------------------------------
+    // UISliderElement::DrawBackground @ 0x105350 (~2465B)
+    // if children==0 OR LineWidth==0 → base only (already done)
+    // else draw track between parent insets and thumb insets
+    // ------------------------------------------------------------------
+    if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f && !e.children.empty()) {
+        uint32_t lineCol = st.frame1Color;
+        if (((lineCol >> 24) & 0xff) == 0) lineCol = st.frame0Color;
+        if (((lineCol >> 24) & 0xff) == 0) lineCol = st.backgroundColor;
+        if (((lineCol >> 24) & 0xff) != 0) {
+            // Use first child (thumb) size as end-cap (binary end-frame pad)
+            float thumbW = e.children[0]->screenRect.w;
+            float thumbH = e.children[0]->screenRect.h;
+            float lw = e.lineWidth;
+            if (e.horizontal) {
+                float ly = y + (h - lw) * 0.5f;
+                float padX = thumbW * 0.5f;
+                if (padX * 2.f > w) padX = 0.f;
+                drawQuad(x + padX, ly, w - padX * 2.f, lw, lineCol);
             } else {
-                for (int i = 0; i < 3; ++i) {
-                    float bw = widths[i];
-                    if (bw == 0.f) continue;
-                    float ox = fx, oy = fy, ow = fw, oh = fh;
-                    // inset working rect (binary always insets when width != 0)
-                    fx += bw; fy += bw;
-                    fw -= bw * 2.f; fh -= bw * 2.f;
-                    if (fw < 0.f) fw = 0.f;
-                    if (fh < 0.f) fh = 0.f;
-                    uint32_t col = colors[i];
-                    if (((col >> 24) & 0xff) == 0) continue; // inset only
-                    // Ring = outer rect minus inner rect (4 sides)
-                    if (ow > 0.f && oh > 0.f) {
-                        // top
-                        drawQuad(ox, oy, ow, bw, col);
-                        // bottom
-                        drawQuad(ox, oy + oh - bw, ow, bw, col);
-                        // left (between top/bottom to avoid double-corners overdraw ok)
-                        float midH = oh - 2.f * bw;
-                        if (midH > 0.f) {
-                            drawQuad(ox, oy + bw, bw, midH, col);
-                            drawQuad(ox + ow - bw, oy + bw, bw, midH, col);
-                        }
-                    }
-                }
-                // Fill remaining (binary: pfVar21[6] backgroundColor)
-                if (((st.backgroundColor >> 24) & 0xff) != 0 && fw > 0.f && fh > 0.f)
-                    drawQuad(fx, fy, fw, fh, st.backgroundColor);
-            }
-
-            // UISliderElement::DrawBackground — track between insets when LineWidth>0
-            if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f) {
-                uint32_t lineCol = st.frame1Color;
-                if (((lineCol >> 24) & 0xff) == 0)
-                    lineCol = st.frame0Color;
-                if (((lineCol >> 24) & 0xff) != 0) {
-                    float lw = e.lineWidth;
-                    if (e.horizontal) {
-                        float ly = y + (h - lw) * 0.5f;
-                        float pad = (e.children.empty() ? h * 0.5f : e.children[0]->screenRect.w * 0.5f);
-                        if (pad * 2.f > w) pad = 0.f;
-                        drawQuad(x + pad, ly, w - pad * 2.f, lw, lineCol);
-                    } else {
-                        float lx = x + (w - lw) * 0.5f;
-                        float pad = (e.children.empty() ? w * 0.5f : e.children[0]->screenRect.h * 0.5f);
-                        if (pad * 2.f > h) pad = 0.f;
-                        drawQuad(lx, y + pad, lw, h - pad * 2.f, lineCol);
-                    }
-                }
-            }
-        }
-
-        // -----------------------------------------------------------------
-        // UIElement::DrawImage @ 0x106310
-        // style+0x28 texture (or element textureName → LoadUITexture)
-        // AlignRect then textured quad; blend SRC_ALPHA / ONE_MINUS_SRC_ALPHA
-        // -----------------------------------------------------------------
-        {
-            Texture* tex = st.texture;
-            if (!tex && !e.textureName.empty())
-                tex = const_cast<UIDocument*>(this)->LoadUITexture(e.textureName.c_str());
-            if (tex && tex->Valid() && tex->GLId()) {
-                float iw = (float)tex->Width();
-                float ih = (float)tex->Height();
-                // AlignRect-equivalent: place image size inside element via xAlign/yAlign
-                float tx = x + (w - iw) * e.xAlign;
-                float ty = y + (h - ih) * e.yAlign;
-                if (iw > w) { tx = x; iw = w; }
-                if (ih > h) { ty = y; ih = h; }
-                tex->Bind();
-                glEnable(GL_TEXTURE_2D);
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                glColor4f(1, 1, 1, 1);
-                const GLfloat verts[] = { tx, ty, tx+iw, ty, tx+iw, ty+ih, tx, ty+ih };
-                const GLfloat uvs[] = { 0,0, 1,0, 1,1, 0,1 };
-                glEnableClientState(GL_VERTEX_ARRAY);
-                glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-                glVertexPointer(2, GL_FLOAT, 0, verts);
-                glTexCoordPointer(2, GL_FLOAT, 0, uvs);
-                glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-                glDisableClientState(GL_VERTEX_ARRAY);
-                glBindTexture(GL_TEXTURE_2D, 0);
-                glDisable(GL_TEXTURE_2D);
-            }
-        }
-
-        // -----------------------------------------------------------------
-        // UIGridModelMtl::DrawBackground @ 0x108a10
-        // base DrawBackground already done; then RenderGridModelMtlArray into rect
-        // Materials[] + ArrayWidth tile the element rect with block top-face UVs
-        // -----------------------------------------------------------------
-        if (e.type == UIElement::Type::GridModelMtl && gridForMtl_ && !e.materials.empty()) {
-            // Draw handled externally when atlas available — mark for Game/GLApp
-            // Actual textured tiles still use DrawMenuMaterialSlots on menu_mtl_*;
-            // here draw neutral cells if materials list present as structure match.
-            (void)e.arrayWidth;
-        }
-
-        // DrawText — multi-line labels (CSV may contain newlines)
-        std::string label = e.DisplayText();
-        if (!label.empty() && textFont && textFont->IsLoaded()) {
-            // Split into lines
-            std::vector<std::string> lines;
-            {
-                std::string cur;
-                for (char ch : label) {
-                    if (ch == '\n' || ch == '\r') {
-                        if (ch == '\r') continue;
-                        lines.push_back(cur);
-                        cur.clear();
-                    } else {
-                        cur.push_back(ch);
-                    }
-                }
-                lines.push_back(cur);
-            }
-            float scale = 1.f;
-            float maxLineW = 0.f;
-            for (const auto& ln : lines)
-                maxLineW = std::max(maxLineW, textFont->MeasureWidth(ln.c_str(), 1.f));
-            float lineH = textFont->LineHeight();
-            float blockH = lineH * (float)lines.size();
-            if (maxLineW > 1.f && maxLineW * scale > w * 0.90f) scale = (w * 0.90f) / maxLineW;
-            if (blockH * scale > h * 0.85f && blockH > 0.f) scale = (h * 0.85f) / blockH;
-            if (scale < 0.45f) scale = 0.45f;
-            // AlignRect @ 0x106250: pos = origin + (elemSize - textSize) * align
-            // (binary also takes margin pair at +0x80/+0x84; default 0)
-            float textW = maxLineW * scale;
-            float textH = blockH * scale;
-            float tx0 = x + (w - textW) * e.xAlign;
-            float ty0 = y + (h - textH) * e.yAlign;
-            // Binary UIElement::DrawText: shadow at +1,+1 if shadow alpha, then text
-            uint32_t shadowArgb = st.textShadowColor;
-            uint32_t col = argbToRgbaPack(st.textColor);
-            if (((st.textColor >> 24) & 0xff) == 0)
-                col = 0; // no invent color when alpha 0
-            else if (((st.textColor >> 24) & 0xff) < 0x40)
-                col = argbToRgbaPack(0xFFDCDCDCu);
-            for (size_t li = 0; li < lines.size(); ++li) {
-                const std::string& ln = lines[li];
-                if (ln.empty()) continue;
-                float tw = textFont->MeasureWidth(ln.c_str(), 1.f);
-                float tx = x + (w - tw * scale) * 0.5f;
-                float ty = ty0 + (float)li * lineH * scale;
-                if ((shadowArgb & 0xff000000) != 0) {
-                    textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), ln.c_str(),
-                                            scale, argbToRgbaPack(shadowArgb), TextAlign::Left);
-                }
-                textFont->AddTextToMesh(textMesh, Vector(tx, ty, 0), ln.c_str(),
-                                        scale, col, TextAlign::Left);
+                float lx = x + (w - lw) * 0.5f;
+                float padY = thumbH * 0.5f;
+                if (padY * 2.f > h) padY = 0.f;
+                drawQuad(lx, y + padY, lw, h - padY * 2.f, lineCol);
             }
         }
     }
 
-    // Flush text with font texture — client state only for this pass
-    if (textFont && textFont->IsLoaded() && textMesh.IndexCount() > 0) {
+    // ------------------------------------------------------------------
+    // UIGridModelMtl::DrawBackground @ 0x108a10
+    // base BG done; RenderGridModelMtlArray into element rect
+    // ------------------------------------------------------------------
+    if (e.type == UIElement::Type::GridModelMtl && gridForMtl_ && blocksAtlas_
+        && blocksAtlas_->GLId() && !e.materials.empty()) {
+        int aw = e.arrayWidth > 0 ? e.arrayWidth : 3;
+        int n = (int)e.materials.size();
+        int ah = (n + aw - 1) / aw;
+        if (ah < 1) ah = 1;
+        float cellW = w / (float)aw;
+        float cellH = h / (float)ah;
+        blocksAtlas_->Bind();
         glEnable(GL_TEXTURE_2D);
-        textFont->GetTexture().Bind();
-        glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+        glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
         glColor4f(1, 1, 1, 1);
-        const auto& verts = textMesh.Vertices();
-        const auto& inds = textMesh.Indices();
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glEnableClientState(GL_COLOR_ARRAY);
-        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-        const char* base = reinterpret_cast<const char*>(verts.data());
-        glVertexPointer(3, GL_FLOAT, 24, base + 0);
-        glColorPointer(4, GL_UNSIGNED_BYTE, 24, base + 12);
-        glTexCoordPointer(2, GL_FLOAT, 24, base + 16);
-        glDrawElements(GL_TRIANGLES, (int)inds.size(), GL_UNSIGNED_SHORT, inds.data());
-        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-        glDisableClientState(GL_COLOR_ARRAY);
-        glDisableClientState(GL_VERTEX_ARRAY);
+        for (int i = 0; i < n; ++i) {
+            int mx = i % aw, my = i / aw;
+            int matId = e.materials[(size_t)i];
+            // materials[] in menu.txt are palette slot indices 0..8 on page 0,
+            // but also used as S-Index; map via MtlSelIndexToCell
+            unsigned char cell = gridForMtl_->MtlSelIndexToCell(matId);
+            if (cell == 0) continue;
+            const Material* mat = gridForMtl_->GetMaterial(cell);
+            if (!mat) continue;
+            int tu = mat->uFace(1), tv = mat->vFace(1);
+            float u0, v0, u1, v1;
+            Texture::TileUV(tu, tv, u0, v0, u1, v1);
+            float pad = cellW * 0.08f;
+            float x0 = x + (float)mx * cellW + pad;
+            float y0 = y + (float)my * cellH + pad;
+            float x1 = x + (float)(mx + 1) * cellW - pad;
+            float y1 = y + (float)(my + 1) * cellH - pad;
+            const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
+            const GLfloat uvs[]   = { u0,v0, u1,v0, u1,v1, u0,v1 };
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glVertexPointer(2, GL_FLOAT, 0, verts);
+            glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+            glDisableClientState(GL_VERTEX_ARRAY);
+        }
         glBindTexture(GL_TEXTURE_2D, 0);
         glDisable(GL_TEXTURE_2D);
     }
 
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glColor4f(1, 1, 1, 1);
+    // ------------------------------------------------------------------
+    // UIElement::DrawImage @ 0x106310 / TextureView::DrawTexture
+    // SpriteButton also may use image; texture from style or textureName
+    // ------------------------------------------------------------------
+    {
+        Texture* tex = st.texture;
+        if (!tex && !e.textureName.empty())
+            tex = const_cast<UIDocument*>(this)->LoadUITexture(e.textureName.c_str());
+        if (tex && tex->Valid() && tex->GLId()) {
+            float iw = (float)tex->Width();
+            float ih = (float)tex->Height();
+            float tx = x + (w - iw) * e.xAlign;
+            float ty = y + (h - ih) * e.yAlign;
+            if (iw > w) { tx = x; iw = w; }
+            if (ih > h) { ty = y; ih = h; }
+            // TextureView / SpriteButton: stretch to element if type asks
+            if (e.type == UIElement::Type::TextureView || e.type == UIElement::Type::SpriteButton) {
+                tx = x; ty = y; iw = w; ih = h;
+            }
+            tex->Bind();
+            glEnable(GL_TEXTURE_2D);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(1, 1, 1, 1);
+            const GLfloat verts[] = { tx, ty, tx+iw, ty, tx+iw, ty+ih, tx, ty+ih };
+            const GLfloat uvs[] = { 0,0, 1,0, 1,1, 0,1 };
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glVertexPointer(2, GL_FLOAT, 0, verts);
+            glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+            glDisableClientState(GL_VERTEX_ARRAY);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glDisable(GL_TEXTURE_2D);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // UIElement::DrawText @ 0x106be0 (+ SpriteButton::DrawText path)
+    // ------------------------------------------------------------------
+    Font* textFont = fonts.FindOrLoad(e.fontName.empty() ? "Sans" : e.fontName.c_str(),
+                                      metricsFontSize_ > 0 ? metricsFontSize_ : 16);
+    std::string label = e.DisplayText();
+    if (!label.empty() && textFont && textFont->IsLoaded()) {
+        std::vector<std::string> lines;
+        {
+            std::string cur;
+            for (char ch : label) {
+                if (ch == '\n') { lines.push_back(cur); cur.clear(); }
+                else if (ch != '\r') cur.push_back(ch);
+            }
+            lines.push_back(cur);
+        }
+        float scale = 1.f;
+        float maxLineW = 0.f;
+        for (const auto& ln : lines)
+            maxLineW = std::max(maxLineW, textFont->MeasureWidth(ln.c_str(), 1.f));
+        float lineH = textFont->LineHeight();
+        float blockH = lineH * (float)lines.size();
+        if (maxLineW > 1.f && maxLineW * scale > w * 0.90f) scale = (w * 0.90f) / maxLineW;
+        if (blockH * scale > h * 0.85f && blockH > 0.f) scale = (h * 0.85f) / blockH;
+        if (scale < 0.45f) scale = 0.45f;
+        float textW = maxLineW * scale;
+        float textH = blockH * scale;
+        // AlignRect @ 0x106250
+        float tx0 = x + (w - textW) * e.xAlign;
+        float ty0 = y + (h - textH) * e.yAlign;
+
+        MeshBuffer textMesh;
+        uint32_t shadowArgb = st.textShadowColor;
+        uint32_t col = argbToRgbaPack(st.textColor);
+        if (((st.textColor >> 24) & 0xff) == 0) col = 0;
+        else if (((st.textColor >> 24) & 0xff) < 0x40) col = argbToRgbaPack(0xFFDCDCDCu);
+        for (size_t li = 0; li < lines.size(); ++li) {
+            const std::string& ln = lines[li];
+            if (ln.empty()) continue;
+            float tw = textFont->MeasureWidth(ln.c_str(), 1.f) * scale;
+            float tx = x + (w - tw) * e.xAlign; // per-line AlignRect X
+            float ty = ty0 + (float)li * lineH * scale;
+            if ((shadowArgb & 0xff000000) != 0) {
+                textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), ln.c_str(),
+                                        scale, argbToRgbaPack(shadowArgb), TextAlign::Left);
+            }
+            if (col != 0) {
+                textFont->AddTextToMesh(textMesh, Vector(tx, ty, 0), ln.c_str(),
+                                        scale, col, TextAlign::Left);
+            }
+        }
+        if (textMesh.IndexCount() > 0) {
+            glEnable(GL_TEXTURE_2D);
+            textFont->GetTexture().Bind();
+            glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            glColor4f(1, 1, 1, 1);
+            const auto& verts = textMesh.Vertices();
+            const auto& inds = textMesh.Indices();
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glEnableClientState(GL_COLOR_ARRAY);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            const char* base = reinterpret_cast<const char*>(verts.data());
+            glVertexPointer(3, GL_FLOAT, 24, base + 0);
+            glColorPointer(4, GL_UNSIGNED_BYTE, 24, base + 12);
+            glTexCoordPointer(2, GL_FLOAT, 24, base + 16);
+            glDrawElements(GL_TRIANGLES, (int)inds.size(), GL_UNSIGNED_SHORT, inds.data());
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+            glDisableClientState(GL_COLOR_ARRAY);
+            glDisableClientState(GL_VERTEX_ARRAY);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glDisable(GL_TEXTURE_2D);
+        }
+    }
 #endif
 }
+
 

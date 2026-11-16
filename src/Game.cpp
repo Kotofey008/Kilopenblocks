@@ -319,28 +319,30 @@ void Game::HandleTouchMove(int x, int y) {
 
 void Game::HandleTouchRelease(int x, int y) {
     (void)x; (void)y;
+    // Binary: clear pressed (0x4000), set released (0x10000); clicked (0x8000) consumed by CheckElementState
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
         for (auto& e : p.doc.All()) {
             if (e.isDragging) {
                 e.isDragging = false;
+            }
+            if (e.pressed || (e.touchState & UIElement::kTouchPressed)) {
                 e.pressed = false;
-                for (auto* c : e.children) {
-                    if (c) c->pressed = false;
-                }
-                // Apply sensitivity on release if this was the sensitivity slider
-                if (e.name == "sensitivity") {
-                    sensitivity_ = pendingSensitivity_;
-                    float s = sensitivity_;
-                    if (s > 0.f && s < 0.05f) s = 1.f / s;
-                    if (s < 0.01f) s = 0.01f;
-                    if (s > 5.f) s = 5.f;
-                    input_.SetTouchSensitivity(s);
+                e.touchState &= ~UIElement::kTouchPressed;
+                e.touchState |= UIElement::kTouchReleased;
+            }
+            for (auto* c : e.children) {
+                if (!c) continue;
+                if (c->pressed) {
+                    c->pressed = false;
+                    c->touchState &= ~UIElement::kTouchPressed;
+                    c->touchState |= UIElement::kTouchReleased;
                 }
             }
         }
     }
 }
+
 
 void Game::HandleTouchPress(int x, int y) {
     // Original: ElementClickedMessage dispatch on the UISceneObject that owns the hit element
@@ -368,6 +370,11 @@ void Game::HandleTouchPress(int x, int y) {
 
     const std::string& n = hit->name;
 
+    // Binary UpdateTouchState: set pressed (0x4000) on hit element
+    hit->pressed = true;
+    hit->touchState |= UIElement::kTouchPressed;
+    hit->touchState &= ~(UIElement::kTouchClicked | UIElement::kTouchReleased);
+
     // Slider thumb drag (Draggable child of UISliderElement)
     if (hit->draggable || hit->type == UIElement::Type::Slider) {
         UIElement* slider = (hit->type == UIElement::Type::Slider) ? hit
@@ -375,12 +382,18 @@ void Game::HandleTouchPress(int x, int y) {
         if (slider && slider->type == UIElement::Type::Slider) {
             slider->isDragging = true;
             slider->pressed = true;
+            slider->touchState |= UIElement::kTouchPressed;
             if (hit->draggable) hit->pressed = true;
             // Immediate update for press position
             HandleTouchMove(x, y);
             return;
         }
     }
+
+    // CheckElementState (UISceneObject @ 0x10baf0): on click bit (0x8000) after
+    // press we fire ElementClickedMessage. Binary sets clicked on release; we
+    // dispatch on press for buttons (same as prior working path) and mark flags.
+    hit->touchState |= UIElement::kTouchClicked;
 
     // Match ElementClickedMessage first token against element name (wildcard supported)
     for (const auto& msg : panel->clickMsgs) {

@@ -75,6 +75,13 @@ public:
     bool horizontal = true;
     float lineWidth = 8.f;
     bool isDragging = false;
+    // Binary UIElement touch flags (GetTouchState):
+    //  0x4000 pressed, 0x8000 clicked (press+release), 0x10000 released edge
+    static constexpr uint32_t kTouchPressed  = 0x4000;
+    static constexpr uint32_t kTouchClicked  = 0x8000;
+    static constexpr uint32_t kTouchReleased = 0x10000;
+    uint32_t touchState = 0;
+    bool useTouchMove = false; // GetUseTouchMove
     // UIGridModelMtl (menu.txt): ModelName, Materials[], ArrayWidth
     std::string modelName;
     std::vector<int> materials;
@@ -119,9 +126,17 @@ public:
     uint32_t GetColorVar(const std::string& name, uint32_t def = 0) const;
     bool Loaded() const { return !elements_.empty(); }
 
-    // Original draw path stand-in for UIElement::Draw → DrawBackground + DrawText
-    // (full 4.7KB DrawBackground not ported; frame+fill+text matches observed style fields)
+    // Draw path: Draw → roots DrawH → DrawElement (BG + Image + Text) per binary vtable
     void Draw(float screenW, float screenH, FontResource& fonts) const;
+    // Binary UIElement::DrawH @ 0x107080 — hierarchical draw + clip
+    void DrawH(UIElement* e, float parentX, float parentY, float parentW, float parentH,
+               float clipX, float clipY, float clipW, float clipH,
+               FontResource& fonts) const;
+    // Single element: DrawBackground + DrawImage + DrawText (vtable 0x20/0x24/0x28)
+    void DrawElement(const UIElement& e, float clipX, float clipY, float clipW, float clipH,
+                     FontResource& fonts) const;
+    void SetBlocksAtlas(Texture* t) { blocksAtlas_ = t; }
+    Texture* BlocksAtlas() const { return blocksAtlas_; }
     void SetGridData(GridData* g) { gridForMtl_ = g; }
     GridData* GetGridData() const { return gridForMtl_; }
     // Binary UpdateDragAction @ 0x107570 — drag thumb / free drag inside parent
@@ -136,6 +151,7 @@ private:
     void ParseVars(const std::string& text);
     int metricsFontSize_ = 16;
     GridData* gridForMtl_ = nullptr;
+    Texture* blocksAtlas_ = nullptr; // blocks.png for UIGridModelMtl
     std::map<std::string, std::unique_ptr<Texture>> textureCache_;
 public:
     int MetricsFontSize() const { return metricsFontSize_; }
