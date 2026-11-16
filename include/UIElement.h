@@ -59,7 +59,12 @@ public:
     Type type = Type::Element;
     bool visible = true;
     bool hitTest = true;
-    float xAlign = 0.f, yAlign = 0.f;
+    float xAlign = 0.f, yAlign = 0.f; // layout align in parent (+0x3c/+0x40)
+    // Text align inside element (binary +0x80/+0x84 default 0.5); TextPosition +0x88/+0x8c
+    float textAlignX = 0.5f, textAlignY = 0.5f;
+    float textPosX = 0.f, textPosY = 0.f;
+    // Image align (+0x6c/+0x70 default 0.5)
+    float imageAlignX = 0.5f, imageAlignY = 0.5f;
     float posX = 0, posY = 0;
     float sizeW = 0, sizeH = 0;
     bool autoResizeX = false; // AutoResizeX — grow with parent width
@@ -136,6 +141,7 @@ public:
     void DrawElement(const UIElement& e, float clipX, float clipY, float clipW, float clipH,
                      FontResource& fonts) const;
     void SetBlocksAtlas(Texture* t) { blocksAtlas_ = t; }
+    void SetPalettePage(int p) { palettePage_ = p; }
     Texture* BlocksAtlas() const { return blocksAtlas_; }
     void SetGridData(GridData* g) { gridForMtl_ = g; }
     GridData* GetGridData() const { return gridForMtl_; }
@@ -152,6 +158,7 @@ private:
     int metricsFontSize_ = 16;
     GridData* gridForMtl_ = nullptr;
     Texture* blocksAtlas_ = nullptr; // blocks.png for UIGridModelMtl
+    int palettePage_ = 0; // for UIGridModelMtl material page
     std::map<std::string, std::unique_ptr<Texture>> textureCache_;
 public:
     int MetricsFontSize() const { return metricsFontSize_; }

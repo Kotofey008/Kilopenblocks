@@ -1,3 +1,4 @@
+#include <cmath>
 #include "GridData.h"
 #include "Texture.h"
 #include <functional>
@@ -10,6 +11,7 @@
 #include <cctype>
 #include <algorithm>
 #include <cstring>
+#include <strings.h>
 #include <cstdio>
 
 #if defined(__ANDROID__)
@@ -250,7 +252,23 @@ bool UIDocument::LoadFromText(const std::string& text) {
             c->textureName = val;
         }
         else if (key == "Visible") c->visible = (val != "0" && val != "false");
-        else if (key == "XAlign") c->xAlign = std::strtof(val.c_str(), nullptr);
+        else if (key == "TextAlign") {
+            // Binary SetProperty → +0x80/+0x84; "Left"/"Right"/"Center" or float
+            if (strcasecmp(val.c_str(), "Left") == 0) { c->textAlignX = 0.f; }
+            else if (strcasecmp(val.c_str(), "Right") == 0) { c->textAlignX = 1.f; }
+            else if (strcasecmp(val.c_str(), "Center") == 0) { c->textAlignX = 0.5f; }
+            else {
+                float a = 0.f, b = 0.5f;
+                // may be single float or pair
+                int n = std::sscanf(val.c_str(), "%f %f", &a, &b);
+                if (n >= 1) c->textAlignX = a;
+                if (n >= 2) c->textAlignY = b;
+            }
+        } else if (key == "TextPosition") {
+            float a = 0, b = 0;
+            parseTwoFloats(val, *this, a, b);
+            c->textPosX = a; c->textPosY = b;
+        } else if (key == "XAlign") c->xAlign = std::strtof(val.c_str(), nullptr);
         else if (key == "YAlign") c->yAlign = std::strtof(val.c_str(), nullptr);
         else if (key == "AutoResizeX") {
             float v = parseFloatOrVar(val, *this);
@@ -861,6 +879,9 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
     // UIGridModelMtl::DrawBackground @ 0x108a10
     // base BG done; RenderGridModelMtlArray into element rect
     // ------------------------------------------------------------------
+    // UIGridModelMtl::DrawBackground — RenderGridModelMtlArray into this rect.
+    // materials[] are local slot indices 0..8; absolute S-Index = page*9 + slot.
+    // menu_mtl_N are HitTest-only overlays (HitTest targets), not a second draw path.
     if (e.type == UIElement::Type::GridModelMtl && gridForMtl_ && blocksAtlas_
         && blocksAtlas_->GLId() && !e.materials.empty()) {
         int aw = e.arrayWidth > 0 ? e.arrayWidth : 3;
@@ -875,17 +896,18 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         glColor4f(1, 1, 1, 1);
         for (int i = 0; i < n; ++i) {
             int mx = i % aw, my = i / aw;
-            int matId = e.materials[(size_t)i];
-            // materials[] in menu.txt are palette slot indices 0..8 on page 0,
-            // but also used as S-Index; map via MtlSelIndexToCell
-            unsigned char cell = gridForMtl_->MtlSelIndexToCell(matId);
+            int localSlot = e.materials[(size_t)i];
+            int sIndex = palettePage_ * 9 + localSlot;
+            unsigned char cell = gridForMtl_->MtlSelIndexToCell(sIndex);
             if (cell == 0) continue;
-            const Material* mat = gridForMtl_->GetMaterial(cell);
+            const Material* mat = gridForMtl_->GetMaterial((int)cell);
             if (!mat) continue;
             int tu = mat->uFace(1), tv = mat->vFace(1);
             float u0, v0, u1, v1;
             Texture::TileUV(tu, tv, u0, v0, u1, v1);
-            float pad = cellW * 0.08f;
+            // Binary tiles fill cell; menu_mtl_* hit rects define interactive subcells.
+            // Match DrawMenuMaterialSlots padding (~12% was visual; grid cells are contiguous)
+            float pad = cellW * 0.12f;
             float x0 = x + (float)mx * cellW + pad;
             float y0 = y + (float)my * cellH + pad;
             float x1 = x + (float)(mx + 1) * cellW - pad;
@@ -915,11 +937,9 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         if (tex && tex->Valid() && tex->GLId()) {
             float iw = (float)tex->Width();
             float ih = (float)tex->Height();
-            float tx = x + (w - iw) * e.xAlign;
-            float ty = y + (h - ih) * e.yAlign;
-            if (iw > w) { tx = x; iw = w; }
-            if (ih > h) { ty = y; ih = h; }
-            // TextureView / SpriteButton: stretch to element if type asks
+            // AlignRect for image: imageAlign (+0x6c/+0x70) default 0.5
+            float tx = x + std::floor((w - iw) * e.imageAlignX);
+            float ty = y + std::floor((h - ih) * e.imageAlignY);
             if (e.type == UIElement::Type::TextureView || e.type == UIElement::Type::SpriteButton) {
                 tx = x; ty = y; iw = w; ih = h;
             }
@@ -969,9 +989,11 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         if (scale < 0.45f) scale = 0.45f;
         float textW = maxLineW * scale;
         float textH = blockH * scale;
-        // AlignRect @ 0x106250
-        float tx0 = x + (w - textW) * e.xAlign;
-        float ty0 = y + (h - textH) * e.yAlign;
+        // AlignRect @ 0x106250 — uses TEXT align (+0x80/+0x84), NOT layout XAlign:
+        //   pos = elemOrigin + textPos + floor((elemSize - textSize) * textAlign)
+        // Defaults from UIElement ctor: textAlign 0.5/0.5, textPos 0/0
+        float tx0 = x + e.textPosX + std::floor((w - textW) * e.textAlignX);
+        float ty0 = y + e.textPosY + std::floor((h - textH) * e.textAlignY);
 
         MeshBuffer textMesh;
         uint32_t shadowArgb = st.textShadowColor;
@@ -982,7 +1004,9 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             const std::string& ln = lines[li];
             if (ln.empty()) continue;
             float tw = textFont->MeasureWidth(ln.c_str(), 1.f) * scale;
-            float tx = x + (w - tw) * e.xAlign; // per-line AlignRect X
+            // Per-line X: AlignRect with this line width (binary measures whole string once;
+            // multi-line labels use block align; each line inherits textAlignX)
+            float tx = x + e.textPosX + std::floor((w - tw) * e.textAlignX);
             float ty = ty0 + (float)li * lineH * scale;
             if ((shadowArgb & 0xff000000) != 0) {
                 textFont->AddTextToMesh(textMesh, Vector(tx + 1.f, ty + 1.f, 0), ln.c_str(),

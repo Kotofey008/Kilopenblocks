@@ -406,19 +406,24 @@ void GLApplication::RenderHUD(int screenW, int screenH) {
             p.doc.ResolveAll((float)screenW, (float)screenH);
             p.doc.SetGridData(&game_.GetGrid());
             p.doc.SetBlocksAtlas(&blocksAtlas_);
+            p.doc.SetPalettePage(game_.PalettePage());
             p.doc.Draw((float)screenW, (float)screenH, game_.GetFonts());
             if (p.sceneName == "menu_ui") drewMenu = true;
         }
     } else if (game_.IsMenuOpen() && game_.MenuLoaded()) {
         game_.GetMenu().ResolveAll((float)screenW, (float)screenH);
+        game_.GetMenu().SetGridData(&game_.GetGrid());
+        game_.GetMenu().SetBlocksAtlas(&blocksAtlas_);
+        game_.GetMenu().SetPalettePage(game_.PalettePage());
         game_.GetMenu().Draw((float)screenW, (float)screenH, game_.GetFonts());
         drewMenu = true;
     } else if (game_.HudLoaded()) {
         game_.GetHud().ResolveAll((float)screenW, (float)screenH);
         game_.GetHud().Draw((float)screenW, (float)screenH, game_.GetFonts());
     }
-    if (drewMenu)
-        DrawMenuMaterialSlots(screenW, screenH);
+    // Material previews drawn inside UIGridModelMtl::DrawBackground (not a second pass
+    // over menu_mtl_* — those are HitTest overlays only, binary UIGridModelMtl path).
+    (void)drewMenu;
 }
 
 // GridModelMtl.RenderUI @ 0xa97c0 — 3×3 material preview tiles over menu_mtl_N
