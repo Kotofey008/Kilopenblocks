@@ -1,4 +1,5 @@
 #include "Game.h"
+#include "Stream.h"
 #include "Loc.h"
 #include "GameUIMetrics.h"
 #include <cmath>
