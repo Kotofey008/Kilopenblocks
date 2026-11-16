@@ -158,7 +158,7 @@ bool UIDocument::LoadFromText(const std::string& text) {
         if (line.empty() || line[0] == ';' || line[0] == '#' || line[0] == '$') continue;
 
         if (line == "UIElement" || line == "UISpriteButton" || line == "UITextureView"
-            || line == "UISliderElement") {
+            || line == "UISliderElement" || line == "UIGridModelMtl") {
             elements_.push_back(UIElement{});
             curIdx = elements_.size() - 1;
             UIElement* e = &elements_[curIdx];
@@ -166,11 +166,14 @@ bool UIDocument::LoadFromText(const std::string& text) {
             e->styleDefault.backgroundColor = GetColorVar("buttonDefaultBackgroundColor", 0);
             e->styleDefault.textColor = GetColorVar("buttonDefaultTextColor", 0xFFDCDCDC);
             e->styleDefault.textShadowColor = GetColorVar("buttonDefaultTextShadowColor", 0x641E1E1E);
+            // Binary defaults: frame colors 0 until SetProperty; UI files set Width/Color per state.
+            // Seed widths from document vars (same as typical $buttonFrame*Width in UI txt).
             e->styleDefault.frame0Width = GetVar("buttonFrame0Width", 4);
+            e->styleDefault.frame0Color = 0; // only Width in most UI files → inset, no stroke
             e->styleDefault.frame1Width = GetVar("buttonFrame1Width", 2);
             e->styleDefault.frame1Color = GetColorVar("buttonDefaultFrameColor", 0x78DCDCDC);
             e->styleDefault.frame2Width = 0;
-            e->styleDefault.frame2Color = GetColorVar("selectionFrameColor", 0xFF4080FF);
+            e->styleDefault.frame2Color = 0;
             e->stylePressed = e->styleDefault;
             e->stylePressed.backgroundColor = GetColorVar("buttonPressedBackgroundColor", 0x64FAFAFA);
             e->stylePressed.textColor = GetColorVar("buttonPressedTextColor", 0xFFFFFFFF);
@@ -188,6 +191,7 @@ bool UIDocument::LoadFromText(const std::string& text) {
             if (line == "UISpriteButton") e->type = UIElement::Type::SpriteButton;
             else if (line == "UITextureView") e->type = UIElement::Type::TextureView;
             else if (line == "UISliderElement") e->type = UIElement::Type::Slider;
+            else if (line == "UIGridModelMtl") e->type = UIElement::Type::GridModelMtl;
             continue;
         }
         if (line == "End") { curIdx = (size_t)-1; continue; }
@@ -276,6 +280,16 @@ bool UIDocument::LoadFromText(const std::string& text) {
                 c->stylePressed.frame0Width = w;
             else
                 c->styleDefault.frame0Width = w;
+        } else if (key.find("BackgroundFrame[0].Color") != std::string::npos) {
+            uint32_t col = parseColorOrVar(val, *this);
+            if (key.find("State[1]") != std::string::npos && key.find("Pressed") != std::string::npos)
+                c->styleSelectedPressed.frame0Color = col;
+            else if (key.find("State[1]") != std::string::npos)
+                c->styleSelected.frame0Color = col;
+            else if (key.find("Pressed") != std::string::npos)
+                c->stylePressed.frame0Color = col;
+            else
+                c->styleDefault.frame0Color = col;
         } else if (key.find("BackgroundFrame[1].Width") != std::string::npos) {
             float w = parseFloatOrVar(val, *this);
             if (key.find("State[1]") != std::string::npos && key.find("Pressed") != std::string::npos)
@@ -625,67 +639,77 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
         // menu_mtl_N: hit targets over material grid — no text; frames only when selected later
         bool isMtlSlot = (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10);
 
-        // DrawBackground fill (UIElement::DrawBackground @ 0xf3b60)
-        // Outer frame0 (often 4px) is a soft border; frame1 is the hard outline;
-        // frame2 is the selection ring drawn outside the rect.
-        drawQuad(x, y, w, h, st.backgroundColor);
+        // -----------------------------------------------------------------
+        // UIElement::DrawBackground @ 0x103b60 (binary, ~4707B)
+        // Style = GetCurrentStateStyles() + GetCurrentStyle()*0x2c
+        // for i in 0..2:
+        //   width = style.frame[i].width; color = style.frame[i].color
+        //   if width != 0: inset working rect on all sides by width
+        //   if color alpha != 0: emit frame ring (outer-before-inset vs inner)
+        // if backgroundColor alpha != 0: fill remaining rect
+        // UISliderElement::DrawBackground: track line when LineWidth>0 + children
+        // -----------------------------------------------------------------
+        {
+            const UIStyle& st = e.CurrentStyle();
+            float fx = x, fy = y, fw = w, fh = h;
+            float widths[3] = { st.frame0Width, st.frame1Width, st.frame2Width };
+            uint32_t colors[3] = { st.frame0Color, st.frame1Color, st.frame2Color };
 
-        // UISliderElement::DrawBackground — track line between end frames when LineWidth>0
-        if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f &&
-            ((st.backgroundColor >> 24) & 0xff) != 0) {
-            uint32_t lineCol = st.frame1Color;
-            if (((lineCol >> 24) & 0xff) < 0x20)
-                lineCol = 0x78DCDCDCu;
-            float lw = e.lineWidth;
-            if (e.horizontal) {
-                float ly = y + (h - lw) * 0.5f;
-                float pad = h * 0.5f; // inset roughly half height (thumb radius)
-                if (pad * 2.f > w) pad = 0.f;
-                drawQuad(x + pad, ly, w - pad * 2.f, lw, lineCol);
+            // Early-out matching binary: no bg alpha AND all frame widths 0 → return
+            bool anyFrameW = (widths[0] != 0.f || widths[1] != 0.f || widths[2] != 0.f);
+            if (((st.backgroundColor >> 24) & 0xff) == 0 && !anyFrameW) {
+                // still may draw text
             } else {
-                float lx = x + (w - lw) * 0.5f;
-                float pad = w * 0.5f;
-                if (pad * 2.f > h) pad = 0.f;
-                drawQuad(lx, y + pad, lw, h - pad * 2.f, lineCol);
+                for (int i = 0; i < 3; ++i) {
+                    float bw = widths[i];
+                    if (bw == 0.f) continue;
+                    float ox = fx, oy = fy, ow = fw, oh = fh;
+                    // inset working rect (binary always insets when width != 0)
+                    fx += bw; fy += bw;
+                    fw -= bw * 2.f; fh -= bw * 2.f;
+                    if (fw < 0.f) fw = 0.f;
+                    if (fh < 0.f) fh = 0.f;
+                    uint32_t col = colors[i];
+                    if (((col >> 24) & 0xff) == 0) continue; // inset only
+                    // Ring = outer rect minus inner rect (4 sides)
+                    if (ow > 0.f && oh > 0.f) {
+                        // top
+                        drawQuad(ox, oy, ow, bw, col);
+                        // bottom
+                        drawQuad(ox, oy + oh - bw, ow, bw, col);
+                        // left (between top/bottom to avoid double-corners overdraw ok)
+                        float midH = oh - 2.f * bw;
+                        if (midH > 0.f) {
+                            drawQuad(ox, oy + bw, bw, midH, col);
+                            drawQuad(ox + ow - bw, oy + bw, bw, midH, col);
+                        }
+                    }
+                }
+                // Fill remaining (binary: pfVar21[6] backgroundColor)
+                if (((st.backgroundColor >> 24) & 0xff) != 0 && fw > 0.f && fh > 0.f)
+                    drawQuad(fx, fy, fw, fh, st.backgroundColor);
             }
-        }
 
-        auto drawFrameRing = [&](float fx, float fy, float fw, float fh, float thick, uint32_t col) {
-            if (thick <= 0.f || fw <= 0.f || fh <= 0.f) return;
-            if (((col >> 24) & 0xff) == 0) return;
-            drawQuad(fx, fy, fw, thick, col);
-            drawQuad(fx, fy + fh - thick, fw, thick, col);
-            drawQuad(fx, fy, thick, fh, col);
-            drawQuad(fx + fw - thick, fy, thick, fh, col);
-        };
-
-        // Binary DrawBackground composites frame0 then frame1. Observed: our double
-        // ring was ~2px thicker than original. When both widths set, outer stroke
-        // uses (frame0 - frame1) so total border thickness ≈ frame0 (not frame0+frame1).
-        float f0 = st.frame0Width;
-        float f1 = st.frame1Width;
-        uint32_t fcol = st.frame1Color;
-        float outer = f0;
-        if (f0 > 0.f && f1 > 0.f)
-            outer = f0 - f1; // e.g. 4-2=2 → total visual ≈ 2+2=4 matching design frame0
-        if (outer < 0.f) outer = 0.f;
-        if (outer > 0.f) {
-            uint32_t f0col = fcol;
-            uint32_t a = (f0col >> 24) & 0xff;
-            if (a > 0x40) f0col = (f0col & 0x00FFFFFFu) | ((a / 2) << 24);
-            if (((f0col >> 24) & 0xff) != 0)
-                drawFrameRing(x, y, w, h, outer, f0col);
-        }
-        if (f1 > 0.f && (((fcol >> 24) & 0xff) != 0)) {
-            float inset = outer;
-            drawFrameRing(x + inset, y + inset, w - inset * 2.f, h - inset * 2.f, f1, fcol);
-        }
-
-        // Selection frame (State[1] BackgroundFrame[2] — $selectionFrameColor)
-        float f2 = st.frame2Width;
-        uint32_t f2col = st.frame2Color;
-        if (f2 > 0.f && (((f2col >> 24) & 0xff) > 0)) {
-            drawFrameRing(x - f2, y - f2, w + f2 * 2.f, h + f2 * 2.f, f2, f2col);
+            // UISliderElement::DrawBackground — track between insets when LineWidth>0
+            if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f) {
+                uint32_t lineCol = st.frame1Color;
+                if (((lineCol >> 24) & 0xff) == 0)
+                    lineCol = st.frame0Color;
+                if (((lineCol >> 24) & 0xff) != 0) {
+                    float lw = e.lineWidth;
+                    if (e.horizontal) {
+                        float ly = y + (h - lw) * 0.5f;
+                        float pad = (e.children.empty() ? h * 0.5f : e.children[0]->screenRect.w * 0.5f);
+                        if (pad * 2.f > w) pad = 0.f;
+                        drawQuad(x + pad, ly, w - pad * 2.f, lw, lineCol);
+                    } else {
+                        float lx = x + (w - lw) * 0.5f;
+                        float pad = (e.children.empty() ? w * 0.5f : e.children[0]->screenRect.h * 0.5f);
+                        if (pad * 2.f > h) pad = 0.f;
+                        drawQuad(lx, y + pad, lw, h - pad * 2.f, lineCol);
+                    }
+                }
+            }
         }
 
         // DrawText — multi-line labels (CSV may contain newlines)
@@ -715,12 +739,18 @@ void UIDocument::Draw(float screenW, float screenH, FontResource& fonts) const {
             if (maxLineW > 1.f && maxLineW * scale > w * 0.90f) scale = (w * 0.90f) / maxLineW;
             if (blockH * scale > h * 0.85f && blockH > 0.f) scale = (h * 0.85f) / blockH;
             if (scale < 0.45f) scale = 0.45f;
-            float ty0 = y + (h - blockH * scale) * 0.5f;
-            // Binary UIElement draw: if (textShadowColor & 0xff000000) AddText(+1,+1, shadow);
-            // then AddText(pos, textColor). Offset is 1 device pixel (float 1.0 from rodata).
+            // AlignRect @ 0x106250: pos = origin + (elemSize - textSize) * align
+            // (binary also takes margin pair at +0x80/+0x84; default 0)
+            float textW = maxLineW * scale;
+            float textH = blockH * scale;
+            float tx0 = x + (w - textW) * e.xAlign;
+            float ty0 = y + (h - textH) * e.yAlign;
+            // Binary UIElement::DrawText: shadow at +1,+1 if shadow alpha, then text
             uint32_t shadowArgb = st.textShadowColor;
             uint32_t col = argbToRgbaPack(st.textColor);
-            if (((st.textColor >> 24) & 0xff) < 0x40)
+            if (((st.textColor >> 24) & 0xff) == 0)
+                col = 0; // no invent color when alpha 0
+            else if (((st.textColor >> 24) & 0xff) < 0x40)
                 col = argbToRgbaPack(0xFFDCDCDCu);
             for (size_t li = 0; li < lines.size(); ++li) {
                 const std::string& ln = lines[li];

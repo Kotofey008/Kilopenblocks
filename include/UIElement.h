@@ -21,20 +21,30 @@ struct UIRect {
 //   State[1].Default / State[1].Pressed  — selected (palette slot / page tab)
 // Colors AARRGGBB. BackgroundFrame[2] = selection ring
 // ($selectionFrameColor = FF4080FF on menu_mtl_*).
+// Binary style block is 0x2c bytes (GetCurrentStyle * 0x2c + stateStyles):
+//   +0x00 frame[0].width (float)  +0x04 frame[0].color (u32 ARGB)
+//   +0x08 frame[1].width          +0x0c frame[1].color
+//   +0x10 frame[2].width          +0x14 frame[2].color
+//   +0x18 backgroundColor
+//   +0x20 textColor               +0x24 textShadowColor
+// DrawBackground @ 0x103b60: for i in 0..2: if width!=0 inset; if color alpha draw ring;
+// then fill remaining with backgroundColor (if alpha).
+// NOTE: frame0 Color often unset in UI files → color=0 → inset only, no stroke.
 struct UIStyle {
+    float frame0Width = 0.f;
+    uint32_t frame0Color = 0;      // binary default 0
+    float frame1Width = 0.f;
+    uint32_t frame1Color = 0;      // binary default 0 (not invented)
+    float frame2Width = 0.f;
+    uint32_t frame2Color = 0;
     uint32_t backgroundColor = 0;
     uint32_t textColor = 0xFFDCDCDC;
     uint32_t textShadowColor = 0x641E1E1E;
-    float frame0Width = 0; // outer frame
-    float frame1Width = 0; // inner frame
-    uint32_t frame1Color = 0x78DCDCDC;
-    float frame2Width = 0; // selection frame (State[1] on menu_mtl_*)
-    uint32_t frame2Color = 0xFF4080FF;
 };
 
 class UIElement {
 public:
-    enum class Type { Element = 0, SpriteButton = 1, TextureView = 2, Slider = 3 };
+    enum class Type { Element = 0, SpriteButton = 1, TextureView = 2, Slider = 3, GridModelMtl = 4 };
 
     std::string name;
     std::string parentName;
