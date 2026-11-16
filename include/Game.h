@@ -113,6 +113,7 @@ public:
     void SelectPaletteItem(int index);               // 0x651c0
     unsigned char GetSelectedBlockType() const;
     void SelectPalettePage(int page, int arg);       // 0x64e30
+    void UpdatePaletteUI();                          // 0x74980
     void SelectNext();                               // 0x6a740 — game list
     void SelectPrev();                               // 0x6a770
 
@@ -193,6 +194,7 @@ public:
         std::string sceneName;              // e.g. "options_ui"
         UIDocument doc;
         std::vector<std::string> clickMsgs; // ElementClickedMessage strings from start.scene
+        std::vector<std::string> dragMsgs;  // ElementDraggedMessage (slider bindings)
         bool visible = false;
         bool loaded = false;
     };
@@ -270,8 +272,13 @@ private:
     bool menuLoaded_ = false;
     bool menuOpen_ = false;
     std::vector<UIPanel> uiPanels_;
+    // Touch press→release click path (binary CheckElementState 0x8000 on release)
+    UIPanel* pressedPanel_ = nullptr;
+    std::string pressedElementName_;
+    bool touchWasDragging_ = false;
 
     void ParseAndRunCommand(const std::string& cmd);
+    void FireElementClicked(UIPanel* panel, const std::string& elementName);
     void LoadUIPanelsFromScene();
     void SetPanelVisiblePattern(const std::string& pattern, bool visible);
     void SyncMenuOpenFromPanels();

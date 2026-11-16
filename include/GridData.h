@@ -145,6 +145,8 @@ public:
     // Material S-Index (+0x20 short) → cell type; binary MtlSelIndexToCell @ 0x98ed0
     unsigned char MtlSelIndexToCell(int selIndex) const;
     int CellToMtlSelIndex(unsigned char cellType) const;
+    // Highest S-Index+1 (binary GridData+0xe4) — palette page wrap bound
+    int MaxSelIndex() const { return maxSelIndex_; }
     unsigned short ConfigureState(const GridDataTraceResult& tr, unsigned char blockType, const Vector& lookDir);
     bool PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
                     const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
@@ -212,6 +214,7 @@ public:
     // materials at binary +0xe8; capacity +0xe0 (=256)
     std::vector<Material> materials;
     int materialCount = 0;
+    int maxSelIndex_ = 0; // binary +0xe4
     bool meshesDirty_ = true;
     LeavesQuality leavesQuality_ = LeavesQuality::High; // +0xec default 2
     int viewDistanceCells_ = 64; // binary GridData +0x22c (from draw-distance table)

@@ -240,6 +240,9 @@ bool Scene::Load(const std::string& path) {
                 // ElementClickedMessage[N]:String = "..."
                 currentUI->elementClickedMessages.push_back(val);
             }
+            else if (key.size() > 22 && key.compare(0, 22, "ElementDraggedMessage[") == 0) {
+                currentUI->elementDraggedMessages.push_back(val);
+            }
             currentUI->props.values[key] = val;
         }
     }

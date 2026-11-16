@@ -1152,7 +1152,7 @@ bool GridData::LoadMaterials(const char* path) {
 
         ++loaded;
     }
-    (void)maxSel; // binary stores max sel at GridData+0xe4; optional for now
+    maxSelIndex_ = maxSel > 0 ? maxSel : 0;
     return loaded > 0;
 }
 

@@ -957,29 +957,46 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             float cw = x1 - x0, ch = y1 - y0;
             float cx = (x0 + x1) * 0.5f;
             // Face indices: 0=XP, 1=YP, 2=ZP, 3=XN, 4=YN, 5=ZN (blocks.txt Uxp.. order)
+            // Binary GetBlockIcon (0x9e3a0): BMT class in material+1; solid PushQuads
+            // with height from sizeH (0x10 full → pixel scale *0x11-0x80).
             int bmt = (int)mat->prop01();
             // Cross (1) / torch (2) / ladder (3): flat single face like binary special cases
             if (bmt == 1 || bmt == 2 || bmt == 3) {
+                float inset = (bmt == 2) ? cellW * 0.28f : cellW * 0.12f;
+                float xx0 = x0 + inset, xx1 = x1 - inset;
+                float yy0 = y0 + inset, yy1 = y1 - inset;
+                if (bmt == 2) { // torch: thin upright
+                    xx0 = cx - cellW * 0.12f; xx1 = cx + cellW * 0.12f;
+                    yy0 = y0 + ch * 0.15f; yy1 = y1 - ch * 0.05f;
+                }
                 int tu = mat->uFace(0), tv = mat->vFace(0);
-                const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
+                const GLfloat verts[] = { xx0,yy0, xx1,yy0, xx1,yy1, xx0,yy1 };
                 drawTexQuad(verts, tu, tv);
                 continue;
             }
-            // Isometric cube icon (GetBlockIcon solid path)
-            float topH = ch * 0.28f;
-            float midY = y0 + topH;
-            float botY = y1;
+            // Height scale from material sizeH (0x10 = full block). Slabs ~0x08.
+            float hUnits = (float)mat->sizeH();
+            if (hUnits < 1.f) hUnits = 16.f;
+            float hFrac = hUnits / 16.f;
+            if (hFrac > 1.f) hFrac = 1.f;
+            if (hFrac < 0.25f) hFrac = 0.25f;
+            // Isometric cube icon (GetBlockIcon solid path for class 0/4/5/6/7/…)
+            float topH = ch * 0.28f * hFrac;
+            float bodyH = ch * 0.72f * hFrac;
+            float midY = y0 + (ch - bodyH - topH * 0.5f);
+            float botY = midY + bodyH;
+            if (botY > y1) botY = y1;
             // Top face YP
             {
                 GLfloat verts[] = {
-                    cx, y0,
+                    cx, midY - topH * 0.5f,
                     x1, midY,
                     cx, midY + topH * 0.35f,
                     x0, midY
                 };
                 drawTexQuad(verts, mat->uFace(1), mat->vFace(1));
             }
-            // Left face ZP (slightly darker via full UV)
+            // Left face ZP
             {
                 GLfloat verts[] = {
                     x0, midY,

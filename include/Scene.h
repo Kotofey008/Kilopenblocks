@@ -48,6 +48,7 @@ public:
     Kind GetKind() const override { return Kind::UI; }
     std::string fileName;                     // e.g. "Screen/ui/hud.txt"
     std::vector<std::string> elementClickedMessages; // ElementClickedMessage[i]
+    std::vector<std::string> elementDraggedMessages; // ElementDraggedMessage[i]
 };
 
 // Camera section — binary SetProperties @ 0x4eeb0 uses FieldOfView, NearPlane, FarPlane, ...
