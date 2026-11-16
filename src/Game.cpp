@@ -37,6 +37,7 @@ void Game::InitUI() {
     LoadUIPanelsFromScene();
     // GameUIMetrics → $buttonSize / $screenSize (Phone default)
     ApplyUIMetrics();
+    RefreshDynamicUILabels();
     // Panels own the UIDocument; GetHud()/GetMenu() return panel docs.
     hudLoaded_ = false;
     menuLoaded_ = false;
@@ -152,11 +153,6 @@ void Game::SelectScreenSize(ScreenSizeEnum e) {
     // Game::SelectScreenSize @ 0x63ef0 → pending + ReloadUI
     pendingScreenSize_ = (int)e;
     screenSizeEnum_ = e;
-    // Reload panel documents from assets then apply metrics
-    for (auto& p : uiPanels_) {
-        if (p.sceneName.empty()) continue;
-    }
-    // Re-load from scene definitions
     LoadUIPanelsFromScene();
     ApplyUIMetrics();
     for (auto& p : uiPanels_) {
@@ -168,6 +164,7 @@ void Game::SelectScreenSize(ScreenSizeEnum e) {
             menuLoaded_ = true;
         }
     }
+    RefreshDynamicUILabels();
 }
 
 bool Game::MatchNamePattern(const std::string& name, const std::string& pattern) const {
@@ -1105,7 +1102,15 @@ void Game::FlyModeToggle() {
     SetFlying(!playerSet_.GetFlying());
 }
 void Game::SetFlying(bool on) {
+    // Game::SetFlying @ binary — EntityPlayerSet::SetFlying + SetText on fly_mode_toggle
     playerSet_.SetFlying(on);
+    const char* key = on ? "/Flying/Flying" : "/Walking/Walking";
+    std::string label = Localization::Instance().Localize(key);
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        if (UIElement* e = p.doc.Find("fly_mode_toggle"))
+            e->text = label;
+    }
 }
 
 void Game::ShowElement(UISceneObject* ui, const char* name, bool visible) {
@@ -1121,9 +1126,80 @@ void Game::ShowMessage(const char* text, MessagePriority) {
     if (text) std::cout << "[MSG] " << text << std::endl;
 }
 void Game::UpdateScreenMessages() {}
+
+// Binary SetFlying / SelectTerrainType / SelectScreenSize update element Text via Localize.
+// Central refresh so labels stay correct without requiring a button press.
+void Game::RefreshDynamicUILabels() {
+    // fly_mode_toggle: /Flying/ or /Walking/
+    {
+        bool flying = playerSet_.GetFlying();
+        std::string fly = Localization::Instance().Localize(flying ? "/Flying/Flying" : "/Walking/Walking");
+        for (auto& p : uiPanels_) {
+            if (!p.loaded) continue;
+            if (UIElement* e = p.doc.Find("fly_mode_toggle"))
+                e->text = fly;
+        }
+    }
+    // screen_size: "Screen: " + Phone|Small tablet|Tablet
+    {
+        const char* sizeKey = "/ScreenSizePhone/";
+        switch (static_cast<ScreenSizeEnum>(pendingScreenSize_)) {
+            case ScreenSizeEnum::SmallTablet: sizeKey = "/ScreenSizeSmallTablet/"; break;
+            case ScreenSizeEnum::Tablet: sizeKey = "/ScreenSizeTablet/"; break;
+            default: break;
+        }
+        // also respect applied enum if pending matches
+        ScreenSizeEnum se = screenSizeEnum_;
+        if ((int)pendingScreenSize_ >= 0)
+            se = static_cast<ScreenSizeEnum>(pendingScreenSize_);
+        switch (se) {
+            case ScreenSizeEnum::SmallTablet: sizeKey = "/ScreenSizeSmallTablet/"; break;
+            case ScreenSizeEnum::Tablet: sizeKey = "/ScreenSizeTablet/"; break;
+            default: sizeKey = "/ScreenSizePhone/"; break;
+        }
+        std::string head = Localization::Instance().Localize("/ScreenSize/Screen: ");
+        std::string val = Localization::Instance().Localize(sizeKey);
+        // Localize of key-only may return empty — fall back to English stems
+        if (val.empty() || val[0] == '/') {
+            if (se == ScreenSizeEnum::SmallTablet) val = "Small tablet";
+            else if (se == ScreenSizeEnum::Tablet) val = "Tablet";
+            else val = "Smartphone";
+        }
+        std::string full = head + val;
+        for (auto& p : uiPanels_) {
+            if (!p.loaded) continue;
+            if (UIElement* e = p.doc.Find("screen_size"))
+                e->text = full;
+        }
+    }
+    // terrain_type: "Terrain Type: " + Earth|Flat|Test
+    {
+        const char* typeKey = "/TerrainTypeEarth/Earth";
+        switch (terrainType_) {
+            case TerrainType::Flat: typeKey = "/TerrainTypeFlat/Flat"; break;
+            case TerrainType::Test: typeKey = "/TerrainTypeTest/Test"; break;
+            default: break;
+        }
+        std::string head = Localization::Instance().Localize("/TerrainType/Terrain Type: ");
+        std::string val = Localization::Instance().Localize(typeKey);
+        if (val.empty() || val[0] == '/') {
+            if (terrainType_ == TerrainType::Flat) val = "Flat";
+            else if (terrainType_ == TerrainType::Test) val = "Flying blocks";
+            else val = "Earth";
+        }
+        std::string full = head + val;
+        for (auto& p : uiPanels_) {
+            if (!p.loaded) continue;
+            if (UIElement* e = p.doc.Find("terrain_type"))
+                e->text = full;
+        }
+    }
+}
+
 void Game::UpdateHUDUI() {
     // Sync UIElement::pressed / selected from input + palette + options state.
     // Binary CheckElementState / state styles: State[0] default/pressed, State[1] selected.
+    RefreshDynamicUILabels();
 
     // --- HUD: pressed from held discrete buttons ---
     UIDocument& hudDoc = GetHud();

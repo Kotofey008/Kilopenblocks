@@ -130,7 +130,8 @@ public:
     bool GetValue(UISceneObject* ui, const char* element, float& out);
     void ShowMessage(const char* text, MessagePriority prio);
     void UpdateScreenMessages();
-    void UpdateHUDUI();                              // 0x64860
+    void UpdateHUDUI();
+    void RefreshDynamicUILabels();                              // 0x64860
     void SetUINeedFastResponse();                    // GLApplication 0x6ff50
     void FinishScreenshot();                         // Scene 0xd3e20
     void ShowProgressScreen(const char* msg);

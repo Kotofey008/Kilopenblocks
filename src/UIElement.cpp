@@ -926,6 +926,21 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         glEnable(GL_TEXTURE_2D);
         glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
         glColor4f(1, 1, 1, 1);
+        // GridData::GetBlockIcon @ 0x9e3a0 — multi-face inventory mesh (not flat YP tile).
+        // Solid BMT: isometric top(YP)+left(ZP)+right(XP). Cross/torch etc. use special paths;
+        // for UI we approximate solids with 3-face icon matching the binary PushQuads layout.
+        auto drawTexQuad = [&](const GLfloat* verts, int tu, int tv) {
+            float u0, v0, u1, v1;
+            Texture::TileUV(tu, tv, u0, v0, u1, v1);
+            const GLfloat uvs[] = { u0,v0, u1,v0, u1,v1, u0,v1 };
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glVertexPointer(2, GL_FLOAT, 0, verts);
+            glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+            glDisableClientState(GL_VERTEX_ARRAY);
+        };
         for (int i = 0; i < n; ++i) {
             int mx = i % aw, my = i / aw;
             int localSlot = e.materials[(size_t)i];
@@ -934,25 +949,56 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             if (cell == 0) continue;
             const Material* mat = gridForMtl_->GetMaterial((int)cell);
             if (!mat) continue;
-            int tu = mat->uFace(1), tv = mat->vFace(1);
-            float u0, v0, u1, v1;
-            Texture::TileUV(tu, tv, u0, v0, u1, v1);
-            // Binary tiles fill cell; menu_mtl_* hit rects define interactive subcells.
-            // Match DrawMenuMaterialSlots padding (~12% was visual; grid cells are contiguous)
-            float pad = cellW * 0.12f;
+            float pad = cellW * 0.10f;
             float x0 = x + (float)mx * cellW + pad;
             float y0 = y + (float)my * cellH + pad;
             float x1 = x + (float)(mx + 1) * cellW - pad;
             float y1 = y + (float)(my + 1) * cellH - pad;
-            const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
-            const GLfloat uvs[]   = { u0,v0, u1,v0, u1,v1, u0,v1 };
-            glEnableClientState(GL_VERTEX_ARRAY);
-            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-            glVertexPointer(2, GL_FLOAT, 0, verts);
-            glTexCoordPointer(2, GL_FLOAT, 0, uvs);
-            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-            glDisableClientState(GL_VERTEX_ARRAY);
+            float cw = x1 - x0, ch = y1 - y0;
+            float cx = (x0 + x1) * 0.5f;
+            // Face indices: 0=XP, 1=YP, 2=ZP, 3=XN, 4=YN, 5=ZN (blocks.txt Uxp.. order)
+            int bmt = (int)mat->prop01();
+            // Cross (1) / torch (2) / ladder (3): flat single face like binary special cases
+            if (bmt == 1 || bmt == 2 || bmt == 3) {
+                int tu = mat->uFace(0), tv = mat->vFace(0);
+                const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
+                drawTexQuad(verts, tu, tv);
+                continue;
+            }
+            // Isometric cube icon (GetBlockIcon solid path)
+            float topH = ch * 0.28f;
+            float midY = y0 + topH;
+            float botY = y1;
+            // Top face YP
+            {
+                GLfloat verts[] = {
+                    cx, y0,
+                    x1, midY,
+                    cx, midY + topH * 0.35f,
+                    x0, midY
+                };
+                drawTexQuad(verts, mat->uFace(1), mat->vFace(1));
+            }
+            // Left face ZP (slightly darker via full UV)
+            {
+                GLfloat verts[] = {
+                    x0, midY,
+                    cx, midY + topH * 0.35f,
+                    cx, botY,
+                    x0, botY - topH * 0.35f
+                };
+                drawTexQuad(verts, mat->uFace(2), mat->vFace(2));
+            }
+            // Right face XP
+            {
+                GLfloat verts[] = {
+                    cx, midY + topH * 0.35f,
+                    x1, midY,
+                    x1, botY - topH * 0.35f,
+                    cx, botY
+                };
+                drawTexQuad(verts, mat->uFace(0), mat->vFace(0));
+            }
         }
         glBindTexture(GL_TEXTURE_2D, 0);
         glDisable(GL_TEXTURE_2D);
@@ -1024,8 +1070,13 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         // AlignRect @ 0x106250 — uses TEXT align (+0x80/+0x84), NOT layout XAlign:
         //   pos = elemOrigin + textPos + floor((elemSize - textSize) * textAlign)
         // Defaults from UIElement ctor: textAlign 0.5/0.5, textPos 0/0
+        // AlignRect: pos = origin + textPos + floor((size - textSize) * align)
         float tx0 = x + e.textPosX + std::floor((w - textW) * e.textAlignX);
         float ty0 = y + e.textPosY + std::floor((h - textH) * e.textAlignY);
+        // Keep glyphs inside element (page tabs are short 40px cells)
+        if (ty0 < y) ty0 = y;
+        if (ty0 + textH > y + h) ty0 = y + h - textH;
+        if (tx0 < x) tx0 = x;
 
         MeshBuffer textMesh;
         uint32_t shadowArgb = st.textShadowColor;
