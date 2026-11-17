@@ -62,9 +62,13 @@ void Game::InitUI() {
         if (menuLoaded_) menu_.SetAllVisible(false);
     }
     // Game::LoadFont — Sans sizes used by UI (font/font_N.txt)
+    // Metrics base ~22 at 800-wide; preload nearby sizes for scale variants.
     fonts_.FindOrLoad("Sans", 16);
+    fonts_.FindOrLoad("Sans", 18);
     fonts_.FindOrLoad("Sans", 20);
+    fonts_.FindOrLoad("Sans", 22);
     fonts_.FindOrLoad("Sans", 24);
+    fonts_.FindOrLoad("Sans", 28);
     menuOpen_ = false;
 }
 

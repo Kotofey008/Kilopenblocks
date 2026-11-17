@@ -160,9 +160,10 @@ struct GameUIMetrics {
         windowYPos = 0;
         autoResize = 1;
 
-        // Font size: design 16 at 800 → proportional, clamp
-        fontSize = scaleOddOk(16.f);
-        if (fontSize < 12) fontSize = 12;
+        // Font size: design UI reads closer to ~20–22 at 800-wide ref (font_22 available).
+        // Binary LoadFont uses metrics-derived size; 16 was undersized vs original HUD/menu.
+        fontSize = scaleOddOk(22.f);
+        if (fontSize < 14) fontSize = 14;
         if (fontSize > 48) fontSize = 48;
     }
 

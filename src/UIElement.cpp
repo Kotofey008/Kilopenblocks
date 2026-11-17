@@ -506,6 +506,38 @@ void UIDocument::ResolveAll(float screenW, float screenH) {
     // Second pass: any root that is pure design-sized background already handled.
     // Children with AutoResizeX/Y expand with their parent (e.g. "frame").
     LayoutSliders();
+
+    // ---- Palette strip pin ----
+    // Design: menu_mtl_sets sits just above menu_GM0_mtl (YAlign 0.5 + posY≈-203 on 480h).
+    // On non-16:9 aspect or after scale, that offset can push the strip off the top.
+    // Re-pin: bottom of menu_mtl_sets == top of menu_GM0_mtl (or mtl panel).
+    {
+        UIElement* sets = Find("menu_mtl_sets");
+        UIElement* grid = Find("menu_GM0_mtl");
+        if (!grid) {
+            for (auto& e : elements_) {
+                if (e.type == UIElement::Type::GridModelMtl) { grid = &e; break; }
+            }
+        }
+        if (sets && grid && sets->screenRect.h > 0.f && grid->screenRect.h > 0.f) {
+            float targetBottom = grid->screenRect.y;
+            float newY = targetBottom - sets->screenRect.h;
+            // Keep fully on-screen
+            if (newY < 0.f) newY = 0.f;
+            if (newY + sets->screenRect.h > screenH) newY = screenH - sets->screenRect.h;
+            float dy = newY - sets->screenRect.y;
+            if (dy != 0.f) {
+                sets->screenRect.y = newY;
+                // Children of sets use ResolveLayout from parent rect — shift them
+                for (auto* ch : sets->children) {
+                    if (!ch) continue;
+                    ch->screenRect.y += dy;
+                    for (auto* g : ch->children)
+                        if (g) g->screenRect.y += dy;
+                }
+            }
+        }
+    }
 }
 
 void UIDocument::SetVisiblePrefix(const std::string& prefix, bool visible) {
@@ -926,7 +958,7 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         glEnable(GL_TEXTURE_2D);
         glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
         glColor4f(1, 1, 1, 1);
-        // GridData::GetBlockIcon @ 0x9e3a0 — multi-face inventory mesh (not flat YP tile).
+        // GridData::GetBlockIcon @ 0x8e3a0 — MeshBuffer + PushQuads; UV from mat+0x0e/+0x14.
         // Solid BMT: isometric top(YP)+left(ZP)+right(XP). Cross/torch etc. use special paths;
         // for UI we approximate solids with 3-face icon matching the binary PushQuads layout.
         auto drawTexQuad = [&](const GLfloat* verts, int tu, int tv) {
@@ -956,66 +988,37 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             float y1 = y + (float)(my + 1) * cellH - pad;
             float cw = x1 - x0, ch = y1 - y0;
             float cx = (x0 + x1) * 0.5f;
-            // Face indices: 0=XP, 1=YP, 2=ZP, 3=XN, 4=YN, 5=ZN (blocks.txt Uxp.. order)
-            // Binary GetBlockIcon (0x9e3a0): BMT class in material+1; solid PushQuads
-            // with height from sizeH (0x10 full → pixel scale *0x11-0x80).
+            // GridData::GetBlockIcon @ 0x8e3a0 (binary):
+            //   movsx eax, byte [esi+0x0e] / [esi+0x14]
+            //   UV args to PushQuads: val*0x11 - 0x80 / -0x70
+            // BMT = [esi+0x01]. Solid branch: BMT==4 || BMT<2 || BMT==3 || BMT==7
+            //   → static mesh template (GOT ebx+0x9dc), cube faces in 0..128 space.
+            // RenderGridModelMtlArray scales by MtlScale*(1/128).
+            // UV tile indices come from +0x0e/+0x14 — NOT YP face table.
             int bmt = (int)mat->prop01();
-            // Cross (1) / torch (2) / ladder (3): flat single face like binary special cases
-            if (bmt == 1 || bmt == 2 || bmt == 3) {
-                float inset = (bmt == 2) ? cellW * 0.28f : cellW * 0.12f;
-                float xx0 = x0 + inset, xx1 = x1 - inset;
-                float yy0 = y0 + inset, yy1 = y1 - inset;
-                if (bmt == 2) { // torch: thin upright
-                    xx0 = cx - cellW * 0.12f; xx1 = cx + cellW * 0.12f;
-                    yy0 = y0 + ch * 0.15f; yy1 = y1 - ch * 0.05f;
-                }
-                int tu = mat->uFace(0), tv = mat->vFace(0);
-                const GLfloat verts[] = { xx0,yy0, xx1,yy0, xx1,yy1, xx0,yy1 };
-                drawTexQuad(verts, tu, tv);
-                continue;
+            int tu = (int)(signed char)mat->raw[0x0e];
+            int tv = (int)(signed char)mat->raw[0x14];
+            if (tu < 0) tu = 0;
+            if (tv < 0) tv = 0;
+            float inset = cellW * 0.06f;
+            float xx0 = x0 + inset, xx1 = x1 - inset;
+            float yy0 = y0 + inset, yy1 = y1 - inset;
+            // BMT 2 torch: binary separate templates (ebx+0xcdc / +0xd3c)
+            if (bmt == 2) {
+                tu = (int)mat->uFace(0);
+                tv = (int)mat->vFace(0);
+                xx0 = cx - cellW * 0.12f;
+                xx1 = cx + cellW * 0.12f;
+                yy0 = y0 + ch * 0.10f;
+                yy1 = y1 - ch * 0.06f;
+            } else if (!(bmt == 4 || bmt < 2 || bmt == 3 || bmt == 7)) {
+                // BMT 5/6/8/9/10: binary FUN_00097090 builds UV from material;
+                // until those helpers are ported, face0 tiles.
+                tu = (int)mat->uFace(0);
+                tv = (int)mat->vFace(0);
             }
-            // Height scale from material sizeH (0x10 = full block). Slabs ~0x08.
-            float hUnits = (float)mat->sizeH();
-            if (hUnits < 1.f) hUnits = 16.f;
-            float hFrac = hUnits / 16.f;
-            if (hFrac > 1.f) hFrac = 1.f;
-            if (hFrac < 0.25f) hFrac = 0.25f;
-            // Isometric cube icon (GetBlockIcon solid path for class 0/4/5/6/7/…)
-            float topH = ch * 0.28f * hFrac;
-            float bodyH = ch * 0.72f * hFrac;
-            float midY = y0 + (ch - bodyH - topH * 0.5f);
-            float botY = midY + bodyH;
-            if (botY > y1) botY = y1;
-            // Top face YP
-            {
-                GLfloat verts[] = {
-                    cx, midY - topH * 0.5f,
-                    x1, midY,
-                    cx, midY + topH * 0.35f,
-                    x0, midY
-                };
-                drawTexQuad(verts, mat->uFace(1), mat->vFace(1));
-            }
-            // Left face ZP
-            {
-                GLfloat verts[] = {
-                    x0, midY,
-                    cx, midY + topH * 0.35f,
-                    cx, botY,
-                    x0, botY - topH * 0.35f
-                };
-                drawTexQuad(verts, mat->uFace(2), mat->vFace(2));
-            }
-            // Right face XP
-            {
-                GLfloat verts[] = {
-                    cx, midY + topH * 0.35f,
-                    x1, midY,
-                    x1, botY - topH * 0.35f,
-                    cx, botY
-                };
-                drawTexQuad(verts, mat->uFace(0), mat->vFace(0));
-            }
+            const GLfloat verts[] = { xx0, yy0, xx1, yy0, xx1, yy1, xx0, yy1 };
+            drawTexQuad(verts, tu, tv);
         }
         glBindTexture(GL_TEXTURE_2D, 0);
         glDisable(GL_TEXTURE_2D);
@@ -1079,9 +1082,11 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             maxLineW = std::max(maxLineW, textFont->MeasureWidth(ln.c_str(), 1.f));
         float lineH = textFont->LineHeight();
         float blockH = lineH * (float)lines.size();
-        if (maxLineW > 1.f && maxLineW * scale > w * 0.90f) scale = (w * 0.90f) / maxLineW;
-        if (blockH * scale > h * 0.85f && blockH > 0.f) scale = (h * 0.85f) / blockH;
-        if (scale < 0.45f) scale = 0.45f;
+        // Binary draws at metrics font size; only shrink when text truly overflows the
+        // element (leave more headroom than before — 16px on 40px tabs looked tiny).
+        if (maxLineW > 1.f && maxLineW * scale > w * 0.98f) scale = (w * 0.98f) / maxLineW;
+        if (blockH * scale > h * 0.95f && blockH > 0.f) scale = (h * 0.95f) / blockH;
+        if (scale < 0.55f) scale = 0.55f;
         float textW = maxLineW * scale;
         float textH = blockH * scale;
         // AlignRect @ 0x106250 — uses TEXT align (+0x80/+0x84), NOT layout XAlign:
