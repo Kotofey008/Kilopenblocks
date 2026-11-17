@@ -142,7 +142,15 @@ struct GameUIMetrics {
         margin3 = scale(290.f);
         margin4 = scale(400.f);
         mtlSetsW = scale(322.f); mtlSetsH = scale(75.f);
-        mtlSetsPosX = -scale(74.f); mtlSetsPosY = -scale(203.f);
+        mtlSetsPosX = -scale(74.f);
+        // Design: YAlign 0.5 + posY → strip TOP at frame TOP.
+        // y=(frameH-setsH)*0.5+posY=0 → posY=-(frameH-setsH)/2
+        // Design 480×75 → -202.5≈-203. Track layout height, not width-only scale.
+        {
+            int refH = scale(480.f);
+            if (refH < 1) refH = 480;
+            mtlSetsPosY = -EvenRound(0.5f * (float)(refH - mtlSetsH));
+        }
         mtlSetNSize = scale(46.f); mtlSetNHeight = scale(40.f);
         nextMtlSetW = scale(70.f); nextMtlSetH = scale(165.f);
         prevMtlSetW = scale(70.f); prevMtlSetH = scale(165.f);

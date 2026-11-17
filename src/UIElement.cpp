@@ -510,45 +510,51 @@ void UIDocument::ResolveAll(float screenW, float screenH) {
     // Children with AutoResizeX/Y expand with their parent (e.g. "frame").
     LayoutSliders();
 
-    // ---- Palette strip pin ----
-    // Design: menu_mtl_sets sits just above menu_GM0_mtl (YAlign 0.5 + posY≈-203 on 480h).
-    // On non-16:9 aspect or after scale, that offset can push the strip off the top.
-    // Re-pin: bottom of menu_mtl_sets == top of menu_GM0_mtl (or mtl panel).
+    // ---- Palette strip pin (menu.txt design relation, not an ad-hoc gap) ----
+    // Design 800×480 (menu.txt):
+    //   menu_mtl_sets: YAlign=0.5, Position Y=-203, H=75
+    //     → y=(480-75)*0.5-203 = 0  → TOP of strip = TOP of frame
+    //   menu_mtl_0..2: YAlign=0.5, Position Y=-offset1 (-110), H=110
+    //     → y=(480-110)*0.5-110 = 75 → TOP of icon row = BOTTOM of strip
+    // Binary keeps this via metrics $mtlSetsPos for the active layout height.
+    // Width-only scale of design -203 breaks when frame.h ≠ 480*(logicalW/800)
+    // (AutoResizeY → physical height). Every frame ResolveLayout rebuilds from
+    // posY, so we must fix both screenRect AND posY or the next frame undoes it.
     {
         UIElement* sets = Find("menu_mtl_sets");
-        UIElement* grid = Find("menu_GM0_mtl");
-        if (!grid) {
-            for (auto& e : elements_) {
-                if (e.type == UIElement::Type::GridModelMtl) { grid = &e; break; }
+        if (sets && sets->screenRect.h > 0.f) {
+            float parentTop = sets->parent ? sets->parent->screenRect.y : 0.f;
+            float parentH = sets->parent ? sets->parent->screenRect.h : screenH;
+
+            // Design target: strip top = frame top; bottom meets top of menu_mtl_0.
+            float newY = parentTop;
+            if (UIElement* mtl0 = Find("menu_mtl_0")) {
+                if (mtl0->screenRect.h > 0.f) {
+                    // Prefer sets.bottom == mtl0.top (exact design abutment).
+                    newY = mtl0->screenRect.y - sets->screenRect.h;
+                }
             }
-        }
-        if (sets && grid && sets->screenRect.h > 0.f && grid->screenRect.h > 0.f) {
-            // Design (480h): mtlSetsPos Y=-203, YAlign 0.5 → sets bottom meets grid top (gap 0).
-            // After metrics/scale the strip often lands halfway into the 3×3 icon panel.
-            // Pin: bottom of sets = top of grid − gap. Gap ≥ full strip height so tabs
-            // sit fully clear of the block-icon buttons (user: still half-overlapping).
-            float gap = sets->screenRect.h * 1.15f;
-            if (gap < 24.f) gap = 24.f;
-            float targetBottom = grid->screenRect.y - gap;
-            float newY = targetBottom - sets->screenRect.h;
-            // Prefer staying above the grid over clamping to y=0 if that would re-overlap.
-            if (newY < 0.f) {
-                // Still keep bottom above grid top by at least a minimal gap.
-                float minGap = 12.f;
-                float maxBottom = grid->screenRect.y - minGap;
-                newY = maxBottom - sets->screenRect.h;
-                if (newY < 0.f) newY = 0.f;
-            }
-            if (newY + sets->screenRect.h > screenH)
-                newY = screenH - sets->screenRect.h;
+            // Never sit below frame top (would only push further into icons).
+            if (newY > parentTop)
+                newY = parentTop;
+            // Keep inside parent
+            if (newY < parentTop)
+                newY = parentTop;
+            if (newY + sets->screenRect.h > parentTop + parentH)
+                newY = parentTop + parentH - sets->screenRect.h;
+
             float dy = newY - sets->screenRect.y;
             if (dy != 0.f) {
                 sets->screenRect.y = newY;
+                // Back-solve posY so the next ResolveLayout yields the same y:
+                //   y = parentTop + (parentH - h)*yAlign + posY
+                //   posY = y - parentTop - (parentH - h)*yAlign
+                float h = sets->screenRect.h;
+                sets->posY = newY - parentTop - (parentH - h) * sets->yAlign;
                 for (auto* ch : sets->children) {
                     if (!ch) continue;
                     ch->screenRect.y += dy;
-                    for (auto* g : ch->children)
-                        if (g) g->screenRect.y += dy;
+                    // children are laid out relative to sets; their pos stays valid
                 }
             }
         }
