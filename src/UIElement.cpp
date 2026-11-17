@@ -167,32 +167,17 @@ bool UIDocument::LoadFromText(const std::string& text) {
             elements_.push_back(UIElement{});
             curIdx = elements_.size() - 1;
             UIElement* e = &elements_[curIdx];
-            // seed default styles from document color vars
-            e->styleDefault.backgroundColor = GetColorVar("buttonDefaultBackgroundColor", 0);
-            e->styleDefault.textColor = GetColorVar("buttonDefaultTextColor", 0xFFDCDCDC);
-            e->styleDefault.textShadowColor = GetColorVar("buttonDefaultTextShadowColor", 0x641E1E1E);
-            // Binary defaults: frame colors 0 until SetProperty; UI files set Width/Color per state.
-            // Seed widths from document vars (same as typical $buttonFrame*Width in UI txt).
-            e->styleDefault.frame0Width = GetVar("buttonFrame0Width", 4);
-            e->styleDefault.frame0Color = 0; // only Width in most UI files → inset, no stroke
-            e->styleDefault.frame1Width = GetVar("buttonFrame1Width", 2);
-            e->styleDefault.frame1Color = GetColorVar("buttonDefaultFrameColor", 0x78DCDCDC);
-            e->styleDefault.frame2Width = 0;
-            e->styleDefault.frame2Color = 0;
+            // Binary UIElement::Style::Style + Frame::Frame (0x...):
+            //   Frame[0..2]: Width=0, Color=0
+            //   BackgroundColor=0; ImageColor=0xFFFFFFFF; TextColor=0xFFFFFFFF; Shadow=0
+            // DrawBackground early-out: if bg alpha==0 AND all three frame widths==0 → return
+            // Frames only when UI .txt sets BackgroundFrame[*] via SetProperty.
+            // Do NOT seed $buttonFrame* / $buttonDefault* onto every element.
+            e->styleDefault = UIStyle{};
+            e->styleDefault.textColor = 0xFFFFFFFFu;
             e->stylePressed = e->styleDefault;
-            e->stylePressed.backgroundColor = GetColorVar("buttonPressedBackgroundColor", 0x64FAFAFA);
-            e->stylePressed.textColor = GetColorVar("buttonPressedTextColor", 0xFFFFFFFF);
-            e->stylePressed.frame1Color = GetColorVar("buttonPressedFrameColor", 0xFFDCDCDC);
             e->styleSelected = e->styleDefault;
-            e->styleSelected.frame0Width = 0;
-            e->styleSelected.frame1Width = 0;
-            e->styleSelected.frame2Width = 0;
-            e->styleSelected.backgroundColor = 0;
-            e->styleSelectedPressed = e->stylePressed;
-            e->styleSelectedPressed.frame0Width = 0;
-            e->styleSelectedPressed.frame1Width = 0;
-            e->styleSelectedPressed.frame2Width = 0;
-            e->styleSelectedPressed.backgroundColor = 0;
+            e->styleSelectedPressed = e->styleDefault;
             if (line == "UISpriteButton") e->type = UIElement::Type::SpriteButton;
             else if (line == "UITextureView") e->type = UIElement::Type::TextureView;
             else if (line == "UISliderElement") e->type = UIElement::Type::Slider;
@@ -883,16 +868,18 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
     }
 
     // ------------------------------------------------------------------
-    // UIElement::DrawBackground @ 0x103b60 (~4707B)
-    // for i in 0..2: if width!=0 inset; if color alpha draw ring
-    // then fill remaining with backgroundColor
+    // UIElement::DrawBackground @ 0x103b60
+    // Early-out (binary): if BackgroundColor alpha==0 AND frame[0..2].Width all 0 → return.
+    // Else for i in 0..2: if Width!=0 inset by Width; ring drawn with Frame.Color (alpha0 →
+    // invisible stroke but still insets). Then fill remainder with BackgroundColor if alpha.
     // ------------------------------------------------------------------
     {
-        float fx = x, fy = y, fw = w, fh = h;
         float widths[3] = { st.frame0Width, st.frame1Width, st.frame2Width };
         uint32_t colors[3] = { st.frame0Color, st.frame1Color, st.frame2Color };
-        bool anyFrameW = (widths[0] != 0.f || widths[1] != 0.f || widths[2] != 0.f);
-        if (((st.backgroundColor >> 24) & 0xff) != 0 || anyFrameW) {
+        const bool bgVisible = ((st.backgroundColor >> 24) & 0xff) != 0;
+        const bool anyFrameW = (widths[0] != 0.f || widths[1] != 0.f || widths[2] != 0.f);
+        if (bgVisible || anyFrameW) {
+            float fx = x, fy = y, fw = w, fh = h;
             for (int i = 0; i < 3; ++i) {
                 float bw = widths[i];
                 if (bw == 0.f) continue;
@@ -901,6 +888,7 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
                 fw -= bw * 2.f; fh -= bw * 2.f;
                 if (fw < 0.f) fw = 0.f;
                 if (fh < 0.f) fh = 0.f;
+                // Color alpha 0: binary still insets, skips visible ring
                 uint32_t col = colors[i];
                 if (((col >> 24) & 0xff) == 0) continue;
                 if (ow > 0.f && oh > 0.f) {
@@ -913,7 +901,7 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
                     }
                 }
             }
-            if (((st.backgroundColor >> 24) & 0xff) != 0 && fw > 0.f && fh > 0.f)
+            if (bgVisible && fw > 0.f && fh > 0.f)
                 drawQuad(fx, fy, fw, fh, st.backgroundColor);
         }
     }

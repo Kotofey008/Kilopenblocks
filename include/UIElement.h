@@ -40,9 +40,9 @@ struct UIStyle {
     uint32_t frame1Color = 0;      // binary default 0 (not invented)
     float frame2Width = 0.f;
     uint32_t frame2Color = 0;
-    uint32_t backgroundColor = 0;
-    uint32_t textColor = 0xFFDCDCDC;
-    uint32_t textShadowColor = 0x641E1E1E;
+    uint32_t backgroundColor = 0;           // Style::Style +0x18 = 0
+    uint32_t textColor = 0xFFFFFFFFu;      // Style::Style +0x20 = 0xFFFFFFFF
+    uint32_t textShadowColor = 0;          // Style::Style +0x24 = 0
     // binary style +0x28 — Texture*/TAObject* used by DrawImage
     Texture* texture = nullptr;
 };
