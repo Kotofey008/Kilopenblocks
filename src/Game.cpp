@@ -198,14 +198,26 @@ void Game::SetPanelVisiblePattern(const std::string& pattern, bool visible) {
     // immediately (not only after first drag).
     if (visible) {
         if (MatchNamePattern("controls_options_ui", pattern) || pattern == "controls_options_*")
-            UpdateSensitivity();
+            EnterControlsSettings(); // SetValue from applied sensitivity, then label
         if (MatchNamePattern("game_options_ui", pattern) || pattern == "game_options_*")
-            UpdateTimeOfDay();
+            // Binary EnterGameSettings @ 0x66e20: SetValue(time) from world index,
+            // then UpdateTimeOfDay for label only — must NOT write clock from stale
+            // slider CurrentValue on open.
+            EnterGameSettings();
         if (MatchNamePattern("terrain_options_ui", pattern) || pattern == "terrain_options_*"
             || MatchNamePattern("new_terrain_ui", pattern) || pattern == "new_terrain_*") {
             // SetAllVisible(true) above re-showed every element; re-apply
             // generator-dependent visibility (SelectTerrainType @ 0x65de0).
             SelectTerrainType(terrainType_);
+            // Ensure slider thumbs + integer labels match CurrentValue after show.
+            for (auto& p : uiPanels_) {
+                if (!p.loaded || !p.visible) continue;
+                if (p.sceneName.find("terrain_options") == std::string::npos
+                    && p.sceneName.find("new_terrain") == std::string::npos)
+                    continue;
+                p.doc.LayoutSliders();
+                p.doc.ResolveLayout();
+            }
         }
     }
     // Legacy fallback members if panels not used
@@ -341,8 +353,13 @@ void Game::HandleTouchMove(int x, int y) {
                 if (slider->name == "sensitivity" || slider->name == "sensitivity_i")
                     UpdateSensitivity();
                 else if (slider->name == "time" || slider->name == "time_i"
-                         || slider->name == "time_of_day")
+                         || slider->name == "time_of_day") {
+                    // Player is dragging → commit clock (binary Apply does this
+                    // on confirm; live drag mirrors sky immediately).
+                    timeSliderApplyClock_ = true;
                     UpdateTimeOfDay();
+                    timeSliderApplyClock_ = false;
+                }
                 else if (slider->name == "terrain_size" || slider->name == "terrain_size_i")
                     UpdateTerrainSize();
                 else if (slider->name == "test_flying_blocks" || slider->name == "test_flying_blocks_i")
@@ -741,7 +758,9 @@ static const int kWorldSizeTable[][3] = {
 static const int kWorldSizeCount = 7;
 
 // Game::UpdateTerrainSize @ 0x65c90
-// index = (int)((1-v)*(n-1)+0.5); clamp; sprintf(terrain_size_v, "%d", table[i].x)
+// Binary computes index from (1-v)*(n-1)+0.5 then reads table[i].x.
+// User-requested inversion relative to previous build: use v*(n-1)+0.5 so
+// left=min / right=max matches expected UX (table order is ascending).
 void Game::UpdateTerrainSize() {
     if (terrainType_ == TerrainType::Test)
         return; // no size slider for Test
@@ -753,7 +772,7 @@ void Game::UpdateTerrainSize() {
         float v = s->currentValue;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
-        int idx = (int)((1.f - v) * (float)(kWorldSizeCount - 1) + 0.5f);
+        int idx = (int)(v * (float)(kWorldSizeCount - 1) + 0.5f);
         if (idx < 0) idx = 0;
         if (idx >= kWorldSizeCount) idx = kWorldSizeCount - 1;
         terrainSizeIndex_ = idx;
@@ -775,7 +794,11 @@ void Game::UpdateTestFlyingBlocks() {
         float v = s->currentValue;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
+        // Inverted with other more-sliders: left=0%, right=100% uses v directly
+        // (binary maps the same; previous build used inverted size/height).
         int pct = (int)(v * 100.f + 0.5f);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%d %%", pct);
         if (UIElement* lab = p.doc.Find("test_flying_blocks_v"))
@@ -784,18 +807,16 @@ void Game::UpdateTestFlyingBlocks() {
 }
 
 // Game::UpdateFlatGroundLevel @ 0x65b40
-// inv = 1-v; sizeY = table[sizeIdx].y; mid = sizeY/2;
-// h = (int)((mid-4)*inv + 0.5) + 4; clamp; sprintf "%d"
+// Binary: inv = 1-v; mid = sizeY/2; h = (int)((mid-4)*inv + 0.5) + 4.
+// Inverted per request (matching size slider): use v so left=low, right=high.
 static int GroundHeightFromSlider(float v, int sizeY) {
     if (v < 0.f) v = 0.f;
     if (v > 1.f) v = 1.f;
-    float inv = 1.f - v;
     int mid = sizeY / 2;
     if (mid < 0) mid = 0;
-    int h = (int)((float)(mid - 4) * inv + 0.5f) + 4;
+    int h = (int)((float)(mid - 4) * v + 0.5f) + 4;
     if (h < 4) h = 4;
-    if (h > mid) h = mid;
-    if (h < 4) h = 4;
+    if (h > mid && mid >= 4) h = mid;
     return h;
 }
 
@@ -1239,15 +1260,11 @@ void Game::ApplyGraphicsSettings() {
 // If TimesOfDay index changed: adjust this+0x40 clock toward selected tick
 // (mod 0x127500), then UpdateSkyBox.
 void Game::ApplyGameSettings() {
-    // Sync clock phase from current timeOfDay_ (set by UpdateTimeOfDay while dragging)
-    const long long kDayMs = 1209600LL;
-    long long target = (long long)(timeOfDay_ * (double)kDayMs);
-    if (target < 0) target = 0;
-    if (target >= kDayMs) target = kDayMs - 1;
-    long long phase = worldTimeMs_ % kDayMs;
-    if (phase < 0) phase += kDayMs;
-    worldTimeMs_ += (target - phase);
-    timeOfDay_ = (float)target / (float)kDayMs;
+    // Binary: if TimesOfDay index changed, adjust this+0x40 toward selected tick.
+    // Read slider + commit clock.
+    timeSliderApplyClock_ = true;
+    UpdateTimeOfDay();
+    timeSliderApplyClock_ = false;
     UpdateSkyBox();
     UpdateAndSaveGameSettings(state_);
 }
@@ -1271,10 +1288,9 @@ void Game::ApplyControlsSettings() {
 }
 
 // Game::UpdateTimeOfDay @ 0x66a60
-// GetValue("time") → discrete index into TimesOfDay; sprintf "%02d:%02d".
-// ApplyGameSettings later writes the clock; while the slider is dragged we also
-// mirror into worldTimeMs_ so the sky/day cycle follows immediately (binary
-// Apply path adjusts this+0x40 by TimesOfDay[index] delta).
+// GetValue("time") → format "%02d:%02d" on time_v. Does NOT write the world
+// clock on its own (EnterGameSettings only SetValue + label). Clock is written
+// only while the user drags (applyClock_) or on ApplyGameSettings.
 void Game::UpdateTimeOfDay() {
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
@@ -1285,17 +1301,8 @@ void Game::UpdateTimeOfDay() {
         float v = s->currentValue;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
-        timeOfDay_ = v;
-        // Keep running clock phase aligned so UpdateTime does not overwrite the
-        // slider choice next frame.
-        const long long kDayMs = 1209600LL;
-        long long target = (long long)(v * (double)kDayMs);
-        if (target < 0) target = 0;
-        if (target >= kDayMs) target = kDayMs - 1;
-        long long phase = worldTimeMs_ % kDayMs;
-        if (phase < 0) phase += kDayMs;
-        worldTimeMs_ += (target - phase);
 
+        // Label always reflects the slider position.
         float hoursF = v * 24.f;
         int hours = (int)hoursF;
         if (hours >= 24) hours = 23;
@@ -1307,6 +1314,20 @@ void Game::UpdateTimeOfDay() {
             lab->text = buf;
         if (UIElement* lab = p.doc.Find("time_of_day_v"))
             lab->text = buf;
+
+        // Only commit to the world clock when the player is actively dragging
+        // (or ApplyGameSettings). Opening the panel must not rewrite timeOfDay_
+        // from a stale CurrentValue.
+        if (timeSliderApplyClock_) {
+            timeOfDay_ = v;
+            const long long kDayMs = 1209600LL;
+            long long target = (long long)(v * (double)kDayMs);
+            if (target < 0) target = 0;
+            if (target >= kDayMs) target = kDayMs - 1;
+            long long phase = worldTimeMs_ % kDayMs;
+            if (phase < 0) phase += kDayMs;
+            worldTimeMs_ += (target - phase);
+        }
     }
 }
 
@@ -1708,21 +1729,26 @@ void Game::FinishScreenshot() {
 void Game::ShowProgressScreen(const char* msg) { ShowMessage(msg, MessagePriority::Normal); }
 void Game::HideProgressScreen() {}
 
-// Game::EnterGameSettings @ 0x66e20 — push time-of-day into game_options UI slider
+// Game::EnterGameSettings @ 0x66e20
+// Binary: GetTimesOfDay → SetValue("time", 1 - index/(n-1)) → UpdateTimeOfDay.
+// SetValue pushes CURRENT world phase into the slider; UpdateTimeOfDay only
+// refreshes the "%02d:%02d" label. World clock is left untouched.
 void Game::EnterGameSettings() {
-    // Binary: FindObject game_options_ui, SetValue on "time", UpdateTimeOfDay
-    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "game_options_ui")) {
-        float v = timeOfDay_;
-        if (v < 0.f) v = 0.f;
-        if (v > 1.f) v = 1.f;
-        // UI file: Name = "time" (not time_of_day)
+    float v = timeOfDay_;
+    if (v < 0.f) v = 0.f;
+    if (v > 1.f) v = 1.f;
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        if (p.sceneName.find("game_options") == std::string::npos) continue;
         for (const char* n : {"time", "time_i", "time_of_day"}) {
-            if (UIElement* s = p->doc.Find(n)) {
+            if (UIElement* s = p.doc.Find(n)) {
                 s->currentValue = v;
-                p->doc.LayoutSliders();
             }
         }
+        p.doc.LayoutSliders();
     }
+    // Label only — do not write clock
+    timeSliderApplyClock_ = false;
     UpdateTimeOfDay();
 }
 

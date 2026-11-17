@@ -261,6 +261,7 @@ private:
     bool screenSizeDirty_ = false;  // binary +0x98
     float timeMultiplier_ = 1.f; // Globals.TimeMultiplier from start.scene
     long long worldTimeMs_ = 0;  // Game+0x40 clock accumulator (binary UpdateTime)
+    bool timeSliderApplyClock_ = false; // true only while user drags time slider
     // GridModel plane colors + procedural flag (from start.scene)
     float waterPlaneR_ = 0.f, waterPlaneG_ = 0.f, waterPlaneB_ = 0.f, waterPlaneA_ = 0.f;
     float lavaPlaneR_ = 0.f, lavaPlaneG_ = 0.f, lavaPlaneB_ = 0.f, lavaPlaneA_ = 0.f;
