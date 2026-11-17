@@ -160,6 +160,10 @@ public:
     // True if material has collision (Col flag) and is not a pure decoration class.
     bool CellHasCollision(int cellIndex) const;
     void ActivateCell(int, const Vector&);
+    // GridData::IsActiveCell @ 0xa1a20 — jump table type-0x11 .. type-0x52.
+    // True only for 18 types recovered from the table:
+    // 17,18,34,35,39,40,44,45,67..71,78..82.
+    bool IsActiveCellType(unsigned char blockType) const;
     void Invalidate();
     void MarkModifiedRegions();
     bool MeshesDirty() const { return meshesDirty_; }

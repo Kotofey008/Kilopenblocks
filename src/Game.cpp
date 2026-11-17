@@ -193,6 +193,20 @@ void Game::SetPanelVisiblePattern(const std::string& pattern, bool visible) {
             p.doc.SetAllVisible(visible);
         }
     }
+    // Binary Enter*Settings / open panel paths call Update* to fill *_v labels
+    // immediately (not only after first drag).
+    if (visible) {
+        if (MatchNamePattern("controls_options_ui", pattern) || pattern == "controls_options_*")
+            UpdateSensitivity();
+        if (MatchNamePattern("game_options_ui", pattern) || pattern == "game_options_*")
+            UpdateTimeOfDay();
+        if (MatchNamePattern("terrain_options_ui", pattern) || pattern == "terrain_options_*"
+            || MatchNamePattern("new_terrain_ui", pattern) || pattern == "new_terrain_*") {
+            UpdateTerrainSize();
+            UpdateTestFlyingBlocks();
+            UpdateTestGroundLevel();
+        }
+    }
     // Legacy fallback members if panels not used
     if (!uiPanels_.empty()) {
         SyncMenuOpenFromPanels();
@@ -307,30 +321,9 @@ void Game::HandleTouchMove(int x, int y) {
             UIElement* slider = (e.type == UIElement::Type::Slider) ? &e
                 : (e.parent && e.parent->type == UIElement::Type::Slider) ? e.parent : nullptr;
             if (slider && slider->type == UIElement::Type::Slider) {
-                char buf[32];
-                auto setLab = [&](const char* labName, const char* text) {
-                    if (UIElement* lab = p.doc.Find(labName)) lab->text = text;
-                };
-                if (slider->name == "sensitivity" || slider->name == "sensitivity_i") {
-                    pendingSensitivity_ = slider->currentValue * 2.f;
-                    if (pendingSensitivity_ < 0.05f) pendingSensitivity_ = 0.05f;
-                    std::snprintf(buf, sizeof(buf), "%.2g", pendingSensitivity_);
-                    setLab("sensitivity_v", buf);
-                } else if (slider->name == "terrain_size") {
-                    int lvl = (int)(slider->currentValue * 3.f + 0.5f);
-                    if (lvl < 0) lvl = 0; if (lvl > 3) lvl = 3;
-                    std::snprintf(buf, sizeof(buf), "%d", lvl);
-                    setLab("terrain_size_v", buf);
-                } else if (slider->name == "time_of_day" || slider->name == "time_i") {
-                    timeOfDay_ = slider->currentValue;
-                    std::snprintf(buf, sizeof(buf), "%.2g", slider->currentValue);
-                    setLab("time_of_day_v", buf);
-                } else {
-                    std::string labName = slider->name + "_v";
-                    std::snprintf(buf, sizeof(buf), "%.2g", slider->currentValue);
-                    setLab(labName.c_str(), buf);
-                }
-                // ElementDraggedMessage: "sensitivity_i;Game Call UpdateSensitivity"
+                // Binary: ElementDraggedMessage → Game Call UpdateSensitivity / UpdateTimeOfDay /
+                // UpdateTerrainSize / UpdateTestFlyingBlocks / UpdateTestGroundLevel.
+                // Those functions format *_v labels (not raw currentValue).
                 for (const auto& msg : p.dragMsgs) {
                     size_t semi = msg.find(';');
                     std::string pat = (semi == std::string::npos) ? msg : msg.substr(0, semi);
@@ -343,6 +336,19 @@ void Game::HandleTouchMove(int x, int y) {
                         break;
                     }
                 }
+                // Fallback if scene has no ElementDraggedMessage for this slider:
+                if (slider->name == "sensitivity" || slider->name == "sensitivity_i")
+                    UpdateSensitivity();
+                else if (slider->name == "time" || slider->name == "time_i"
+                         || slider->name == "time_of_day")
+                    UpdateTimeOfDay();
+                else if (slider->name == "terrain_size" || slider->name == "terrain_size_i")
+                    UpdateTerrainSize();
+                else if (slider->name == "test_flying_blocks" || slider->name == "test_flying_blocks_i")
+                    UpdateTestFlyingBlocks();
+                else if (slider->name == "test_ground_level" || slider->name == "test_ground_level_i"
+                         || slider->name == "flat_ground_level" || slider->name == "flat_ground_level_i")
+                    UpdateTestGroundLevel();
             }
             return;
         }
@@ -695,8 +701,74 @@ void Game::UpdateTerrainType() {
     UpdateParameter("UpdateTerrainType");
 }
 
+// Game::UpdateTerrainSize @ 0x65c90
+// GetValue("terrain_size") → index = (int)((1-v)*(n-1)+0.5); clamp;
+// sprintf size label from table[index]; SetText terrain_size_v.
 void Game::UpdateTerrainSize() {
-    // Binary 0x65c90 — UI-driven; full body still open
+    // Size table from binary (stride 0xc at this+0xe74); common Exploration sizes.
+    static const int kSizes[] = { 128, 192, 256, 384, 512, 768, 1024 };
+    static const int kN = 7;
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        UIElement* s = p.doc.Find("terrain_size");
+        if (!s) s = p.doc.Find("terrain_size_i");
+        if (!s || s->type != UIElement::Type::Slider) continue;
+        float v = s->currentValue;
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        // Binary: index = (int)((1-v)*(n-1) + 0.5) with n = count
+        int idx = (int)((1.f - v) * (float)(kN - 1) + 0.5f);
+        if (idx < 0) idx = 0;
+        if (idx >= kN) idx = kN - 1;
+        int dim = kSizes[idx];
+        char buf[32];
+        // Binary sprintf one int for terrain_size_v near this path
+        std::snprintf(buf, sizeof(buf), "%d", dim);
+        if (UIElement* lab = p.doc.Find("terrain_size_v"))
+            lab->text = buf;
+        (void)dim;
+    }
+}
+
+// Game::UpdateTestFlyingBlocks @ 0x65900 — sprintf "%d %%"
+void Game::UpdateTestFlyingBlocks() {
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        UIElement* s = p.doc.Find("test_flying_blocks");
+        if (!s) s = p.doc.Find("test_flying_blocks_i");
+        if (!s || s->type != UIElement::Type::Slider) continue;
+        float v = s->currentValue;
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        int pct = (int)(v * 100.f + 0.5f);
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d %%", pct); // binary "%d %%"
+        if (UIElement* lab = p.doc.Find("test_flying_blocks_v"))
+            lab->text = buf;
+    }
+}
+
+// Game::UpdateTestGroundLevel — binary formats %.1f-like height
+void Game::UpdateTestGroundLevel() {
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        for (const char* name : {"test_ground_level", "flat_ground_level"}) {
+            UIElement* s = p.doc.Find(name);
+            if (!s) {
+                std::string iname = std::string(name) + "_i";
+                s = p.doc.Find(iname.c_str());
+            }
+            if (!s || s->type != UIElement::Type::Slider) continue;
+            float v = s->currentValue;
+            // Map 0..1 → roughly world height display (binary uses scaled float)
+            float h = v * 64.f;
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.1f", (double)h);
+            std::string labName = std::string(name) + "_v";
+            if (UIElement* lab = p.doc.Find(labName.c_str()))
+                lab->text = buf;
+        }
+    }
 }
 
 // Game::Create @ 0x6a850 — DSL "Game CreateElement"
@@ -1122,8 +1194,70 @@ void Game::ApplyControlsSettings() {
     UpdateAndSaveGameSettings(state_);
 }
 
-void Game::UpdateTimeOfDay() {}
-void Game::UpdateSensitivity() { UpdateParameter("UpdateSensitivity"); }
+// Game::UpdateTimeOfDay @ 0x66a60
+// GetValue("time") → index into TimesOfDay[]; sprintf "%02d:%02d" from tick/0xc4e0 and minutes.
+void Game::UpdateTimeOfDay() {
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        UIElement* s = p.doc.Find("time");
+        if (!s) s = p.doc.Find("time_i");
+        if (!s) s = p.doc.Find("time_of_day");
+        if (!s || s->type != UIElement::Type::Slider) continue;
+        float v = s->currentValue;
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        timeOfDay_ = v;
+        // Binary uses discrete TimesOfDay table; continuous 24h clock matches %02d:%02d
+        float hoursF = v * 24.f;
+        int hours = (int)hoursF;
+        if (hours >= 24) hours = 23;
+        int mins = (int)((hoursF - (float)hours) * 60.f);
+        if (mins > 59) mins = 59;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%02d:%02d", hours, mins); // binary "%02d:%02d"
+        if (UIElement* lab = p.doc.Find("time_v"))
+            lab->text = buf;
+        if (UIElement* lab = p.doc.Find("time_of_day_v"))
+            lab->text = buf;
+    }
+}
+
+// Game::UpdateSensitivity @ 0x66be0
+// Constants from binary data: 0.5, 40, 30, 10, 0.1, -1.0
+// Formats: "1", "%.1f", "1 / %.1f" → sensitivity_v
+void Game::UpdateSensitivity() {
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        UIElement* s = p.doc.Find("sensitivity");
+        if (!s) s = p.doc.Find("sensitivity_i");
+        if (!s || s->type != UIElement::Type::Slider) continue;
+        float v = s->currentValue;
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        // t = (int)(v * 40 + 0.5)
+        float t = (float)(int)(v * 40.f + 0.5f);
+        float sens;
+        if (v < 0.5f)
+            sens = (t - 30.f) * 0.1f;
+        else
+            sens = (t - 10.f) * 0.1f;
+        char buf[32];
+        if (sens == -1.f) {
+            // Binary special: store 1.0, text "1"
+            sens = 1.f;
+            buf[0] = '1'; buf[1] = '\0';
+        } else if (sens < -1.f) {
+            float absv = -sens;
+            std::snprintf(buf, sizeof(buf), "1 / %.1f", (double)absv);
+            sens = 1.f / absv;
+        } else {
+            std::snprintf(buf, sizeof(buf), "%.1f", (double)sens);
+        }
+        pendingSensitivity_ = sens;
+        if (UIElement* lab = p.doc.Find("sensitivity_v"))
+            lab->text = buf;
+    }
+}
 void Game::UpdateSkyBox() {}
 void Game::UpdateTime() {
     float step = 0.0001f * timeMultiplier_;
@@ -1380,9 +1514,8 @@ void Game::UpdateHUDUI() {
         for (auto& e : hudDoc.All()) e.pressed = false;
     }
 
-    // Game::UpdateHUDUI @ 0x74860 — hud_activate (Visible=0 in hud.txt) only when
-    // local player looking-cell index ≥0 and GridData::IsActiveCell(cell).
-    // Design default Visible=0; show only while crosshair targets an "active" cell.
+    // Game::UpdateHUDUI @ 0x74860 — hud_activate only when looking-cell index ≥0 and
+    // GridData::IsActiveCell(cell). Design Visible=0; default stays hidden.
     if (hudLoaded_) {
         if (UIElement* act = hudDoc.Find("hud_activate")) {
             bool show = false;
@@ -1393,13 +1526,8 @@ void Game::UpdateHUDUI() {
                 Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
                 GridDataTraceResult tr{};
                 grid_.TracePoint(eye, to, tr, player_);
-                if (tr.hit) {
-                    // IsActiveCell @ 0xb1a40: type in [0x11, 0x52] has jump-table handlers
-                    // (doors/switches/etc.). Non-matching → false.
-                    unsigned char t = tr.blockType;
-                    unsigned char d = (unsigned char)(t - 0x11);
-                    show = (d < 0x42);
-                }
+                if (tr.hit)
+                    show = grid_.IsActiveCellType(tr.blockType);
             }
             act->visible = show;
             if (!show)
@@ -1467,23 +1595,17 @@ void Game::HideProgressScreen() {}
 
 // Game::EnterGameSettings @ 0x66e20 — push time-of-day into game_options UI slider
 void Game::EnterGameSettings() {
-    // Binary: FindObject game_options_ui, GetTimesOfDay, SetValue on slider, UpdateTimeOfDay
+    // Binary: FindObject game_options_ui, SetValue on "time", UpdateTimeOfDay
     if (UIPanel* p = FindPanelBySceneName(uiPanels_, "game_options_ui")) {
         float v = timeOfDay_;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
-        if (UIElement* s = p->doc.Find("time_of_day")) {
-            s->currentValue = v;
-            p->doc.LayoutSliders();
-        }
-        if (UIElement* s = p->doc.Find("time_i")) {
-            s->currentValue = v;
-            p->doc.LayoutSliders();
-        }
-        if (UIElement* lab = p->doc.Find("time_of_day_v")) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.2g", v);
-            lab->text = buf;
+        // UI file: Name = "time" (not time_of_day)
+        for (const char* n : {"time", "time_i", "time_of_day"}) {
+            if (UIElement* s = p->doc.Find(n)) {
+                s->currentValue = v;
+                p->doc.LayoutSliders();
+            }
         }
     }
     UpdateTimeOfDay();
@@ -1491,9 +1613,20 @@ void Game::EnterGameSettings() {
 
 // Game::EnterControlsSettings @ 0x66f00 — push sensitivity into controls UI
 void Game::EnterControlsSettings() {
-    // Binary: FindObject controls_options_ui, SetValue sensitivity slider (0..1)
+    // Binary: SetValue sensitivity slider (0..1), UpdateSensitivity
     pendingSensitivity_ = sensitivity_;
-    float v = sensitivity_ * 0.5f; // inverse of drag mapping (0.5 → 1.0)
+    // Approximate inverse of UpdateSensitivity quantisation for initial thumb pos.
+    float sens = sensitivity_;
+    if (sens < 0.05f) sens = 0.05f;
+    float v;
+    if (sens < 1.f) {
+        // lower half: sens = (t-30)*0.1 → t = sens*10+30, v = (t-0.5)/40
+        float t = sens * 10.f + 30.f;
+        v = (t - 0.5f) / 40.f;
+    } else {
+        float t = sens * 10.f + 10.f;
+        v = (t - 0.5f) / 40.f;
+    }
     if (v < 0.f) v = 0.f;
     if (v > 1.f) v = 1.f;
     if (UIPanel* p = FindPanelBySceneName(uiPanels_, "controls_options_ui")) {
@@ -1505,14 +1638,9 @@ void Game::EnterControlsSettings() {
             s->currentValue = v;
             p->doc.LayoutSliders();
         }
-        if (UIElement* lab = p->doc.Find("sensitivity_v")) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.2g", sensitivity_);
-            lab->text = buf;
-        }
-        // Reflect current screen size label
         RefreshDynamicUILabels();
     }
+    UpdateSensitivity();
 }
 
 // Game::EnterGraphicsSettings @ 0x64130

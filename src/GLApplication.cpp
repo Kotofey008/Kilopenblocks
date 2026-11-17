@@ -127,9 +127,18 @@ void GLApplication::OnCreateGLContext() {
     skyBox_.LoadResources();
     skyBox_.EnsureStarsMesh();
     hudFont_.Load(nullptr, nullptr);
-    // Context (re)created: re-upload any textures that only held CPU pixels
+    // Context (re)created: re-upload any textures that only held CPU pixels.
+    // After TERM_WINDOW→INIT_WINDOW all GL names are invalid. Missing re-upload
+    // leaves UI solid black (no atlas) and can break hit-tests after resume.
     game_.GetFonts().EnsureAllUploaded();
     blocksAtlas_.EnsureUploaded();
+    waterTex_.EnsureUploaded();
+    lavaTex_.EnsureUploaded();
+    waterPal_.EnsureUploaded();
+    lavaPal_.EnsureUploaded();
+    hudFont_.GetTexture().EnsureUploaded();
+    // Re-apply metrics so UI layout/hit-test rects match the restored surface
+    game_.ApplyUIMetrics();
     worldReady_ = true;
     lightMap_.Init(game_.GetGrid());
     EnsureRegionMeshes();

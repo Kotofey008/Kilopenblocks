@@ -80,7 +80,9 @@ public:
     void SelectScreenSize(ScreenSizeEnum e);
     void ApplyUIMetrics();
     void UpdateTerrainType();   // from UI "Game Call UpdateTerrainType"
-    void UpdateTerrainSize();
+    void UpdateTerrainSize();                        // 0x65c90
+    void UpdateTestFlyingBlocks();                   // 0x65900
+    void UpdateTestGroundLevel();
     void CreateElement();       // "Game CreateElement" — create new terrain
     void EnterGameList();
     void LeaveGameList();

@@ -472,6 +472,18 @@ int GridData::GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut)
 
 void GridData::ActivateCell(int, const Vector&) {}
 
+bool GridData::IsActiveCellType(unsigned char blockType) const {
+    // Binary IsActiveCell @ 0xa1a20: b = type-0x11; if (b > 0x41) return 0;
+    // else jump table → only 18 entries land on `mov eax,1; ret` (0xa1a58).
+    static const unsigned char kActive[] = {
+        17, 18, 34, 35, 39, 40, 44, 45,
+        67, 68, 69, 70, 71, 78, 79, 80, 81, 82
+    };
+    for (unsigned char t : kActive)
+        if (t == blockType) return true;
+    return false;
+}
+
 GridData::LeavesQuality GridData::GetLeavesQuality() const {
     return leavesQuality_; // +0xec
 }
