@@ -523,15 +523,24 @@ void UIDocument::ResolveAll(float screenW, float screenH) {
             }
         }
         if (sets && grid && sets->screenRect.h > 0.f && grid->screenRect.h > 0.f) {
-            // Design intent on 480h: strip sits fully above the 3×3 panel with a small gap.
-            // Previous pin put bottom of strip on top of grid → lower third overlapped icons.
-            // Lift by ~½ tab height so the whole strip clears the material buttons.
-            float gap = sets->screenRect.h * 0.55f;
-            if (gap < 8.f) gap = 8.f;
+            // Design (480h): mtlSetsPos Y=-203, YAlign 0.5 → sets bottom meets grid top (gap 0).
+            // After metrics/scale the strip often lands halfway into the 3×3 icon panel.
+            // Pin: bottom of sets = top of grid − gap. Gap ≥ full strip height so tabs
+            // sit fully clear of the block-icon buttons (user: still half-overlapping).
+            float gap = sets->screenRect.h * 1.15f;
+            if (gap < 24.f) gap = 24.f;
             float targetBottom = grid->screenRect.y - gap;
             float newY = targetBottom - sets->screenRect.h;
-            if (newY < 0.f) newY = 0.f;
-            if (newY + sets->screenRect.h > screenH) newY = screenH - sets->screenRect.h;
+            // Prefer staying above the grid over clamping to y=0 if that would re-overlap.
+            if (newY < 0.f) {
+                // Still keep bottom above grid top by at least a minimal gap.
+                float minGap = 12.f;
+                float maxBottom = grid->screenRect.y - minGap;
+                newY = maxBottom - sets->screenRect.h;
+                if (newY < 0.f) newY = 0.f;
+            }
+            if (newY + sets->screenRect.h > screenH)
+                newY = screenH - sets->screenRect.h;
             float dy = newY - sets->screenRect.y;
             if (dy != 0.f) {
                 sets->screenRect.y = newY;
