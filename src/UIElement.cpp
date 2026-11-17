@@ -238,6 +238,9 @@ bool UIDocument::LoadFromText(const std::string& text) {
         } else if (key == "ArrayWidth") {
             c->arrayWidth = (int)parseFloatOrVar(val, *this);
             if (c->arrayWidth < 1) c->arrayWidth = 1;
+        } else if (key == "ArrayHeight") {
+            c->arrayHeight = (int)parseFloatOrVar(val, *this);
+            if (c->arrayHeight < 1) c->arrayHeight = 1;
         } else if (key.size() >= 10 && key.compare(0, 10, "Materials[") == 0) {
             int idx = 0;
             if (std::sscanf(key.c_str(), "Materials[%d]", &idx) == 1) {
@@ -952,9 +955,9 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
     if (e.type == UIElement::Type::GridModelMtl && gridForMtl_ && blocksAtlas_
         && blocksAtlas_->GLId() && !e.materials.empty()) {
         int aw = e.arrayWidth > 0 ? e.arrayWidth : 3;
+        int ah = e.arrayHeight > 0 ? e.arrayHeight : 3;
         int n = (int)e.materials.size();
-        int ah = (n + aw - 1) / aw;
-        if (ah < 1) ah = 1;
+        if (n < aw * ah) n = aw * ah;
         float cellW = w / (float)aw;
         float cellH = h / (float)ah;
         blocksAtlas_->Bind();

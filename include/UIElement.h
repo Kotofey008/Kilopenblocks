@@ -87,10 +87,12 @@ public:
     static constexpr uint32_t kTouchReleased = 0x10000;
     uint32_t touchState = 0;
     bool useTouchMove = false; // GetUseTouchMove
-    // UIGridModelMtl (menu.txt): ModelName, Materials[], ArrayWidth
+    // UIGridModelMtl (menu.txt): ModelName, Materials[], ArrayWidth, ArrayHeight
+    // Binary UIGridModelMtl +0x204 / +0x208 — page size = arrayWidth * arrayHeight
     std::string modelName;
     std::vector<int> materials;
     int arrayWidth = 3;
+    int arrayHeight = 3;
     // DrawImage: optional texture name (Texture / Bitmap)
     std::string textureName;
 
