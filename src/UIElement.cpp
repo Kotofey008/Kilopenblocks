@@ -830,8 +830,12 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
 #else
     (void)clipX; (void)clipY; (void)clipW; (void)clipH;
 
-    // Layout-only frames
-    if (e.name == "frame_background" || e.name == "frame") return;
+    // Binary: frame_background is a full-screen UIElement with
+    //   BackgroundColor = $backgroundColor (menu.txt: B4000000 → A=0xB4 black).
+    // That is the menu dim overlay. Previously skipped as "layout-only" — wrong.
+    // "frame" is a transparent layout parent (no BackgroundColor in menu.txt) —
+    // skip only the empty layout container, still draw children via DrawH.
+    if (e.name == "frame") return;
     if (e.name == "menu_mtl_sets") return;
 
     auto splitARGB = [](uint32_t c, float& r, float& g, float& b, float& a) {
@@ -1017,6 +1021,8 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             float y0 = y + (float)my * cellH + pad;
             float x1 = x + (float)(mx + 1) * cellW - pad;
             float y1 = y + (float)(my + 1) * cellH - pad;
+            // Original icons read ~1px larger on each side than our padded rect.
+            x0 -= 1.f; y0 -= 1.f; x1 += 1.f; y1 += 1.f;
             float cw = x1 - x0, ch = y1 - y0;
             float cx = (x0 + x1) * 0.5f;
             // GridData::GetBlockIcon @ 0x8e3a0 (binary):
