@@ -689,8 +689,11 @@ void Game::SelectTerrainType(TerrainType t) {
     std::string head = Localization::Instance().Localize("/TerrainType/Terrain Type: ");
     std::string full = head + typeName;
 
-    const bool showFlat = (t == TerrainType::Flat);
-    const bool showTest = (t == TerrainType::Test);
+    const bool showFlat = (t == TerrainType::Flat); // type == 1
+    const bool showTest = (t == TerrainType::Test); // type == 2
+    // Binary 0x65fc3 setbe after cmp: show terrain_size when type <= 1 (Earth/Flat).
+    // Test has fixed world size — no size slider.
+    const bool showSize = (t != TerrainType::Test);
 
     auto showGroup = [](UIDocument& doc, const char* base, bool vis) {
         if (UIElement* e = doc.Find(base)) e->visible = vis;
@@ -711,9 +714,7 @@ void Game::SelectTerrainType(TerrainType t) {
             showGroup(p.doc, "flat_ground_level", showFlat);
             showGroup(p.doc, "test_ground_level", showTest);
             showGroup(p.doc, "test_flying_blocks", showTest);
-            if (UIElement* e = p.doc.Find("terrain_size")) e->visible = true;
-            if (UIElement* e = p.doc.Find("terrain_size_i")) e->visible = true;
-            if (UIElement* e = p.doc.Find("terrain_size_v")) e->visible = true;
+            showGroup(p.doc, "terrain_size", showSize);
         }
     }
 
@@ -726,13 +727,24 @@ void Game::UpdateTerrainType() {
     UpdateParameter("UpdateTerrainType");
 }
 
+// World size table (binary this+0xe74, stride 0xc = x,y,z). X shown as "%d".
+// Matches s_WorldSizesHi-style ladder used by UpdateTerrainSize.
+static const int kWorldSizeTable[][3] = {
+    {128, 128, 128},
+    {192, 128, 192},
+    {256, 128, 256},
+    {384, 128, 384},
+    {512, 128, 512},
+    {768, 128, 768},
+    {1024, 128, 1024},
+};
+static const int kWorldSizeCount = 7;
+
 // Game::UpdateTerrainSize @ 0x65c90
-// GetValue("terrain_size") → index = (int)((1-v)*(n-1)+0.5); clamp;
-// sprintf size label from table[index]; SetText terrain_size_v.
+// index = (int)((1-v)*(n-1)+0.5); clamp; sprintf(terrain_size_v, "%d", table[i].x)
 void Game::UpdateTerrainSize() {
-    // Size table from binary (stride 0xc at this+0xe74); common Exploration sizes.
-    static const int kSizes[] = { 128, 192, 256, 384, 512, 768, 1024 };
-    static const int kN = 7;
+    if (terrainType_ == TerrainType::Test)
+        return; // no size slider for Test
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
         UIElement* s = p.doc.Find("terrain_size");
@@ -741,17 +753,15 @@ void Game::UpdateTerrainSize() {
         float v = s->currentValue;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
-        // Binary: index = (int)((1-v)*(n-1) + 0.5) with n = count
-        int idx = (int)((1.f - v) * (float)(kN - 1) + 0.5f);
+        int idx = (int)((1.f - v) * (float)(kWorldSizeCount - 1) + 0.5f);
         if (idx < 0) idx = 0;
-        if (idx >= kN) idx = kN - 1;
-        int dim = kSizes[idx];
+        if (idx >= kWorldSizeCount) idx = kWorldSizeCount - 1;
+        terrainSizeIndex_ = idx;
+        int dim = kWorldSizeTable[idx][0]; // X
         char buf[32];
-        // Binary sprintf one int for terrain_size_v near this path
-        std::snprintf(buf, sizeof(buf), "%d", dim);
+        std::snprintf(buf, sizeof(buf), "%d", dim); // binary "%d"
         if (UIElement* lab = p.doc.Find("terrain_size_v"))
             lab->text = buf;
-        (void)dim;
     }
 }
 
@@ -767,31 +777,61 @@ void Game::UpdateTestFlyingBlocks() {
         if (v > 1.f) v = 1.f;
         int pct = (int)(v * 100.f + 0.5f);
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "%d %%", pct); // binary "%d %%"
+        std::snprintf(buf, sizeof(buf), "%d %%", pct);
         if (UIElement* lab = p.doc.Find("test_flying_blocks_v"))
             lab->text = buf;
     }
 }
 
-// Game::UpdateTestGroundLevel — binary formats %.1f-like height
+// Game::UpdateFlatGroundLevel @ 0x65b40
+// inv = 1-v; sizeY = table[sizeIdx].y; mid = sizeY/2;
+// h = (int)((mid-4)*inv + 0.5) + 4; clamp; sprintf "%d"
+static int GroundHeightFromSlider(float v, int sizeY) {
+    if (v < 0.f) v = 0.f;
+    if (v > 1.f) v = 1.f;
+    float inv = 1.f - v;
+    int mid = sizeY / 2;
+    if (mid < 0) mid = 0;
+    int h = (int)((float)(mid - 4) * inv + 0.5f) + 4;
+    if (h < 4) h = 4;
+    if (h > mid) h = mid;
+    if (h < 4) h = 4;
+    return h;
+}
+
 void Game::UpdateTestGroundLevel() {
+    // Covers both UpdateFlatGroundLevel and UpdateTestGroundLevel display paths:
+    // binary sprintf format is "%d" (integer block height), never fractional.
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
-        for (const char* name : {"test_ground_level", "flat_ground_level"}) {
-            UIElement* s = p.doc.Find(name);
-            if (!s) {
-                std::string iname = std::string(name) + "_i";
-                s = p.doc.Find(iname.c_str());
+        // Flat ground — depends on selected terrain size Y
+        {
+            UIElement* s = p.doc.Find("flat_ground_level");
+            if (!s) s = p.doc.Find("flat_ground_level_i");
+            if (s && s->type == UIElement::Type::Slider) {
+                int sizeY = 128;
+                int idx = terrainSizeIndex_;
+                if (idx < 0) idx = 0;
+                if (idx >= kWorldSizeCount) idx = kWorldSizeCount - 1;
+                sizeY = kWorldSizeTable[idx][1];
+                int h = GroundHeightFromSlider(s->currentValue, sizeY);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%d", h);
+                if (UIElement* lab = p.doc.Find("flat_ground_level_v"))
+                    lab->text = buf;
             }
-            if (!s || s->type != UIElement::Type::Slider) continue;
-            float v = s->currentValue;
-            // Map 0..1 → roughly world height display (binary uses scaled float)
-            float h = v * 64.f;
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.1f", (double)h);
-            std::string labName = std::string(name) + "_v";
-            if (UIElement* lab = p.doc.Find(labName.c_str()))
-                lab->text = buf;
+        }
+        // Test ground — fixed vertical extent (binary uses similar int path)
+        {
+            UIElement* s = p.doc.Find("test_ground_level");
+            if (!s) s = p.doc.Find("test_ground_level_i");
+            if (s && s->type == UIElement::Type::Slider) {
+                int h = GroundHeightFromSlider(s->currentValue, 128);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%d", h);
+                if (UIElement* lab = p.doc.Find("test_ground_level_v"))
+                    lab->text = buf;
+            }
         }
     }
 }
@@ -1196,7 +1236,18 @@ void Game::ApplyGraphicsSettings() {
 }
 
 // Game::ApplyGameSettings @ 0x64600
+// If TimesOfDay index changed: adjust this+0x40 clock toward selected tick
+// (mod 0x127500), then UpdateSkyBox.
 void Game::ApplyGameSettings() {
+    // Sync clock phase from current timeOfDay_ (set by UpdateTimeOfDay while dragging)
+    const long long kDayMs = 1209600LL;
+    long long target = (long long)(timeOfDay_ * (double)kDayMs);
+    if (target < 0) target = 0;
+    if (target >= kDayMs) target = kDayMs - 1;
+    long long phase = worldTimeMs_ % kDayMs;
+    if (phase < 0) phase += kDayMs;
+    worldTimeMs_ += (target - phase);
+    timeOfDay_ = (float)target / (float)kDayMs;
     UpdateSkyBox();
     UpdateAndSaveGameSettings(state_);
 }
@@ -1220,7 +1271,10 @@ void Game::ApplyControlsSettings() {
 }
 
 // Game::UpdateTimeOfDay @ 0x66a60
-// GetValue("time") → index into TimesOfDay[]; sprintf "%02d:%02d" from tick/0xc4e0 and minutes.
+// GetValue("time") → discrete index into TimesOfDay; sprintf "%02d:%02d".
+// ApplyGameSettings later writes the clock; while the slider is dragged we also
+// mirror into worldTimeMs_ so the sky/day cycle follows immediately (binary
+// Apply path adjusts this+0x40 by TimesOfDay[index] delta).
 void Game::UpdateTimeOfDay() {
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
@@ -1232,14 +1286,23 @@ void Game::UpdateTimeOfDay() {
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
         timeOfDay_ = v;
-        // Binary uses discrete TimesOfDay table; continuous 24h clock matches %02d:%02d
+        // Keep running clock phase aligned so UpdateTime does not overwrite the
+        // slider choice next frame.
+        const long long kDayMs = 1209600LL;
+        long long target = (long long)(v * (double)kDayMs);
+        if (target < 0) target = 0;
+        if (target >= kDayMs) target = kDayMs - 1;
+        long long phase = worldTimeMs_ % kDayMs;
+        if (phase < 0) phase += kDayMs;
+        worldTimeMs_ += (target - phase);
+
         float hoursF = v * 24.f;
         int hours = (int)hoursF;
         if (hours >= 24) hours = 23;
         int mins = (int)((hoursF - (float)hours) * 60.f);
         if (mins > 59) mins = 59;
         char buf[16];
-        std::snprintf(buf, sizeof(buf), "%02d:%02d", hours, mins); // binary "%02d:%02d"
+        std::snprintf(buf, sizeof(buf), "%02d:%02d", hours, mins);
         if (UIElement* lab = p.doc.Find("time_v"))
             lab->text = buf;
         if (UIElement* lab = p.doc.Find("time_of_day_v"))

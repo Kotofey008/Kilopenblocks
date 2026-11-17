@@ -230,6 +230,7 @@ private:
     TerrainGeneratorFlat genFlat_;
     GameState state_ = GameState::Menu;
     TerrainType terrainType_ = TerrainType::Earth;
+    int terrainSizeIndex_ = 3; // binary +0x238 — index into world-size table
     // Applied settings (binary +0x84 / +0x88 / +0x8c / +0x8d)
     DrawDistance drawDistance_ = DrawDistance::Normal;
     GridData::LeavesQuality leavesQualityApplied_ = GridData::LeavesQuality::High;
