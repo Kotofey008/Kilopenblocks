@@ -66,70 +66,70 @@ void GLApplication::OnCreateGLContext() {
 
     Assets::Init(mApp);
 
-    // Parse start.scene first so GridModel paths drive texture/material load
-    // (binary: GridModel::SetProperties then LoadResources → LoadTextures/Effects)
-    // Binary: GLApplication loads loc/<GetLanguageCodeString()>.csv (AConfiguration language)
-    {
-        char lang[3] = {'e', 'n', 0};
-        if (mApp && mApp->config) {
-            AConfiguration_getLanguage(mApp->config, lang);
-            lang[2] = 0;
+    // Binary does not re-run full Game::Play / InitUI on every surface recreate.
+    // TERM_WINDOW only destroys the EGL context; CPU game state + decoded
+    // texture pixels remain. Re-doing Play/InitUI on resume wiped UI styles
+    // (frame_background B4000000 → broken) and left a solid black frame.
+    if (!gameContentInited_) {
+        // ---- first launch only ----
+        {
+            char lang[3] = {'e', 'n', 0};
+            if (mApp && mApp->config) {
+                AConfiguration_getLanguage(mApp->config, lang);
+                lang[2] = 0;
+            }
+            Localization::Instance().InitFromSystem(lang);
+            LOGI("system language '%.2s'", lang);
         }
-        Localization::Instance().InitFromSystem(lang);
-        LOGI("system language '%.2s'", lang);
-    }
-    game_.InitUI();
+        game_.InitUI();
 
-    {
-        const SceneGridModelConfig& gm = game_.GetGridModelConfig();
-        const char* mtl = gm.present && !gm.mtlDescFileName.empty()
-            ? gm.mtlDescFileName.c_str() : "scenes/blocks.txt";
-        const char* blocksTex = gm.present && !gm.blocksTextureFileName.empty()
-            ? gm.blocksTextureFileName.c_str() : "textures/blocks.png";
+        {
+            const SceneGridModelConfig& gm = game_.GetGridModelConfig();
+            const char* mtl = gm.present && !gm.mtlDescFileName.empty()
+                ? gm.mtlDescFileName.c_str() : "scenes/blocks.txt";
+            const char* blocksTex = gm.present && !gm.blocksTextureFileName.empty()
+                ? gm.blocksTextureFileName.c_str() : "textures/blocks.png";
 
-        blockDefs_ = LoadBlockDefs(mtl);
-        LOGI("blockDefs=%d from %s", (int)blockDefs_.size(), mtl);
+            blockDefs_ = LoadBlockDefs(mtl);
+            LOGI("blockDefs=%d from %s", (int)blockDefs_.size(), mtl);
 
-        if (!blocksAtlas_.LoadPNGAsset(blocksTex))
-            LOGE("blocks atlas FAILED path=%s", blocksTex);
-        else
-            LOGI("blocks atlas %ux%u path=%s", blocksAtlas_.Width(), blocksAtlas_.Height(), blocksTex);
+            if (!blocksAtlas_.LoadPNGAsset(blocksTex))
+                LOGE("blocks atlas FAILED path=%s", blocksTex);
+            else
+                LOGI("blocks atlas %ux%u path=%s", blocksAtlas_.Width(), blocksAtlas_.Height(), blocksTex);
 
-        // Water/lava source textures + palettes (GridModel::LoadTextures / LoadTextureEffects).
-        // Full WaterTextureEffect procedural rewrite is not reconstructed; we load the PNGs
-        // so paths from start.scene are honored and assets are available to the GL path.
-        if (gm.present) {
-            if (!gm.waterTextureFileName.empty()) {
-                if (!waterTex_.LoadPNGAsset(gm.waterTextureFileName.c_str()))
-                    LOGE("water tex FAILED %s", gm.waterTextureFileName.c_str());
-            }
-            if (!gm.lavaTextureFileName.empty()) {
-                if (!lavaTex_.LoadPNGAsset(gm.lavaTextureFileName.c_str()))
-                    LOGE("lava tex FAILED %s", gm.lavaTextureFileName.c_str());
-            }
-            if (gm.useProceduralTextures) {
-                if (!gm.waterPaletteFileName.empty())
-                    waterPal_.LoadPNGAsset(gm.waterPaletteFileName.c_str());
-                if (!gm.lavaPaletteFileName.empty())
-                    lavaPal_.LoadPNGAsset(gm.lavaPaletteFileName.c_str());
-                LOGI("procedural textures flag=1 pal water=%d lava=%d",
-                     waterPal_.Valid() ? 1 : 0, lavaPal_.Valid() ? 1 : 0);
+            if (gm.present) {
+                if (!gm.waterTextureFileName.empty()) {
+                    if (!waterTex_.LoadPNGAsset(gm.waterTextureFileName.c_str()))
+                        LOGE("water tex FAILED %s", gm.waterTextureFileName.c_str());
+                }
+                if (!gm.lavaTextureFileName.empty()) {
+                    if (!lavaTex_.LoadPNGAsset(gm.lavaTextureFileName.c_str()))
+                        LOGE("lava tex FAILED %s", gm.lavaTextureFileName.c_str());
+                }
+                if (gm.useProceduralTextures) {
+                    if (!gm.waterPaletteFileName.empty())
+                        waterPal_.LoadPNGAsset(gm.waterPaletteFileName.c_str());
+                    if (!gm.lavaPaletteFileName.empty())
+                        lavaPal_.LoadPNGAsset(gm.lavaPaletteFileName.c_str());
+                }
             }
         }
+
+        game_.SelectTerrainType(Game::TerrainType::Earth);
+        game_.Play(0);
+        clouds_.LoadResources("textures/clouds.png");
+        if (game_.GetScene().skyBox.present)
+            skyBox_.ApplyConfig(game_.GetScene().skyBox);
+        skyBox_.LoadResources();
+        skyBox_.EnsureStarsMesh();
+        hudFont_.Load(nullptr, nullptr);
+        lightMap_.Init(game_.GetGrid());
+        gameContentInited_ = true;
     }
 
-    game_.SelectTerrainType(Game::TerrainType::Earth);
-    game_.Play(0);
-    clouds_.LoadResources("textures/clouds.png");
-    // SkyBox from start.scene (windows, colors, scales, star counts, texture paths)
-    if (game_.GetScene().skyBox.present)
-        skyBox_.ApplyConfig(game_.GetScene().skyBox);
-    skyBox_.LoadResources();
-    skyBox_.EnsureStarsMesh();
-    hudFont_.Load(nullptr, nullptr);
-    // Context (re)created: re-upload any textures that only held CPU pixels.
-    // After TERM_WINDOW→INIT_WINDOW all GL names are invalid. Missing re-upload
-    // leaves UI solid black (no atlas) and can break hit-tests after resume.
+    // ---- every context create (first + resume) ----
+    // Re-upload CPU-backed textures; GL names died with the old context.
     game_.GetFonts().EnsureAllUploaded();
     blocksAtlas_.EnsureUploaded();
     waterTex_.EnsureUploaded();
@@ -137,13 +137,28 @@ void GLApplication::OnCreateGLContext() {
     waterPal_.EnsureUploaded();
     lavaPal_.EnsureUploaded();
     hudFont_.GetTexture().EnsureUploaded();
-    // Re-apply metrics so UI layout/hit-test rects match the restored surface
+    skyBox_.LoadResources(); // re-bind sky textures if any
+    clouds_.LoadResources("textures/clouds.png");
+    // Layout / hit-test against current window size
+    {
+        int ww = ANativeWindow_getWidth(mApp->window);
+        int hh = ANativeWindow_getHeight(mApp->window);
+        if (ww > 0 && hh > 0) {
+            glViewport(0, 0, ww, hh);
+            game_.SetScreenSize(ww, hh);
+        }
+    }
     game_.ApplyUIMetrics();
-    worldReady_ = true;
+    // Rebuild GPU meshes (VBOs invalid after context loss)
+    regionMeshes_.clear();
     lightMap_.Init(game_.GetGrid());
+    worldReady_ = true;
     EnsureRegionMeshes();
-    LOGI("World ready meshes=%d", (int)regionMeshes_.size());
+    LOGI("World ready meshes=%d (contentInited=%d)", (int)regionMeshes_.size(),
+         gameContentInited_ ? 1 : 0);
 
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     eglSwapBuffers(mDisplay, mSurface);
 }

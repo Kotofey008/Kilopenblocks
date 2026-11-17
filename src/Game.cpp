@@ -3,6 +3,7 @@
 #include "Loc.h"
 #include "GameUIMetrics.h"
 #include <cmath>
+#include <chrono>
 #include <iostream>
 #include <sstream>
 #include <algorithm>
@@ -202,9 +203,9 @@ void Game::SetPanelVisiblePattern(const std::string& pattern, bool visible) {
             UpdateTimeOfDay();
         if (MatchNamePattern("terrain_options_ui", pattern) || pattern == "terrain_options_*"
             || MatchNamePattern("new_terrain_ui", pattern) || pattern == "new_terrain_*") {
-            UpdateTerrainSize();
-            UpdateTestFlyingBlocks();
-            UpdateTestGroundLevel();
+            // SetAllVisible(true) above re-showed every element; re-apply
+            // generator-dependent visibility (SelectTerrainType @ 0x65de0).
+            SelectTerrainType(terrainType_);
         }
     }
     // Legacy fallback members if panels not used
@@ -671,30 +672,54 @@ static Game::UIPanel* FindPanelBySceneName(std::vector<Game::UIPanel>& panels, c
 static void SetPanelElementText(Game::UIPanel* panel, const char* elemName, const char* text);
 
 void Game::SelectTerrainType(TerrainType t) {
+    // Game::SelectTerrainType @ 0x65de0
+    // ShowElement on terrain_options_ui by type (binary 0x65fd4..0x6614f):
+    //   Flat(1): flat_ground_level / _i / _v
+    //   Test(2): test_ground_level* + test_flying_blocks*
+    //   Earth(0): those groups hidden
+    // then UpdateTerrainSize / Update*Ground / UpdateTestFlyingBlocks.
     terrainType_ = t;
-    // Update "terrain_type" label on new_terrain UI (binary SetValue / Localize)
     const char* key = "/TerrainTypeEarth/Earth";
     switch (t) {
         case TerrainType::Flat: key = "/TerrainTypeFlat/Flat"; break;
         case TerrainType::Test: key = "/TerrainTypeTest/Test"; break;
         default: break;
     }
-    std::string label = std::string("/TerrainType/Terrain Type: ") ;
-    // Display "Terrain Type: <name>"
     std::string typeName = Localization::Instance().Localize(key);
     std::string head = Localization::Instance().Localize("/TerrainType/Terrain Type: ");
     std::string full = head + typeName;
-    if (UIPanel* p = FindPanelBySceneName(uiPanels_, "new_terrain_ui")) {
-        if (UIElement* e = p->doc.Find("terrain_type"))
-            e->text = full;
-    }
-    // scene name may be without _ui suffix
+
+    const bool showFlat = (t == TerrainType::Flat);
+    const bool showTest = (t == TerrainType::Test);
+
+    auto showGroup = [](UIDocument& doc, const char* base, bool vis) {
+        if (UIElement* e = doc.Find(base)) e->visible = vis;
+        std::string i = std::string(base) + "_i";
+        std::string v = std::string(base) + "_v";
+        if (UIElement* e = doc.Find(i.c_str())) e->visible = vis;
+        if (UIElement* e = doc.Find(v.c_str())) e->visible = vis;
+    };
+
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
-        if (p.sceneName.find("new_terrain") == std::string::npos) continue;
-        if (UIElement* e = p.doc.Find("terrain_type"))
-            e->text = full;
+        if (p.sceneName.find("new_terrain") != std::string::npos) {
+            if (UIElement* e = p.doc.Find("terrain_type"))
+                e->text = full;
+        }
+        if (p.sceneName.find("terrain_options") != std::string::npos
+            || p.sceneName.find("new_terrain") != std::string::npos) {
+            showGroup(p.doc, "flat_ground_level", showFlat);
+            showGroup(p.doc, "test_ground_level", showTest);
+            showGroup(p.doc, "test_flying_blocks", showTest);
+            if (UIElement* e = p.doc.Find("terrain_size")) e->visible = true;
+            if (UIElement* e = p.doc.Find("terrain_size_i")) e->visible = true;
+            if (UIElement* e = p.doc.Find("terrain_size_v")) e->visible = true;
+        }
     }
+
+    UpdateTerrainSize();
+    UpdateTestGroundLevel();
+    UpdateTestFlyingBlocks();
 }
 
 void Game::UpdateTerrainType() {
@@ -1259,9 +1284,36 @@ void Game::UpdateSensitivity() {
     }
 }
 void Game::UpdateSkyBox() {}
+
+// Game::UpdateTime @ 0x62cb0 — accumulate ApplicationBase::Clock delta into
+// this+0x40 (64-bit). Game::UpdateSkyBox @ 0x62d10 then:
+//   SetTimeOfDay( (timeCounter % 0x127500) / 1209600.0f )
+// Day period 0x127500 = 1209600 ms ≈ 20.16 min (binary constant).
 void Game::UpdateTime() {
-    float step = 0.0001f * timeMultiplier_;
-    timeOfDay_ = std::fmod(timeOfDay_ + step, 1.f);
+    using clock = std::chrono::steady_clock;
+    static clock::time_point s_prev = clock::now();
+    static bool s_init = false;
+    auto now = clock::now();
+    if (!s_init) {
+        s_prev = now;
+        s_init = true;
+        return;
+    }
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_prev).count();
+    s_prev = now;
+    if (ms < 0) ms = 0;
+    // Binary Scene MaxTimestep = 200 (start.scene); clamp spike after resume
+    if (ms > 200) ms = 200;
+    // TimeMultiplier from Globals (default 1)
+    float scale = timeMultiplier_;
+    if (scale < 0.01f) scale = 0.01f;
+    long long add = (long long)((float)ms * scale);
+    worldTimeMs_ += add;
+    // 0x127500 = 1209600
+    const long long kDayMs = 1209600LL;
+    long long phase = worldTimeMs_ % kDayMs;
+    if (phase < 0) phase += kDayMs;
+    timeOfDay_ = (float)phase / (float)kDayMs;
 }
 
 void Game::SelectPaletteItem(int index) {

@@ -43,6 +43,7 @@ private:
     std::vector<BlockDef> blockDefs_;
     std::vector<RegionMesh> regionMeshes_;
     bool worldReady_ = false;
+    bool gameContentInited_ = false; // true after first full OnCreate (not cleared on TERM)
     Texture blocksAtlas_;
     Texture waterTex_;   // GridModel WaterTextureFileName
     Texture lavaTex_;    // GridModel LavaTextureFileName
