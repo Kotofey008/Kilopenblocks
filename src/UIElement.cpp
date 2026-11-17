@@ -441,6 +441,14 @@ void UIDocument::ApplyMetrics(const GameUIMetrics& m) {
         scaleStyle(e.styleSelected);
         scaleStyle(e.styleSelectedPressed);
     }
+    // After scale: rewrite menu_mtl_sets posY from metrics (height-correct), not
+    // from design -203 * widthScale. Binary GameUIMetrics substitutes $mtlSetsPos.
+    if (UIElement* sets = Find("menu_mtl_sets")) {
+        sets->posY = (float)m.mtlSetsPosY;
+        sets->posX = (float)m.mtlSetsPosX;
+        if (sets->sizeW > 0.f) sets->sizeW = (float)m.mtlSetsW;
+        if (sets->sizeH > 0.f) sets->sizeH = (float)m.mtlSetsH;
+    }
 }
 
 void UIElement::ResolveLayout(float screenW, float screenH) {
@@ -499,51 +507,54 @@ void UIDocument::ResolveAll(float screenW, float screenH) {
     // Children with AutoResizeX/Y expand with their parent (e.g. "frame").
     LayoutSliders();
 
-    // ---- Palette strip pin (menu.txt design relation, not an ad-hoc gap) ----
-    // Design 800×480 (menu.txt):
-    //   menu_mtl_sets: YAlign=0.5, Position Y=-203, H=75
-    //     → y=(480-75)*0.5-203 = 0  → TOP of strip = TOP of frame
-    //   menu_mtl_0..2: YAlign=0.5, Position Y=-offset1 (-110), H=110
-    //     → y=(480-110)*0.5-110 = 75 → TOP of icon row = BOTTOM of strip
-    // Binary keeps this via metrics $mtlSetsPos for the active layout height.
-    // Width-only scale of design -203 breaks when frame.h ≠ 480*(logicalW/800)
-    // (AutoResizeY → physical height). Every frame ResolveLayout rebuilds from
-    // posY, so we must fix both screenRect AND posY or the next frame undoes it.
+    // ---- Palette strip pin (menu.txt design relation) ----
+    // Design 800×480:
+    //   menu_mtl_sets bottom == menu_mtl_0 top (top row of 3×3 slot buttons)
+    //   y_sets = (frameH-75)*0.5 + (-203) = frameTop
+    //   y_mtl0 = (frameH-110)*0.5 + (-110) = frameTop+75
+    // Metrics posY based on width scale breaks when frame.h ≠ designH*scale.
+    // Previous pin forced newY=parentTop on both sides of a comparison → no-op
+    // whenever ResolveLayout already produced that, and never used mtl0.
+    // Fix: set posY so sets.bottom == mtl0.top, then re-ResolveLayout the subtree.
     {
         UIElement* sets = Find("menu_mtl_sets");
-        if (sets && sets->screenRect.h > 0.f) {
+        UIElement* mtl0 = Find("menu_mtl_0");
+        if (sets && sets->screenRect.h > 0.f && mtl0 && mtl0->screenRect.h > 0.f) {
             float parentTop = sets->parent ? sets->parent->screenRect.y : 0.f;
             float parentH = sets->parent ? sets->parent->screenRect.h : screenH;
+            float h = sets->screenRect.h;
 
-            // Design target: strip top = frame top; bottom meets top of menu_mtl_0.
-            float newY = parentTop;
-            if (UIElement* mtl0 = Find("menu_mtl_0")) {
-                if (mtl0->screenRect.h > 0.f) {
-                    // Prefer sets.bottom == mtl0.top (exact design abutment).
-                    newY = mtl0->screenRect.y - sets->screenRect.h;
+            // Primary: bottom of page tabs = top of first material slot button
+            float newY = mtl0->screenRect.y - h;
+
+            // Also never overlap the GridModelMtl panel itself
+            if (UIElement* grid = Find("menu_GM0_mtl")) {
+                if (grid->screenRect.h > 0.f) {
+                    float byGrid = grid->screenRect.y - h;
+                    if (byGrid < newY) // smaller Y = higher on screen
+                        newY = byGrid;
                 }
             }
-            // Never sit below frame top (would only push further into icons).
-            if (newY > parentTop)
-                newY = parentTop;
-            // Keep inside parent
+
+            // Clamp inside parent vertically
             if (newY < parentTop)
                 newY = parentTop;
-            if (newY + sets->screenRect.h > parentTop + parentH)
-                newY = parentTop + parentH - sets->screenRect.h;
+            if (newY + h > parentTop + parentH)
+                newY = parentTop + parentH - h;
 
-            float dy = newY - sets->screenRect.y;
-            if (dy != 0.f) {
+            // Always rewrite posY from the target screen Y so the next full
+            // ResolveLayout of the document still lands correctly mid-frame.
+            // y = parentTop + (parentH - h)*yAlign + posY
+            sets->posY = newY - parentTop - (parentH - h) * sets->yAlign;
+
+            // Apply immediately: parent rect + all page-tab children
+            if (sets->screenRect.y != newY || true) {
                 sets->screenRect.y = newY;
-                // Back-solve posY so the next ResolveLayout yields the same y:
-                //   y = parentTop + (parentH - h)*yAlign + posY
-                //   posY = y - parentTop - (parentH - h)*yAlign
-                float h = sets->screenRect.h;
-                sets->posY = newY - parentTop - (parentH - h) * sets->yAlign;
+                sets->screenRect.h = h;
+                // Children are laid out relative to parent screenRect
                 for (auto* ch : sets->children) {
                     if (!ch) continue;
-                    ch->screenRect.y += dy;
-                    // children are laid out relative to sets; their pos stays valid
+                    ch->ResolveLayout(screenW, screenH);
                 }
             }
         }

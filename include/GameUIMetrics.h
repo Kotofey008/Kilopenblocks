@@ -143,14 +143,14 @@ struct GameUIMetrics {
         margin4 = scale(400.f);
         mtlSetsW = scale(322.f); mtlSetsH = scale(75.f);
         mtlSetsPosX = -scale(74.f);
-        // Design: YAlign 0.5 + posY → strip TOP at frame TOP.
-        // y=(frameH-setsH)*0.5+posY=0 → posY=-(frameH-setsH)/2
-        // Design 480×75 → -202.5≈-203. Track layout height, not width-only scale.
-        {
-            int refH = scale(480.f);
-            if (refH < 1) refH = 480;
-            mtlSetsPosY = -EvenRound(0.5f * (float)(refH - mtlSetsH));
-        }
+        // Design abutment (same parent, both YAlign 0.5):
+        //   mtl0.y = (H - buttonSize)*0.5 - buttonSize
+        //   sets.y = mtl0.y - setsH
+        //   sets.posY = sets.y - (H - setsH)*0.5
+        //            = -1.5*buttonSize - 0.5*setsH
+        // Design: -1.5*110 - 0.5*75 = -202.5 ≈ -203 ($mtlSetsPos).
+        // Independent of parent H — keeps strip above the top icon row.
+        mtlSetsPosY = -EvenRound(1.5f * (float)buttonSize + 0.5f * (float)mtlSetsH);
         mtlSetNSize = scale(46.f); mtlSetNHeight = scale(40.f);
         nextMtlSetW = scale(70.f); nextMtlSetH = scale(165.f);
         prevMtlSetW = scale(70.f); prevMtlSetH = scale(165.f);
