@@ -427,6 +427,10 @@ void UIDocument::ApplyMetrics(const GameUIMetrics& m) {
         if (e.sizeH > 0.f) e.sizeH *= s;
         e.posX *= s;
         e.posY *= s;
+        // LineWidth (+0x1e8) is metrics-scaled in binary LoadUIObjects via $sliderLineWidth.
+        // After design parse, scale it the same as other sizes.
+        if (e.lineWidth > 0.f)
+            e.lineWidth *= s;
         auto scaleStyle = [s](UIStyle& st) {
             st.frame0Width *= s;
             st.frame1Width *= s;
@@ -868,10 +872,71 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
     }
 
     // ------------------------------------------------------------------
+    // UISliderElement::DrawBackground @ 0x105350
+    // if children==0 OR LineWidth(+0x1e8)==0 → fall through to UIElement::DrawBackground
+    // else: do NOT call base DrawBackground; draw track only:
+    //   color = style BackgroundColor (pfVar11[6]); if alpha==0 → return
+    //   parentInset = sum of Frame[i].Width while Frame[i].Color alpha==0
+    //   thumbInset  = same for child0 style
+    //   thickness   = LineWidth
+    //   horizontal: Y = center - LineWidth/2; X segments left/right of thumb
+    // ------------------------------------------------------------------
+    const bool sliderTrackPath = (e.type == UIElement::Type::Slider
+                                  && e.lineWidth > 0.f
+                                  && !e.children.empty());
+    if (sliderTrackPath) {
+        uint32_t lineCol = st.backgroundColor;
+        if (((lineCol >> 24) & 0xff) == 0)
+            return; // binary: no bg alpha → nothing drawn
+
+        auto transparentFrameInset = [](const UIStyle& s) -> float {
+            float sum = 0.f;
+            const float ws[3] = { s.frame0Width, s.frame1Width, s.frame2Width };
+            const uint32_t cs[3] = { s.frame0Color, s.frame1Color, s.frame2Color };
+            for (int i = 0; i < 3; ++i) {
+                if (((cs[i] >> 24) & 0xff) != 0) break;
+                sum += ws[i];
+            }
+            return sum;
+        };
+        const UIStyle& thumbSt = e.children[0]->CurrentStyle();
+        float parentInset = transparentFrameInset(st);
+        float thumbInset = transparentFrameInset(thumbSt);
+        float lw = e.lineWidth;
+        UIElement* thumb = e.children[0];
+        float tx = thumb->screenRect.x;
+        float ty = thumb->screenRect.y;
+        float tw = thumb->screenRect.w > 0.f ? thumb->screenRect.w : thumb->sizeW;
+        float th = thumb->screenRect.h > 0.f ? thumb->screenRect.h : thumb->sizeH;
+
+        if (e.horizontal) {
+            // Binary: Y = elem.y + H*0.5 - LineWidth*0.5
+            float ly = y + h * 0.5f - lw * 0.5f;
+            float left = x + parentInset;
+            float right = x + w - parentInset;
+            float thumbL = tx + thumbInset;
+            float thumbR = tx + tw - thumbInset;
+            if (left < thumbL)
+                drawQuad(left, ly, thumbL - left, lw, lineCol);
+            if (thumbR < right)
+                drawQuad(thumbR, ly, right - thumbR, lw, lineCol);
+        } else {
+            float lx = x + w * 0.5f - lw * 0.5f;
+            float top = y + parentInset;
+            float bot = y + h - parentInset;
+            float thumbT = ty + thumbInset;
+            float thumbB = ty + th - thumbInset;
+            if (top < thumbT)
+                drawQuad(lx, top, lw, thumbT - top, lineCol);
+            if (thumbB < bot)
+                drawQuad(lx, thumbB, lw, bot - thumbB, lineCol);
+        }
+        return; // track path replaces base DrawBackground entirely
+    }
+
+    // ------------------------------------------------------------------
     // UIElement::DrawBackground @ 0x103b60
-    // Early-out (binary): if BackgroundColor alpha==0 AND frame[0..2].Width all 0 → return.
-    // Else for i in 0..2: if Width!=0 inset by Width; ring drawn with Frame.Color (alpha0 →
-    // invisible stroke but still insets). Then fill remainder with BackgroundColor if alpha.
+    // Early-out: bg alpha==0 AND all frame widths 0 → return.
     // ------------------------------------------------------------------
     {
         float widths[3] = { st.frame0Width, st.frame1Width, st.frame2Width };
@@ -888,7 +953,6 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
                 fw -= bw * 2.f; fh -= bw * 2.f;
                 if (fw < 0.f) fw = 0.f;
                 if (fh < 0.f) fh = 0.f;
-                // Color alpha 0: binary still insets, skips visible ring
                 uint32_t col = colors[i];
                 if (((col >> 24) & 0xff) == 0) continue;
                 if (ow > 0.f && oh > 0.f) {
@@ -903,48 +967,6 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             }
             if (bgVisible && fw > 0.f && fh > 0.f)
                 drawQuad(fx, fy, fw, fh, st.backgroundColor);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // UISliderElement::DrawBackground @ 0x105350 (~2465B)
-    // if children==0 OR LineWidth==0 → base only (already done)
-    // else draw track between parent insets and thumb insets
-    // ------------------------------------------------------------------
-    // UISliderElement::DrawBackground @ 0x105350
-    // Parent already drew frame/fill (trough). Track line uses LineWidth (+0x1e8).
-    // Track color = parent style background (pfVar11[6]); segments avoid thumb body.
-    // Thumb (child 0) is a normal UIElement button drawn later by DrawH.
-    if (e.type == UIElement::Type::Slider && e.lineWidth > 0.f && !e.children.empty()) {
-        UIElement* thumb = e.children[0];
-        float thumbW = thumb->screenRect.w > 0.f ? thumb->screenRect.w : thumb->sizeW;
-        float thumbH = thumb->screenRect.h > 0.f ? thumb->screenRect.h : thumb->sizeH;
-        float lw = e.lineWidth;
-        // Track uses fill/background of the slider style (binary pfVar11[6])
-        uint32_t lineCol = st.backgroundColor;
-        if (((lineCol >> 24) & 0xff) == 0)
-            lineCol = 0xFF808080; // visible fallback only if style has no fill
-        // Prefer frame color if bg fully transparent in some themes
-        if (((st.backgroundColor >> 24) & 0xff) == 0 && ((st.frame1Color >> 24) & 0xff) != 0)
-            lineCol = st.frame1Color;
-
-        if (e.horizontal) {
-            float ly = y + (h - lw) * 0.5f;
-            // Two segments: left of thumb, right of thumb
-            float t0 = thumb->screenRect.x;
-            float t1 = thumb->screenRect.x + thumbW;
-            if (t0 > x)
-                drawQuad(x, ly, t0 - x, lw, lineCol);
-            if (t1 < x + w)
-                drawQuad(t1, ly, (x + w) - t1, lw, lineCol);
-        } else {
-            float lx = x + (w - lw) * 0.5f;
-            float t0 = thumb->screenRect.y;
-            float t1 = thumb->screenRect.y + thumbH;
-            if (t0 > y)
-                drawQuad(lx, y, lw, t0 - y, lineCol);
-            if (t1 < y + h)
-                drawQuad(lx, t1, lw, (y + h) - t1, lineCol);
         }
     }
 
