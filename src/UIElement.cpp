@@ -520,15 +520,18 @@ void UIDocument::ResolveAll(float screenW, float screenH) {
             }
         }
         if (sets && grid && sets->screenRect.h > 0.f && grid->screenRect.h > 0.f) {
-            float targetBottom = grid->screenRect.y;
+            // Design intent on 480h: strip sits fully above the 3×3 panel with a small gap.
+            // Previous pin put bottom of strip on top of grid → lower third overlapped icons.
+            // Lift by ~½ tab height so the whole strip clears the material buttons.
+            float gap = sets->screenRect.h * 0.55f;
+            if (gap < 8.f) gap = 8.f;
+            float targetBottom = grid->screenRect.y - gap;
             float newY = targetBottom - sets->screenRect.h;
-            // Keep fully on-screen
             if (newY < 0.f) newY = 0.f;
             if (newY + sets->screenRect.h > screenH) newY = screenH - sets->screenRect.h;
             float dy = newY - sets->screenRect.y;
             if (dy != 0.f) {
                 sets->screenRect.y = newY;
-                // Children of sets use ResolveLayout from parent rect — shift them
                 for (auto* ch : sets->children) {
                     if (!ch) continue;
                     ch->screenRect.y += dy;

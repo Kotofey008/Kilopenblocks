@@ -7,6 +7,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
+#include <vector>
 #include <strings.h> // strcasecmp
 
 // Observed static world-size table (values still approximate; symbol s_WorldSizesHi size 72)
@@ -1163,33 +1165,73 @@ void Game::SelectPalettePage(int page, int) {
 }
 
 // Game::UpdatePaletteUI @ 0x74980
-// — selected on menu_mtl_N when db0+N == dac
-// — selected on menu_mtl_set_P when P == page
-// — UIGridModelMtl.materials[i] = db0+i; SetPalettePage for draw
+// Page tabs (menu_mtl_set_*): binary scrolls visible labels when pageCount > nTabs.
+//   half = nTabs/2
+//   if page < half:          label[i] = i+1,  selected iff i==page
+//   else if page < total-half: label[i] = page+1-half+i, selected iff i==half
+//   else:                    label[i] = total-nTabs+i+1, selected iff page==start+i
 void Game::UpdatePaletteUI() {
-    const int pageBase = palettePage_ * 9;
-    const int selSlot = paletteItem_ - pageBase; // 0..8 when on current page
+    const int pageSize = 9;
+    const int pageBase = palettePage_ * pageSize;
+    const int selSlot = paletteItem_ - pageBase;
+
+    int pageCount = 1;
+    int maxSel = grid_.MaxSelIndex();
+    if (maxSel > 0) {
+        pageCount = (maxSel + pageSize - 1) / pageSize;
+        if (pageCount < 1) pageCount = 1;
+    }
+
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
         p.doc.SetPalettePage(palettePage_);
+
+        // Collect page-tab elements in index order (menu_mtl_set_0 .. _N)
+        std::vector<UIElement*> tabs;
+        tabs.reserve(8);
+        for (int i = 0; i < 16; ++i) {
+            char name[32];
+            std::snprintf(name, sizeof(name), "menu_mtl_set_%d", i);
+            if (UIElement* e = p.doc.Find(name))
+                tabs.push_back(e);
+            else
+                break;
+        }
+        const int nTabs = (int)tabs.size();
+        if (nTabs > 0 && pageCount > 0) {
+            const int half = nTabs / 2;
+            int startLabel = 0; // 0-based page index shown on first tab
+            if (palettePage_ < half || pageCount <= nTabs) {
+                startLabel = 0;
+            } else if (palettePage_ < pageCount - half) {
+                startLabel = palettePage_ - half;
+            } else {
+                startLabel = pageCount - nTabs;
+                if (startLabel < 0) startLabel = 0;
+            }
+            for (int i = 0; i < nTabs; ++i) {
+                int pageIdx = startLabel + i;
+                char buf[16];
+                std::snprintf(buf, sizeof(buf), "%d", pageIdx + 1);
+                if (tabs[i]->text != buf)
+                    tabs[i]->text = buf;
+                tabs[i]->selected = (pageIdx == palettePage_);
+            }
+        }
+
         for (auto& e : p.doc.All()) {
             if (e.name.compare(0, 9, "menu_mtl_") == 0 && e.name.size() == 10) {
                 int slot = e.name[9] - '0';
                 e.selected = (slot >= 0 && slot <= 8 && slot == selSlot
                               && paletteItem_ == pageBase + slot);
-            } else if (e.name.compare(0, 13, "menu_mtl_set_") == 0) {
-                int pg = std::atoi(e.name.c_str() + 13);
-                e.selected = (pg == palettePage_);
             }
             if (e.type == UIElement::Type::GridModelMtl) {
-                // Binary writes materials[i] = pageBase + i for i in 0..arrayWidth*rows
-                int n = e.arrayWidth > 0 ? e.arrayWidth * ((e.arrayWidth > 0) ? 3 : 1) : 9;
-                if (n < 9) n = 9;
+                int n = e.arrayWidth * e.arrayHeight;
+                if (n < 1) n = 9;
                 if ((int)e.materials.size() < n) e.materials.resize((size_t)n, 0);
-                for (int i = 0; i < n && i < (int)e.materials.size(); ++i)
-                    e.materials[(size_t)i] = pageBase + i; // local display uses page+slot via SetPalettePage
-                // Keep local 0..8 for our Draw path: materials are local slots; page via SetPalettePage
-                for (int i = 0; i < (int)e.materials.size() && i < 9; ++i)
+                // Draw path: materials[i] = local slot; absolute = palettePage_*9+slot
+                // (binary stores absolute db0+i; our Draw adds page base once).
+                for (int i = 0; i < n; ++i)
                     e.materials[(size_t)i] = i;
             }
         }
@@ -1214,9 +1256,11 @@ void Game::FlyModeToggle() {
     SetFlying(!playerSet_.GetFlying());
 }
 void Game::SetFlying(bool on) {
-    // Game::SetFlying @ binary — EntityPlayerSet::SetFlying + SetText on fly_mode_toggle
+    // Game::SetFlying @ 0x7b910 — EntityPlayerSet::SetFlying + SetText on fly_mode_toggle.
+    // Binary (PIC): when param_1 true → string @ Walking; when false → Flying.
+    // Button shows the mode you SWITCH TO, not the current mode.
     playerSet_.SetFlying(on);
-    const char* key = on ? "/Flying/Flying" : "/Walking/Walking";
+    const char* key = on ? "/Walking/Walking" : "/Flying/Flying";
     std::string label = Localization::Instance().Localize(key);
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
@@ -1242,15 +1286,23 @@ void Game::UpdateScreenMessages() {}
 // Binary SetFlying / SelectTerrainType / SelectScreenSize update element Text via Localize.
 // Central refresh so labels stay correct without requiring a button press.
 void Game::RefreshDynamicUILabels() {
-    // fly_mode_toggle: /Flying/ or /Walking/
+    // fly_mode_toggle: show target mode (binary SetFlying string select)
     {
         bool flying = playerSet_.GetFlying();
-        std::string fly = Localization::Instance().Localize(flying ? "/Flying/Flying" : "/Walking/Walking");
+        std::string fly = Localization::Instance().Localize(
+            flying ? "/Walking/Walking" : "/Flying/Flying");
         for (auto& p : uiPanels_) {
             if (!p.loaded) continue;
             if (UIElement* e = p.doc.Find("fly_mode_toggle"))
                 e->text = fly;
         }
+    }
+    // menu_full_version stays hidden (design Visible=0; wildcard menu_* SetVisible 1
+    // must not re-show it over menu_select_terrain at the same position).
+    for (auto& p : uiPanels_) {
+        if (!p.loaded) continue;
+        if (UIElement* e = p.doc.Find("menu_full_version"))
+            e->visible = false;
     }
     // screen_size: "Screen: " + Phone|Small tablet|Tablet
     {
@@ -1326,6 +1378,33 @@ void Game::UpdateHUDUI() {
         }
     } else if (hudLoaded_) {
         for (auto& e : hudDoc.All()) e.pressed = false;
+    }
+
+    // Game::UpdateHUDUI @ 0x74860 — hud_activate (Visible=0 in hud.txt) only when
+    // local player looking-cell index ≥0 and GridData::IsActiveCell(cell).
+    // Design default Visible=0; show only while crosshair targets an "active" cell.
+    if (hudLoaded_) {
+        if (UIElement* act = hudDoc.Find("hud_activate")) {
+            bool show = false;
+            if (!menuOpen_ && player_) {
+                Vector eye = player_->GetEyePosition();
+                Vector dir = player_->GetLookDirection();
+                float reach = player_->GetOperationDistance();
+                Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
+                GridDataTraceResult tr{};
+                grid_.TracePoint(eye, to, tr, player_);
+                if (tr.hit) {
+                    // IsActiveCell @ 0xb1a40: type in [0x11, 0x52] has jump-table handlers
+                    // (doors/switches/etc.). Non-matching → false.
+                    unsigned char t = tr.blockType;
+                    unsigned char d = (unsigned char)(t - 0x11);
+                    show = (d < 0x42);
+                }
+            }
+            act->visible = show;
+            if (!show)
+                act->pressed = false;
+        }
     }
 
     // Palette selected + GridModelMtl page materials (binary UpdatePaletteUI)
