@@ -194,11 +194,15 @@ float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return 0.f;
     unsigned short st = (idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
-    if ((st & 0x3fc0) == 0 && grid.cellTypes[idx] != 5)
+    // Height for type-5 water-block OR any water-fluid state (type 0 + 0x2000/0xE000)
+    if (grid.cellTypes[idx] != 5 && !GridData::IsWaterFluidState(st) &&
+        !GridData::HasLiquidState(st))
         return 0.f;
     if (IsWaterCell(grid, x, y + 1, z))
         return 1.f; // 0x80 path — full column under water above
     int level = (int)((st & 0x1c00) >> 10);
+    // 0xE000 water source packs no level nibble — treat as level 0
+    if ((st & 0xE000) == 0xE000) level = 0;
     // Water under a horizontal stream: keep normal height unless dead-end
     // (no child stream at level+1) and level != 7 → then level-7 look (1/16).
     // Corner-max still joins neighbours of any level continuously.
@@ -727,13 +731,15 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         int cidx = grid.CoordToIndex(wx, wy, wz);
         if (cidx < 0) continue;
         unsigned char t = grid.cellTypes[cidx];
-        if (t == 0) continue;
-
-        const Material* mat = grid.GetMaterial((int)t);
         unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
-        // Water/liquid: binary still has class 0, but liquid surface is AddWaterFace only.
-        // Do not emit solid AddBlockFace for fluid cells (rollback solid water cubes).
-        const bool liquid = IsWaterCell(grid, wx, wy, wz) || GridData::IsWaterFluidState(st);
+        // World liquids are often type 0 + fluid state (binary). Must not skip them.
+        // Block id 5 water-block also participates via IsWaterCell.
+        const bool liquid = IsWaterCell(grid, wx, wy, wz) ||
+                            GridData::IsWaterFluidState(st) ||
+                            GridData::IsLavaFluidState(st);
+        if (t == 0 && !liquid) continue;
+
+        const Material* mat = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
         if (liquid) {
             MeshBuffer& dst = waterOut ? *waterOut : solidOut;
             float h = WaterHeightFrac(grid, wx, wy, wz);
