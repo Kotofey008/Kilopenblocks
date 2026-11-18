@@ -368,23 +368,6 @@ void GLApplication::RenderWorld() {
         }
         glDisable(GL_BLEND);
 
-        // --- Clouds (textured plane, SkyLightScale tint in verts) ---
-        clouds_.SetEnabled(game_.CloudsEnabled());
-        if (clouds_.IsEnabled()) {
-            glEnable(GL_TEXTURE_2D);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-            glColor4f(1.f, 1.f, 1.f, 1.f);
-            clouds_.Bind();
-            clouds_.UpdateMesh(eye.x, eye.z); // voxel layer at scene Position.y=129.5
-            const MeshBuffer& cm = clouds_.GetMesh();
-            if (cm.IndexCount() > 0) {
-                DrawPrimitive(0x0004, cm.Vertices().data(), cm.Indices().data(), cm.IndexCount(), 0);
-            }
-            glDisable(GL_BLEND);
-        }
-
         glDepthMask(GL_TRUE);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -402,6 +385,33 @@ void GLApplication::RenderWorld() {
                       rm.buffer.Indices().data(),
                       rm.buffer.IndexCount(), 0);
     }
+    // Clouds after opaque solids: depth TEST on so nearer blocks occlude,
+    // depth WRITE off so clouds don't punch holes in the depth buffer.
+    // Drawn after terrain so cloud fragments closer than ground win the blend.
+    {
+        Vector eye = game_.GetCamera().GetPosition();
+        clouds_.SetEnabled(game_.CloudsEnabled());
+        if (clouds_.IsEnabled()) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glEnable(GL_TEXTURE_2D);
+            glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            glColor4f(1.f, 1.f, 1.f, 1.f);
+            clouds_.Bind();
+            clouds_.UpdateMesh(eye.x, eye.z);
+            const MeshBuffer& cm = clouds_.GetMesh();
+            if (cm.IndexCount() > 0) {
+                DrawPrimitive(0x0004, cm.Vertices().data(), cm.Indices().data(), cm.IndexCount(), 0);
+            }
+            glDisable(GL_BLEND);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_CULL_FACE);
+        }
+    }
+
     // Pass 2: liquid faces (AddWaterFace path) — blend, no depth write so
     // submerged solid faces remain visible through the surface. Cull off so
     // dual-sided YP (underwater looking up) is visible.
