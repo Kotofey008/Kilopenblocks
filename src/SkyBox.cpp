@@ -22,12 +22,23 @@ uint32_t SkyBox::PackColor(float r, float g, float b, float a) {
 }
 
 void SkyBox::LoadResources() {
-    if (!sunTexPath_.empty())
-        sunTex_.LoadPNGAsset(sunTexPath_.c_str());
-    if (!moonTexPath_.empty())
-        moonTex_.LoadPNGAsset(moonTexPath_.c_str());
+    // Paths from scene are "textures/sun.png" (assets-relative).
+    auto load = [](Texture& tex, const std::string& path) {
+        if (path.empty()) return;
+        if (!tex.LoadPNGAsset(path.c_str())) {
+            // fallback without folder prefix
+            std::string base = path;
+            size_t s = base.find_last_of('/');
+            if (s != std::string::npos)
+                tex.LoadPNGAsset(base.substr(s + 1).c_str());
+        }
+        tex.EnsureUploaded();
+    };
+    load(sunTex_, sunTexPath_);
+    load(moonTex_, moonTexPath_);
     starsBuilt_ = false;
     cachedDayFactor_ = -1.f;
+    UpdateSkyMesh();
 }
 
 void SkyBox::ApplyConfig(const SceneSkyBoxConfig& cfg) {
@@ -171,11 +182,24 @@ void SkyBox::BuildSunMoonMeshes(const Vector& eye, const Vector& right, const Ve
         Vector c(eye.x + dir.x * d, eye.y + dir.y * d, eye.z + dir.z * d);
         // SunScale * Scale.x * 0.5 — large discs (scene Scale.x = 16)
         float h = scale * skyObjectScale_ * 0.5f;
+        // Camera-facing basis; fall back if eye basis missing/degenerate
         Vector r = right, u = up;
         float rl = std::sqrt(r.x*r.x+r.y*r.y+r.z*r.z);
         float ul = std::sqrt(u.x*u.x+u.y*u.y+u.z*u.z);
-        if (rl < 1e-4f || ul < 1e-4f) return;
-        r.x/=rl; r.y/=rl; r.z/=rl; u.x/=ul; u.y/=ul; u.z/=ul;
+        if (rl < 1e-4f || ul < 1e-4f) {
+            // Build orthonormal frame from dir
+            Vector tmp = (std::fabs(dir.y) < 0.99f) ? Vector(0.f, 1.f, 0.f) : Vector(1.f, 0.f, 0.f);
+            r = Vector(tmp.y*dir.z - tmp.z*dir.y, tmp.z*dir.x - tmp.x*dir.z, tmp.x*dir.y - tmp.y*dir.x);
+            rl = std::sqrt(r.x*r.x+r.y*r.y+r.z*r.z);
+            if (rl < 1e-4f) return;
+            r.x/=rl; r.y/=rl; r.z/=rl;
+            u = Vector(dir.y*r.z - dir.z*r.y, dir.z*r.x - dir.x*r.z, dir.x*r.y - dir.y*r.x);
+            ul = std::sqrt(u.x*u.x+u.y*u.y+u.z*u.z);
+            if (ul < 1e-4f) return;
+            u.x/=ul; u.y/=ul; u.z/=ul;
+        } else {
+            r.x/=rl; r.y/=rl; r.z/=rl; u.x/=ul; u.y/=ul; u.z/=ul;
+        }
         uint32_t col = 0xFFFFFFFFu;
         Vector p0(c.x - r.x*h - u.x*h, c.y - r.y*h - u.y*h, c.z - r.z*h - u.z*h);
         Vector p1(c.x - r.x*h + u.x*h, c.y - r.y*h + u.y*h, c.z - r.z*h + u.z*h);
@@ -228,7 +252,7 @@ void SkyBox::EnsureStarsMesh() {
         float x = std::cos(el) * std::cos(az);
         float y = std::sin(el);
         float z = std::cos(el) * std::sin(az);
-        uint32_t col = (size01 < 0.55f) ? 0xFF3D4249u : 0xFF1D2229u;
+        uint32_t col = (size01 < 0.55f) ? 0xFFEEEEDDu : 0xFFBBBBAAu;
         float half = 0.25f + size01 * 0.55f;
         uint16_t key = (uint16_t)std::min(65535, (int)((az / kTwoPi) * 65535.f));
         stars.push_back({x*dist, y*dist, z*dist, half, col, key});

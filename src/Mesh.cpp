@@ -798,14 +798,15 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
 #include <GLES/gl.h>
 void DrawPrimitive(unsigned int mode, const PCT1Vertex* verts, const uint16_t* indices,
                    int indexCount, int) {
+    // Binary DrawPrimitive @ 0xcfa30: client arrays only. Texture enable/bind is
+    // owned by RenderState / caller (Screen::ApplyState) — do NOT force GL_TEXTURE_2D
+    // here or untextured sky/stars sample an incomplete unit and go black.
     if (!verts || !indices || indexCount <= 0) return;
-    glEnable(GL_TEXTURE_2D);
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     const char* base = reinterpret_cast<const char*>(verts);
     glVertexPointer(3, GL_FLOAT, 24, base + 0);
-    // GLES: UNSIGNED_BYTE colors are normalized automatically
     glColorPointer(4, GL_UNSIGNED_BYTE, 24, base + 12);
     glTexCoordPointer(2, GL_FLOAT, 24, base + 16);
     glDrawElements(mode, indexCount, GL_UNSIGNED_SHORT, indices);

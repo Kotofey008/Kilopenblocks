@@ -123,6 +123,7 @@ void GLApplication::OnCreateGLContext() {
             skyBox_.ApplyConfig(game_.GetScene().skyBox);
         skyBox_.LoadResources();
         skyBox_.EnsureStarsMesh();
+        skyBox_.UpdateSkyMesh();
         hudFont_.Load(nullptr, nullptr);
         lightMap_.Init(game_.GetGrid());
         gameContentInited_ = true;
@@ -297,37 +298,40 @@ void GLApplication::RenderWorld() {
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(view.m);
 
-    // SkyBox::Render3D path: horizon mesh, stars subset, camera-facing sun/moon
+    // SkyBox::Render3D @ 0xefb90: clear already done; horizon, stars, sun/moon, then clouds.
+    // Texture enable is per-pass (DrawPrimitive no longer forces GL_TEXTURE_2D).
     {
         Vector eye = game_.GetCamera().GetPosition();
         Vector right = game_.GetCamera().GetRight();
         Vector up = game_.GetCamera().GetUp();
 
-        // Horizon ring + cap (UpdateSkyMesh) — no depth write, centered on eye
+        glDisable(GL_FOG);
+        glDisable(GL_LIGHTING);
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_DEPTH_TEST);
+
+        // --- Horizon mesh (untextured, vertex colors) ---
         if (skyBox_.HorizonEnabled()) {
             skyBox_.UpdateSkyMesh();
             const MeshBuffer& hm = skyBox_.HorizonMesh();
             if (hm.IndexCount() > 0) {
                 glDisable(GL_TEXTURE_2D);
-                glDisable(GL_DEPTH_TEST);
-                glDepthMask(GL_FALSE);
+                glDisable(GL_BLEND);
                 glMatrixMode(GL_MODELVIEW);
                 glPushMatrix();
                 glTranslatef(eye.x, eye.y, eye.z);
                 DrawPrimitive(0x0004, hm.Vertices().data(), hm.Indices().data(), hm.IndexCount(), 0);
                 glPopMatrix();
-                glDepthMask(GL_TRUE);
-                glEnable(GL_DEPTH_TEST);
             }
         }
 
+        // --- Stars (untextured, vertex colors + alpha) ---
         if (skyBox_.StarsVisible()) {
             skyBox_.EnsureStarsMesh();
             const MeshBuffer& sm = skyBox_.StarsMesh();
             if (sm.IndexCount() > 0) {
                 glDisable(GL_TEXTURE_2D);
-                glDisable(GL_DEPTH_TEST);
-                glDepthMask(GL_FALSE);
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glMatrixMode(GL_MODELVIEW);
@@ -336,20 +340,17 @@ void GLApplication::RenderWorld() {
                 DrawPrimitive(0x0004, sm.Vertices().data(), sm.Indices().data(), sm.IndexCount(), 0);
                 glPopMatrix();
                 glDisable(GL_BLEND);
-                glDepthMask(GL_TRUE);
-                glEnable(GL_DEPTH_TEST);
-                glEnable(GL_TEXTURE_2D);
             }
         }
 
+        // --- Sun / Moon (textured billboards, camera-facing) ---
         MeshBuffer sunM, moonM;
-        // Dist ~120: with half = scale*16*0.5 discs match large original appearance
         skyBox_.BuildSunMoonMeshes(eye, right, up, 120.f, sunM, moonM);
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+        glColor4f(1.f, 1.f, 1.f, 1.f);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_TEXTURE_2D);
         if (sunM.IndexCount() > 0) {
             skyBox_.SunTexture().Bind();
             DrawPrimitive(0x0004, sunM.Vertices().data(), sunM.Indices().data(), sunM.IndexCount(), 0);
@@ -359,22 +360,29 @@ void GLApplication::RenderWorld() {
             DrawPrimitive(0x0004, moonM.Vertices().data(), moonM.Indices().data(), moonM.IndexCount(), 0);
         }
         glDisable(GL_BLEND);
+
+        // --- Clouds (textured plane, SkyLightScale tint in verts) ---
+        clouds_.SetEnabled(game_.CloudsEnabled());
+        if (clouds_.IsEnabled()) {
+            glEnable(GL_TEXTURE_2D);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            glColor4f(1.f, 1.f, 1.f, 1.f);
+            clouds_.Bind();
+            clouds_.BuildMesh(eye.x, eye.z, eye.y + 80.f, 512.f);
+            const MeshBuffer& cm = clouds_.GetMesh();
+            if (cm.IndexCount() > 0) {
+                DrawPrimitive(0x0004, cm.Vertices().data(), cm.Indices().data(), cm.IndexCount(), 0);
+            }
+            glDisable(GL_BLEND);
+        }
+
         glDepthMask(GL_TRUE);
         glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
     }
-    // Clouds (drawn first, no depth write ideally)
-    // EnableClouds @ 0x63b80 sets Clouds::SetEnabled; sync from Game applied flag
-    clouds_.SetEnabled(game_.CloudsEnabled());
-    if (clouds_.IsEnabled()) {
-        clouds_.Bind();
-        // rebuild plane UV from offset
-        Vector eye = game_.GetCamera().GetPosition();
-        clouds_.BuildMesh(eye.x, eye.z, eye.y + 80.f, 512.f);
-        DrawPrimitive(0x0004 /*GL_TRIANGLES*/,
-                      clouds_.GetMesh().Vertices().data(),
-                      clouds_.GetMesh().Indices().data(),
-                      clouds_.GetMesh().IndexCount(), 0);
-    }
+
     glEnable(GL_TEXTURE_2D);
     blocksAtlas_.Bind();
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);

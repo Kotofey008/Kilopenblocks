@@ -3,7 +3,9 @@
 #include <cmath>
 
 void Clouds::LoadResources(const char* texturePath) {
-    if (!texture_.LoadPNGAsset(texturePath) && !texture_.LoadPNGAsset("textures/clouds.png")) {}
+    if (!texture_.LoadPNGAsset(texturePath))
+        texture_.LoadPNGAsset("textures/clouds.png");
+    texture_.EnsureUploaded();
     BuildMesh(0, 0, 120.f, 512.f);
 }
 

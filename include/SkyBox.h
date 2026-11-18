@@ -34,7 +34,7 @@ public:
     void EnsureStarsMesh();
     void RebuildStarsSubset();
     const MeshBuffer& StarsMesh() const { return starsDrawMesh_; }
-    bool StarsVisible() const { return dayFactor_ < 1.f - 1e-4f && numStars_ > 0; }
+    bool StarsVisible() const { return dayFactor_ < 0.98f && numStars_ > 0; }
 
     void UpdateSkyMesh();
     const MeshBuffer& HorizonMesh() const { return horizonMesh_; }
