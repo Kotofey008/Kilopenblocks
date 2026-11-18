@@ -32,6 +32,8 @@ void SkyBox::LoadResources() {
             if (s != std::string::npos)
                 tex.LoadPNGAsset(base.substr(s + 1).c_str());
         }
+        // Black background → transparent (same idea as font alpha mask)
+        tex.ConvertKeyBlackToAlpha();
         tex.EnsureUploaded();
     };
     load(sunTex_, sunTexPath_);
@@ -180,36 +182,49 @@ void SkyBox::BuildSunMoonMeshes(const Vector& eye, const Vector& right, const Ve
         if (dir.y < -0.02f) return;
         float d = dist > 1.f ? dist : 120.f;
         Vector c(eye.x + dir.x * d, eye.y + dir.y * d, eye.z + dir.z * d);
-        // SunScale * Scale.x * 0.5 — large discs (scene Scale.x = 16)
         float h = scale * skyObjectScale_ * 0.5f;
-        // Camera-facing basis; fall back if eye basis missing/degenerate
-        Vector r = right, u = up;
-        float rl = std::sqrt(r.x*r.x+r.y*r.y+r.z*r.z);
-        float ul = std::sqrt(u.x*u.x+u.y*u.y+u.z*u.z);
+
+        // Screen-aligned billboard facing camera: axes = camera right/up projected
+        // onto plane perpendicular to (center - eye) ≈ dir.
+        Vector zaxis(dir.x, dir.y, dir.z); // from eye to body
+        Vector r = right;
+        // Remove component along z so sprite stays centered on the ray
+        float dot = r.x * zaxis.x + r.y * zaxis.y + r.z * zaxis.z;
+        r.x -= dot * zaxis.x; r.y -= dot * zaxis.y; r.z -= dot * zaxis.z;
+        float rl = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z);
+        Vector u = up;
+        float dotu = u.x * zaxis.x + u.y * zaxis.y + u.z * zaxis.z;
+        u.x -= dotu * zaxis.x; u.y -= dotu * zaxis.y; u.z -= dotu * zaxis.z;
+        float ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
         if (rl < 1e-4f || ul < 1e-4f) {
-            // Build orthonormal frame from dir
-            Vector tmp = (std::fabs(dir.y) < 0.99f) ? Vector(0.f, 1.f, 0.f) : Vector(1.f, 0.f, 0.f);
-            r = Vector(tmp.y*dir.z - tmp.z*dir.y, tmp.z*dir.x - tmp.x*dir.z, tmp.x*dir.y - tmp.y*dir.x);
-            rl = std::sqrt(r.x*r.x+r.y*r.y+r.z*r.z);
+            Vector tmp = (std::fabs(zaxis.y) < 0.99f) ? Vector(0.f, 1.f, 0.f) : Vector(1.f, 0.f, 0.f);
+            r = Vector(tmp.y * zaxis.z - tmp.z * zaxis.y,
+                       tmp.z * zaxis.x - tmp.x * zaxis.z,
+                       tmp.x * zaxis.y - tmp.y * zaxis.x);
+            rl = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z);
             if (rl < 1e-4f) return;
-            r.x/=rl; r.y/=rl; r.z/=rl;
-            u = Vector(dir.y*r.z - dir.z*r.y, dir.z*r.x - dir.x*r.z, dir.x*r.y - dir.y*r.x);
-            ul = std::sqrt(u.x*u.x+u.y*u.y+u.z*u.z);
+            r.x /= rl; r.y /= rl; r.z /= rl;
+            u = Vector(zaxis.y * r.z - zaxis.z * r.y,
+                       zaxis.z * r.x - zaxis.x * r.z,
+                       zaxis.x * r.y - zaxis.y * r.x);
+            ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
             if (ul < 1e-4f) return;
-            u.x/=ul; u.y/=ul; u.z/=ul;
+            u.x /= ul; u.y /= ul; u.z /= ul;
         } else {
-            r.x/=rl; r.y/=rl; r.z/=rl; u.x/=ul; u.y/=ul; u.z/=ul;
+            r.x /= rl; r.y /= rl; r.z /= rl;
+            u.x /= ul; u.y /= ul; u.z /= ul;
         }
+
         uint32_t col = 0xFFFFFFFFu;
-        Vector p0(c.x - r.x*h - u.x*h, c.y - r.y*h - u.y*h, c.z - r.z*h - u.z*h);
-        Vector p1(c.x - r.x*h + u.x*h, c.y - r.y*h + u.y*h, c.z - r.z*h + u.z*h);
-        Vector p2(c.x + r.x*h + u.x*h, c.y + r.y*h + u.y*h, c.z + r.z*h + u.z*h);
-        Vector p3(c.x + r.x*h - u.x*h, c.y + r.y*h - u.y*h, c.z + r.z*h - u.z*h);
+        Vector p0(c.x - r.x * h - u.x * h, c.y - r.y * h - u.y * h, c.z - r.z * h - u.z * h);
+        Vector p1(c.x - r.x * h + u.x * h, c.y - r.y * h + u.y * h, c.z - r.z * h + u.z * h);
+        Vector p2(c.x + r.x * h + u.x * h, c.y + r.y * h + u.y * h, c.z + r.z * h + u.z * h);
+        Vector p3(c.x + r.x * h - u.x * h, c.y + r.y * h - u.y * h, c.z + r.z * h - u.z * h);
         PCT1Vertex v[4] = {
-            {p0.x,p0.y,p0.z,col,0.f,1.f},
-            {p1.x,p1.y,p1.z,col,0.f,0.f},
-            {p2.x,p2.y,p2.z,col,1.f,0.f},
-            {p3.x,p3.y,p3.z,col,1.f,1.f},
+            {p0.x, p0.y, p0.z, col, 0.f, 1.f},
+            {p1.x, p1.y, p1.z, col, 0.f, 0.f},
+            {p2.x, p2.y, p2.z, col, 1.f, 0.f},
+            {p3.x, p3.y, p3.z, col, 1.f, 1.f},
         };
         mb.PushQuad(v);
     };

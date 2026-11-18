@@ -19,6 +19,8 @@ public:
     void InvalidateGL();
     // Font atlases: RGB luminance → alpha, RGB forced to white (no tRNS in PNG).
     void ConvertGrayscaleToAlphaMask();
+    // Black/dark → transparent, keep RGB (sun/moon/clouds.png).
+    void ConvertKeyBlackToAlpha();
     bool EnsureUploaded() const;
     unsigned Width() const { return width_; }
     unsigned Height() const { return height_; }

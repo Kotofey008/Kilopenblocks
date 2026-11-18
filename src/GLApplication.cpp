@@ -118,7 +118,8 @@ void GLApplication::OnCreateGLContext() {
 
         game_.SelectTerrainType(Game::TerrainType::Earth);
         game_.Play(0);
-        clouds_.LoadResources("textures/clouds.png");
+        // Clouds scene defaults from start.scene (Position.y=129.5, Scale=12 5 12, Radius=20)
+        clouds_.ApplyScene(129.5f, 12.f, 5.f, 12.f, 20, 0.05f, 0.f, 0.f, "textures/clouds.png");
         if (game_.GetScene().skyBox.present)
             skyBox_.ApplyConfig(game_.GetScene().skyBox);
         skyBox_.LoadResources();
@@ -139,7 +140,7 @@ void GLApplication::OnCreateGLContext() {
     lavaPal_.EnsureUploaded();
     hudFont_.GetTexture().EnsureUploaded();
     skyBox_.LoadResources(); // re-bind sky textures if any
-    clouds_.LoadResources("textures/clouds.png");
+    clouds_.ApplyScene(129.5f, 12.f, 5.f, 12.f, 20, 0.05f, 0.f, 0.f, "textures/clouds.png");
     // Layout / hit-test against current window size
     {
         int ww = ANativeWindow_getWidth(mApp->window);
@@ -370,7 +371,7 @@ void GLApplication::RenderWorld() {
             glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
             glColor4f(1.f, 1.f, 1.f, 1.f);
             clouds_.Bind();
-            clouds_.BuildMesh(eye.x, eye.z, eye.y + 80.f, 512.f);
+            clouds_.UpdateMesh(eye.x, eye.z); // voxel layer at scene Position.y=129.5
             const MeshBuffer& cm = clouds_.GetMesh();
             if (cm.IndexCount() > 0) {
                 DrawPrimitive(0x0004, cm.Vertices().data(), cm.Indices().data(), cm.IndexCount(), 0);

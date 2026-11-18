@@ -237,6 +237,29 @@ bool Texture::UploadGL() const {
 }
 
 
+
+void Texture::ConvertKeyBlackToAlpha() {
+    // Same idea as font grayscale mask, but keep original RGB (sun/moon/cloud art).
+    // Alpha = max(R,G,B) so pure black (0,0,0) becomes fully transparent.
+    if (pixels_.empty() || width_ == 0 || height_ == 0) return;
+    const size_t n = (size_t)width_ * (size_t)height_;
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t* p = &pixels_[i * 4];
+        uint8_t a = p[0];
+        if (p[1] > a) a = p[1];
+        if (p[2] > a) a = p[2];
+        p[3] = a;
+    }
+#if defined(__ANDROID__)
+    if (glId_) {
+        glBindTexture(GL_TEXTURE_2D, glId_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)width_, (GLsizei)height_,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+#endif
+}
+
 void Texture::ConvertGrayscaleToAlphaMask() {
     if (pixels_.empty() || width_ == 0 || height_ == 0) return;
     const size_t n = (size_t)width_ * (size_t)height_;
