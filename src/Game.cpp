@@ -1379,7 +1379,18 @@ void Game::UpdateSensitivity() {
             lab->text = buf;
     }
 }
-void Game::UpdateSkyBox() {}
+// Game::UpdateSkyBox @ 0x62d10
+// timeOfDay = (worldTimeMs % 0x127500) / period; SetTimeOfDay on sky;
+// Clouds::SetSkyLightScale = 0.2 + 0.8 * dayFactor (1.0 day / 0.2 night).
+void Game::UpdateSkyBox() {
+    const long long kDayMs = 1209600LL; // 0x127500
+    long long phase = worldTimeMs_ % kDayMs;
+    if (phase < 0) phase += kDayMs;
+    timeOfDay_ = (float)phase / (float)kDayMs;
+    // dayFactor mirrored for clouds (SkyBox recomputes on SetTimeOfDay in GL frame)
+    // Binary: fVar7 = 0.8 * dayFactor + 0.2
+    // Applied to Clouds via GLApplication after SetTimeOfDay.
+}
 
 // Game::UpdateTime @ 0x62cb0 — accumulate ApplicationBase::Clock delta into
 // this+0x40 (64-bit). Game::UpdateSkyBox @ 0x62d10 then:

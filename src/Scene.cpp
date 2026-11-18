@@ -225,7 +225,13 @@ bool Scene::Load(const std::string& path) {
             } else if (key == "Horizon") skyBox.horizon = parseBool(val);
             else if (key == "SunTextureFileName") skyBox.sunTextureFileName = val;
             else if (key == "MoonTextureFileName") skyBox.moonTextureFileName = val;
-            else if (key == "SunScale") skyBox.sunScale = parseFloat(val);
+            else if (key == "Scale") {
+                // "16 1 16" — X drives sky object / sun-moon size
+                float sx=16.f, sy=1.f, sz=16.f;
+                std::istringstream iss(val);
+                iss >> sx >> sy >> sz;
+                skyBox.scaleX = sx;
+            } else if (key == "SunScale") skyBox.sunScale = parseFloat(val);
             else if (key == "MoonScale") skyBox.moonScale = parseFloat(val);
             else if (key == "NumStars") skyBox.numStars = parseInt(val);
             else if (key == "StarsSeed") skyBox.starsSeed = parseInt(val);

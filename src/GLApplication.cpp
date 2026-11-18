@@ -297,26 +297,59 @@ void GLApplication::RenderWorld() {
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(view.m);
 
-    // Stars (night) + sun/moon billboards — positions follow camera eye
+    // SkyBox::Render3D path: horizon mesh, stars subset, camera-facing sun/moon
     {
         Vector eye = game_.GetCamera().GetPosition();
+        Vector right = game_.GetCamera().GetRight();
+        Vector up = game_.GetCamera().GetUp();
+
+        // Horizon ring + cap (UpdateSkyMesh) — no depth write, centered on eye
+        if (skyBox_.HorizonEnabled()) {
+            skyBox_.UpdateSkyMesh();
+            const MeshBuffer& hm = skyBox_.HorizonMesh();
+            if (hm.IndexCount() > 0) {
+                glDisable(GL_TEXTURE_2D);
+                glDisable(GL_DEPTH_TEST);
+                glDepthMask(GL_FALSE);
+                glMatrixMode(GL_MODELVIEW);
+                glPushMatrix();
+                glTranslatef(eye.x, eye.y, eye.z);
+                DrawPrimitive(0x0004, hm.Vertices().data(), hm.Indices().data(), hm.IndexCount(), 0);
+                glPopMatrix();
+                glDepthMask(GL_TRUE);
+                glEnable(GL_DEPTH_TEST);
+            }
+        }
+
         if (skyBox_.StarsVisible()) {
             skyBox_.EnsureStarsMesh();
             const MeshBuffer& sm = skyBox_.StarsMesh();
             if (sm.IndexCount() > 0) {
                 glDisable(GL_TEXTURE_2D);
-                glColor4f(1.f, 1.f, 1.f, 1.f);
-                // Translate star mesh with eye so sky is centered on viewer
+                glDisable(GL_DEPTH_TEST);
+                glDepthMask(GL_FALSE);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glMatrixMode(GL_MODELVIEW);
                 glPushMatrix();
                 glTranslatef(eye.x, eye.y, eye.z);
                 DrawPrimitive(0x0004, sm.Vertices().data(), sm.Indices().data(), sm.IndexCount(), 0);
                 glPopMatrix();
+                glDisable(GL_BLEND);
+                glDepthMask(GL_TRUE);
+                glEnable(GL_DEPTH_TEST);
                 glEnable(GL_TEXTURE_2D);
             }
         }
+
         MeshBuffer sunM, moonM;
-        skyBox_.BuildSunMoonMeshes(eye, 200.f, sunM, moonM);
+        // Dist ~120: with half = scale*16*0.5 discs match large original appearance
+        skyBox_.BuildSunMoonMeshes(eye, right, up, 120.f, sunM, moonM);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_TEXTURE_2D);
         if (sunM.IndexCount() > 0) {
             skyBox_.SunTexture().Bind();
             DrawPrimitive(0x0004, sunM.Vertices().data(), sunM.Indices().data(), sunM.IndexCount(), 0);
@@ -325,6 +358,9 @@ void GLApplication::RenderWorld() {
             skyBox_.MoonTexture().Bind();
             DrawPrimitive(0x0004, moonM.Vertices().data(), moonM.Indices().data(), moonM.IndexCount(), 0);
         }
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
     }
     // Clouds (drawn first, no depth write ideally)
     // EnableClouds @ 0x63b80 sets Clouds::SetEnabled; sync from Game applied flag
@@ -552,10 +588,14 @@ void GLApplication::Frame() {
     clouds_.Update(1.f/60.f);
     game_.UpdateTime();
     skyBox_.SetTimeOfDay(game_.GetTimeOfDay());
-    float sr, sg, sb; skyBox_.GetSkyColor(sr, sg, sb);
+    // Render3D: glClearColor from lower sky color (+0x18c), not average
+    float lr, lg, lb;
+    skyBox_.GetSkyLowerColor(lr, lg, lb);
 #if defined(__ANDROID__)
-    glClearColor(sr, sg, sb, 1.f);
+    glClearColor(lr, lg, lb, 1.f);
 #endif
+    // Game::UpdateSkyBox: Clouds::SetSkyLightScale = 0.2 + 0.8 * dayFactor
+    clouds_.SetSkyLightScale(0.2f + 0.8f * skyBox_.GetDayFactor());
     // periodic water tick
     static int waterTick = 0;
     if (++waterTick >= 15) { // ~4 Hz at 60fps

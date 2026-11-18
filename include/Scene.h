@@ -180,11 +180,13 @@ struct SceneSkyBoxConfig {
     float sunriseEnd   = 0.270833f;
     float sunsetBegin  = 0.729167f;
     float sunsetEnd    = 0.791667f;
-    // Colors 0..1 (scene Color = A R G B)
-    float dayLowerR = 1.f, dayLowerG = 207.f/255.f, dayLowerB = 167.f/255.f;
-    float dayUpperR = 1.f, dayUpperG = 168.f/255.f, dayUpperB = 115.f/255.f;
-    float nightLowerR = 19.f/255.f, nightLowerG = 12.f/255.f, nightLowerB = 9.f/255.f;
-    float nightUpperR = 10.f/255.f, nightUpperG = 6.f/255.f, nightUpperB = 4.f/255.f;
+    // Colors 0..1 — scene Color = "A B G R" (AABBGGRR). Ctor defaults:
+    // day lower 0xffffcfa7 → R167 G207 B255; upper 0xffffa873 → R115 G168 B255
+    // night lower 0xff130c09 → R9 G12 B19; upper 0xff0a0604 → R4 G6 B10
+    float dayLowerR = 167.f/255.f, dayLowerG = 207.f/255.f, dayLowerB = 1.f;
+    float dayUpperR = 115.f/255.f, dayUpperG = 168.f/255.f, dayUpperB = 1.f;
+    float nightLowerR = 9.f/255.f, nightLowerG = 12.f/255.f, nightLowerB = 19.f/255.f;
+    float nightUpperR = 4.f/255.f, nightUpperG = 6.f/255.f, nightUpperB = 10.f/255.f;
     bool horizon = true;
     std::string sunTextureFileName = "textures/sun.png";
     std::string moonTextureFileName = "textures/moon.png";
@@ -192,6 +194,7 @@ struct SceneSkyBoxConfig {
     float moonScale = 3.f;
     int numStars = 600;
     int starsSeed = 1;
+    float scaleX = 16.f; // Scene Scale.x (start.scene SkyBox Scale = 16 1 16)
 };
 
 class Scene {
