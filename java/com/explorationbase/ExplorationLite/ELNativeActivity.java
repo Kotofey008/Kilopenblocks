@@ -13,10 +13,8 @@ import android.view.WindowManager;
  * navigation bars stay hidden. Game logic remains pure native in
  * libExplorationLite.so — this class only handles system chrome.
  *
- * Not present in the original binary; added for modern Android UX.
- *
- * API 30+ InsetsController is invoked via reflection so this file still
- * compiles against android-28 (workflow platform jar).
+ * API 30+ InsetsController via reflection (compiles against android-28 jar).
+ * No anonymous inner classes — d8 NPE'd on ELNativeActivity$1.class.
  */
 public class ELNativeActivity extends NativeActivity {
 
@@ -44,10 +42,10 @@ public class ELNativeActivity extends NativeActivity {
             try {
                 w.setStatusBarColor(Color.TRANSPARENT);
                 w.setNavigationBarColor(Color.TRANSPARENT);
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
         }
 
-        // API 30+: Window.setDecorFitsSystemWindows(false) + InsetsController.hide
         if (Build.VERSION.SDK_INT >= 30) {
             try {
                 Window.class.getMethod("setDecorFitsSystemWindows", boolean.class)
@@ -57,29 +55,19 @@ public class ELNativeActivity extends NativeActivity {
                     Class<?> typeClass = Class.forName("android.view.WindowInsets$Type");
                     int bars = ((Integer) typeClass.getMethod("statusBars").invoke(null)).intValue()
                              | ((Integer) typeClass.getMethod("navigationBars").invoke(null)).intValue();
-                    controller.getClass().getMethod("hide", int.class).invoke(controller, Integer.valueOf(bars));
-                    // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE = 2
+                    controller.getClass().getMethod("hide", int.class)
+                            .invoke(controller, Integer.valueOf(bars));
                     controller.getClass()
                             .getMethod("setSystemBarsBehavior", int.class)
                             .invoke(controller, Integer.valueOf(2));
                 }
             } catch (Throwable ignored) {
-                // Fall through to classic flags
             }
         }
 
-        final View decor = w.getDecorView();
-        if (decor != null) {
+        View decor = w.getDecorView();
+        if (decor != null)
             decor.setSystemUiVisibility(UI_FLAGS);
-            decor.setOnSystemUiVisibilityChangeListener(new View.OnSystemUiVisibilityChangeListener() {
-                @Override
-                public void onSystemUiVisibilityChange(int visibility) {
-                    if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
-                        decor.setSystemUiVisibility(UI_FLAGS);
-                    }
-                }
-            });
-        }
     }
 
     @Override

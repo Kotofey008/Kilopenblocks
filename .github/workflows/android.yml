@@ -89,7 +89,9 @@ jobs:
             javac -source 1.8 -target 1.8 -bootclasspath "$PLATFORM" \
               -classpath "$PLATFORM" -d build/javac @build/java_sources.txt
             if [ -n "$D8" ]; then
-              $D8 --lib "$PLATFORM" --output build/dex $(find build/javac -name '*.class')
+              # --min-api matches uses-sdk; list class files explicitly (no anonymous $1 expected)
+              mapfile -t CLASS_FILES < <(find build/javac -name '*.class' | sort)
+              $D8 --min-api 19 --lib "$PLATFORM" --output build/dex "${CLASS_FILES[@]}"
             elif [ -n "$DX" ]; then
               $DX --dex --output=build/dex/classes.dex build/javac
             else
