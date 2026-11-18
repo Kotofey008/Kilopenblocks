@@ -83,9 +83,9 @@ void TerrainGeneratorEarth::AddGrassAndWater(GridData& grid, int x0, int z0, int
         for (int x = x0; x < x1; ++x) {
             int ground = GetGroundLevel(x, z);
             if (ground < waterLevel) {
-                // Source lake: fluid bit 0x2000, level 0 (matches SetLiquidState)
+                // Binary AddGrassAndWater: type=0 (Air) + state 0x2000 — NOT material 5
                 for (int y = ground; y < waterLevel; ++y)
-                    grid.SetCell(x, y, z, BlockId::Water, (unsigned short)0x2000);
+                    grid.SetCell(x, y, z, /*Air*/0, GridData::WATER_FILL_STATE);
             }
         }
     }
@@ -114,10 +114,11 @@ void TerrainGeneratorEarth::AddMushrooms(GridData& grid, int x, int z, unsigned 
 }
 
 void TerrainGeneratorEarth::AddLiquidSource(GridData& grid, int x, int y, int z, int liquidType) {
+    // Binary AddLiquidSource: type forced to 0; LiquidType 0 → 0xE000, else → 0xC3C0
     if (liquidType == 0)
-        grid.SetCell(x, y, z, BlockId::Water, (unsigned short)0x2000); // source
+        grid.SetCell(x, y, z, /*Air*/0, GridData::WATER_SOURCE_STATE);
     else
-        grid.SetCell(x, y, z, BlockId::Air, 0);
+        grid.SetCell(x, y, z, /*Air*/0, GridData::LAVA_SOURCE_STATE);
 }
 
 int TerrainGeneratorEarth::GetPositionCost(int, int, int) { return 0; }

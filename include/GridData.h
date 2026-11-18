@@ -240,10 +240,48 @@ public:
     void ClearDirtyRegions() { dirtyRegions_.clear(); }
 
     // Observed state bit masks from SetCell / SetState disassembly
-    static constexpr unsigned short STATE_BIT_2000 = 0x2000;
-    static constexpr unsigned short STATE_BIT_3C0  = 0x03C0;
+    // --- Liquid state (binary world model, NOT material type 5) ---
+    // AddGrassAndWater: type=0, state=0x2000
+    // AddLiquidSource(LiquidType==0): type=0, state=0xe000  (water source)
+    // AddLiquidSource(LiquidType!=0): type=0, state=0xc3c0  (lava source)
+    // AddOrDeleteBlock place type5 → type=0, state=0xc3c0 (lava!)
+    // Material id 5 in blocks.txt is a hidden UV/icon row (S-Index -1); never used
+    // by natural generation. Flowing water keeps type=0 and packs level in bits 10-12.
+    static constexpr unsigned short STATE_BIT_2000 = 0x2000;   // fluid (water) flag
+    static constexpr unsigned short STATE_BIT_3C0  = 0x03C0;   // lava / logged liquid nibble
     static constexpr unsigned short STATE_BIT_4000 = 0x4000;
     static constexpr unsigned short STATE_MASK_BFFF = 0xBFFF;
+    static constexpr unsigned short STATE_LIQUID_ANY = 0x3FC0; // any liquid present
+    static constexpr unsigned short STATE_LEVEL_MASK = 0x1C00;
+    static constexpr unsigned short STATE_LEVEL_SHIFT = 10;
+    static constexpr unsigned short WATER_FILL_STATE   = 0x2000; // lake fill
+    static constexpr unsigned short WATER_SOURCE_STATE = 0xE000; // 0xC000|0x2000
+    static constexpr unsigned short LAVA_SOURCE_STATE  = 0xC3C0; // 0xC000|0x03C0
+
+    // LiquidType @ AddWaterFace / AddLiquidSource
+    enum LiquidType : int { LiquidWater = 0, LiquidLava = 1 };
+
+    static bool HasLiquidState(unsigned short st) { return (st & STATE_LIQUID_ANY) != 0; }
+    static bool IsWaterFluidState(unsigned short st) { return (st & STATE_BIT_2000) != 0; }
+    static bool IsLavaFluidState(unsigned short st) {
+        return (st & STATE_BIT_3C0) != 0 && (st & STATE_BIT_2000) == 0;
+    }
+    static int LiquidLevel(unsigned short st) {
+        return (int)((st & STATE_LEVEL_MASK) >> STATE_LEVEL_SHIFT);
+    }
+    // Build water state for level 0..7 (source=0). Keeps fluid bit; sources may use 0xE000.
+    static unsigned short MakeWaterState(int level, bool asSource = false) {
+        level = level < 0 ? 0 : (level > 7 ? 7 : level);
+        if (asSource && level == 0) return WATER_SOURCE_STATE;
+        return (unsigned short)(STATE_BIT_2000 | ((level & 7) << STATE_LEVEL_SHIFT));
+    }
+    static unsigned short MakeLavaState(int /*level*/ = 0) { return LAVA_SOURCE_STATE; }
+
+    // True if cell is world-liquid (air+state or any type with fluid bits). Type 5 alone
+    // without liquid state is the hidden material block, not simulated water.
+    bool IsLiquidCell(int x, int y, int z) const;
+    bool IsWaterFluidCell(int x, int y, int z) const;
+    bool IsLavaFluidCell(int x, int y, int z) const;
 
     void InitDimensionsFromWorldBounds();
     int CoordToIndex(int x, int y, int z) const;

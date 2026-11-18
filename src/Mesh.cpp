@@ -178,12 +178,11 @@ bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
 }
 
 bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
+    // Real liquids: fluid state (type 0 + 0x2000/…). Block id 5: kept project water-block.
     int idx = grid.CoordToIndex(x, y, z);
-    if (idx < 0) return false;
+    if (idx < 0 || idx >= (int)grid.cellTypes.size()) return false;
     if (grid.cellTypes[idx] == 5) return true;
-    if (idx < (int)grid.cellStates.size() && (grid.cellStates[idx] & 0x3fc0) != 0)
-        return true;
-    return false;
+    return grid.IsWaterFluidCell(x, y, z);
 }
 
 // GetWaterBlockHeight @ 0x8b4a0
@@ -734,7 +733,7 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
         // Water/liquid: binary still has class 0, but liquid surface is AddWaterFace only.
         // Do not emit solid AddBlockFace for fluid cells (rollback solid water cubes).
-        const bool liquid = IsWaterCell(grid, wx, wy, wz) || t == 5 || (st & 0x2000) != 0;
+        const bool liquid = IsWaterCell(grid, wx, wy, wz) || GridData::IsWaterFluidState(st);
         if (liquid) {
             MeshBuffer& dst = waterOut ? *waterOut : solidOut;
             float h = WaterHeightFrac(grid, wx, wy, wz);
