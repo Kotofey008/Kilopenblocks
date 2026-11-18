@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base fullscreen theme (API 19+). Extra bar colors in values-v21. -->
+    <style name="ExplorationTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>
