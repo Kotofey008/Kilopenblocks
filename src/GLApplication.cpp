@@ -119,7 +119,10 @@ void GLApplication::OnCreateGLContext() {
         game_.SelectTerrainType(Game::TerrainType::Earth);
         game_.Play(0);
         // Clouds scene defaults from start.scene (Position.y=129.5, Scale=12 5 12, Radius=20)
-        clouds_.ApplyScene(129.5f, 12.f, 5.f, 12.f, 20, 0.05f, 0.f, 0.f, "textures/clouds.png");
+        if (game_.GetScene().clouds.present)
+            clouds_.ApplyConfig(game_.GetScene().clouds);
+        else
+            clouds_.LoadResources("textures/clouds.png");
         if (game_.GetScene().skyBox.present)
             skyBox_.ApplyConfig(game_.GetScene().skyBox);
         skyBox_.LoadResources();
@@ -140,7 +143,10 @@ void GLApplication::OnCreateGLContext() {
     lavaPal_.EnsureUploaded();
     hudFont_.GetTexture().EnsureUploaded();
     skyBox_.LoadResources(); // re-bind sky textures if any
-    clouds_.ApplyScene(129.5f, 12.f, 5.f, 12.f, 20, 0.05f, 0.f, 0.f, "textures/clouds.png");
+    if (game_.GetScene().clouds.present)
+            clouds_.ApplyConfig(game_.GetScene().clouds);
+        else
+            clouds_.LoadResources("textures/clouds.png");
     // Layout / hit-test against current window size
     {
         int ww = ANativeWindow_getWidth(mApp->window);

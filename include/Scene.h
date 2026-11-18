@@ -197,6 +197,18 @@ struct SceneSkyBoxConfig {
     float scaleX = 16.f; // Scene Scale.x (start.scene SkyBox Scale = 16 1 16)
 };
 
+// Clouds — start.scene: Position, Scale, Wind, Radius, BitmapFileName
+struct SceneCloudsConfig {
+    bool present = false;
+    int id = 0;
+    float posX = 0.f, posY = 129.5f, posZ = 0.f;
+    float scaleX = 12.f, scaleY = 5.f, scaleZ = 12.f;
+    float windX = 0.05f, windY = 0.f, windZ = 0.f;
+    int radius = 20;
+    std::string bitmapFileName = "textures/clouds.png";
+    bool enabled = true;
+};
+
 class Scene {
 public:
     SceneGlobalsConfig globals;
@@ -204,6 +216,7 @@ public:
     SceneEntityPlayerSetConfig playerSet;
     SceneGridModelConfig gridModel;
     SceneSkyBoxConfig skyBox;
+    SceneCloudsConfig clouds;
 
     std::vector<SceneObject*> objects;
     GridData* grid = nullptr;

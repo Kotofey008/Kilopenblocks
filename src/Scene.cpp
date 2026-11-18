@@ -112,6 +112,8 @@ bool Scene::Load(const std::string& path) {
                 gridModel.present = true;
             } else if (section == "SkyBox") {
                 skyBox.present = true;
+            } else if (section == "Clouds") {
+                clouds.present = true;
             }
             continue;
         }
@@ -236,6 +238,21 @@ bool Scene::Load(const std::string& path) {
             else if (key == "NumStars") skyBox.numStars = parseInt(val);
             else if (key == "StarsSeed") skyBox.starsSeed = parseInt(val);
 
+        } else if (section == "Clouds") {
+            clouds.present = true;
+            if (key == "ID") clouds.id = parseInt(val);
+            else if (key == "Position") {
+                std::istringstream iss(val);
+                iss >> clouds.posX >> clouds.posY >> clouds.posZ;
+            } else if (key == "Scale") {
+                std::istringstream iss(val);
+                iss >> clouds.scaleX >> clouds.scaleY >> clouds.scaleZ;
+            } else if (key == "Wind") {
+                std::istringstream iss(val);
+                iss >> clouds.windX >> clouds.windY >> clouds.windZ;
+            } else if (key == "Radius") clouds.radius = parseInt(val);
+            else if (key == "BitmapFileName") clouds.bitmapFileName = val;
+            else if (key == "Enabled") clouds.enabled = parseBool(val);
         } else if (section == "UISceneObject" && currentUI) {
             if (key == "ID") currentUI->id = parseInt(val);
             else if (key == "Name") currentUI->name = val;
