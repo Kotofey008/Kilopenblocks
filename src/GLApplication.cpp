@@ -385,42 +385,23 @@ void GLApplication::RenderWorld() {
                       rm.buffer.Indices().data(),
                       rm.buffer.IndexCount(), 0);
     }
-    // Clouds after opaque solids: depth TEST on so nearer blocks occlude,
-    // depth WRITE off so clouds don't punch holes in the depth buffer.
-    // Drawn after terrain so cloud fragments closer than ground win the blend.
-    {
-        Vector eye = game_.GetCamera().GetPosition();
-        clouds_.SetEnabled(game_.CloudsEnabled());
-        if (clouds_.IsEnabled()) {
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
-            glDisable(GL_CULL_FACE);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glEnable(GL_TEXTURE_2D);
-            glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-            glColor4f(1.f, 1.f, 1.f, 1.f);
-            clouds_.Bind();
-            clouds_.UpdateMesh(eye.x, eye.z);
-            const MeshBuffer& cm = clouds_.GetMesh();
-            if (cm.IndexCount() > 0) {
-                DrawPrimitive(0x0004, cm.Vertices().data(), cm.Indices().data(), cm.IndexCount(), 0);
-            }
-            glDisable(GL_BLEND);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_CULL_FACE);
-        }
-    }
-
-    // Pass 2: liquid faces (AddWaterFace path) — blend, no depth write so
-    // submerged solid faces remain visible through the surface. Cull off so
-    // dual-sided YP (underwater looking up) is visible.
+    // Pass 2: liquids — MUST re-bind blocks/water atlas. Previous sky/sun/cloud
+    // passes leave another GL texture bound; without this water samples clouds.png.
+    // Water UVs come from blocks atlas (same RegionMesher path as solids).
 #if defined(__ANDROID__)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
 #endif
+    glEnable(GL_TEXTURE_2D);
+    blocksAtlas_.Bind();
+    if (waterTex_.GLId()) {
+        // Optional dedicated water texture when scene provides one; atlas is default.
+        // Mesher UVs are atlas-space, so prefer blocksAtlas for correct tiling.
+    }
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glColor4f(1.f, 1.f, 1.f, 1.f);
     for (auto& rm : regionMeshes_) {
         if (!rm.valid || rm.waterBuffer.IndexCount() <= 0) continue;
         DrawPrimitive(GL_TRIANGLES,
@@ -433,6 +414,38 @@ void GLApplication::RenderWorld() {
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
 #endif
+
+    // Clouds AFTER liquids: higher priority than water (closer cloud fragments
+    // composite over the liquid pass). Depth test on, depth write off.
+    {
+        Vector eye = game_.GetCamera().GetPosition();
+        clouds_.SetEnabled(game_.CloudsEnabled());
+        if (clouds_.IsEnabled()) {
+#if defined(__ANDROID__)
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+#endif
+            glEnable(GL_TEXTURE_2D);
+            glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            glColor4f(1.f, 1.f, 1.f, 1.f);
+            clouds_.Bind();
+            clouds_.UpdateMesh(eye.x, eye.z);
+            const MeshBuffer& cm = clouds_.GetMesh();
+            if (cm.IndexCount() > 0) {
+                DrawPrimitive(0x0004, cm.Vertices().data(), cm.Indices().data(), cm.IndexCount(), 0);
+            }
+#if defined(__ANDROID__)
+            glDisable(GL_BLEND);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_CULL_FACE);
+#endif
+            // Restore atlas bind so later HUD/UI paths don't inherit clouds.png
+            blocksAtlas_.Bind();
+        }
+    }
 
     // Underwater plane tint — start.scene WaterPlaneColor (ARGB 64 232 144 5).
     // When the eye sample is underwater, full-screen translucent quad modulates
