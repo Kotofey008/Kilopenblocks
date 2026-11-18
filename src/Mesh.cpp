@@ -178,11 +178,16 @@ bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
 }
 
 bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
+    // Ghidra GetWaterBlockHeight: liquid if (state&0x2000) or (state&0x3c0).
+    // Type is normally 0 (Air). Material id 5 is optional test block only.
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return false;
     if (grid.cellTypes[idx] == 5) return true;
-    if (idx < (int)grid.cellStates.size() && (grid.cellStates[idx] & 0x3fc0) != 0)
-        return true;
+    if (idx < (int)grid.cellStates.size()) {
+        unsigned short st = grid.cellStates[idx];
+        if ((st & 0x2000) != 0) return true;          // water fluid
+        if ((st & 0x03c0) != 0) return true;          // lava / logged liquid nibble
+    }
     return false;
 }
 
@@ -192,17 +197,19 @@ bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
 //   level==0 (source): height = 0x0e (14)
 //   level>0: height = 0x0f - 2*level  (13,11,…,1)
 float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
+    // GetWaterBlockHeight @ 0x8b4a0:
+    //   no 0x2000 and no 0x3c0 → 0
+    //   water above + mutual Y flow → 0x80 (full)
+    //   level 0 → 0x0e; level n → 0x0f - 2*n
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return 0.f;
     unsigned short st = (idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
-    if ((st & 0x3fc0) == 0 && grid.cellTypes[idx] != 5)
+    if ((st & 0x2000) == 0 && (st & 0x03c0) == 0 && grid.cellTypes[idx] != 5)
         return 0.f;
     if (IsWaterCell(grid, x, y + 1, z))
-        return 1.f; // 0x80 path — full column under water above
+        return 1.f;
     int level = (int)((st & 0x1c00) >> 10);
-    // Water under a horizontal stream: keep normal height unless dead-end
-    // (no child stream at level+1) and level != 7 → then level-7 look (1/16).
-    // Corner-max still joins neighbours of any level continuously.
+    if ((st & 0xE000) == 0xE000) level = 0;
     if (level > 0 && level < 7 && IsWaterCell(grid, x, y - 1, z)) {
         bool hasChildStream = false;
         static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
@@ -211,12 +218,12 @@ float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
             int ni = grid.CoordToIndex(x + o[0], y, z + o[1]);
             if (ni < 0 || ni >= (int)grid.cellStates.size()) continue;
             int nl = (int)((grid.cellStates[ni] & 0x1c00) >> 10);
+            if ((grid.cellStates[ni] & 0xE000) == 0xE000) nl = 0;
             if (nl == level + 1) { hasChildStream = true; break; }
         }
         if (!hasChildStream)
             return 1.f / 16.f;
     }
-    // Source (0): 0x0e; flowing: 0x0f - 2*level  (units out of 16)
     int units = (level == 0) ? 0xe : (0xf - 2 * level);
     if (units < 1) units = 1;
     if (units > 16) units = 16;
@@ -728,13 +735,12 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         int cidx = grid.CoordToIndex(wx, wy, wz);
         if (cidx < 0) continue;
         unsigned char t = grid.cellTypes[cidx];
-        if (t == 0) continue;
-
-        const Material* mat = grid.GetMaterial((int)t);
         unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
-        // Water/liquid: binary still has class 0, but liquid surface is AddWaterFace only.
-        // Do not emit solid AddBlockFace for fluid cells (rollback solid water cubes).
-        const bool liquid = IsWaterCell(grid, wx, wy, wz) || t == 5 || (st & 0x2000) != 0;
+        // Binary: liquid is state-driven (type usually 0). Do not skip type 0 fluids.
+        const bool liquid = IsWaterCell(grid, wx, wy, wz);
+        if (t == 0 && !liquid) continue;
+
+        const Material* mat = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
         if (liquid) {
             MeshBuffer& dst = waterOut ? *waterOut : solidOut;
             float h = WaterHeightFrac(grid, wx, wy, wz);
