@@ -3,7 +3,6 @@
 #include "GLApplication.h"
 #include <android/log.h>
 #include <android/native_window.h>
-#include <jni.h>
 #include <EGL/egl.h>
 #include <GLES/gl.h>
 
@@ -13,77 +12,6 @@
 static GLApplication* g_glApp = nullptr;
 
 void ApplicationBase::SetGLApp(GLApplication* app) { g_glApp = app; }
-
-// Platform hook: hide system UI chrome. Android-only body; other platforms
-// can implement their own fullscreen path without touching game logic.
-#if defined(__ANDROID__)
-// Must run on the Activity UI thread — setSystemUiVisibility from the native
-// app thread throws CalledFromWrongThreadException.
-static void ApplyImmersiveFullscreenUiThread(void* data) {
-    ANativeActivity* activity = static_cast<ANativeActivity*>(data);
-    if (!activity || !activity->vm || !activity->clazz) return;
-
-    JavaVM* vm = activity->vm;
-    JNIEnv* env = nullptr;
-    // UI thread is already attached to the JVM.
-    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || !env)
-        return;
-
-    // View.SYSTEM_UI_FLAG_*
-    const jint FLAG_LAYOUT_STABLE      = 0x00000100;
-    const jint FLAG_LAYOUT_HIDE_NAV    = 0x00000200;
-    const jint FLAG_LAYOUT_FULLSCREEN  = 0x00000400;
-    const jint FLAG_HIDE_NAV           = 0x00000002;
-    const jint FLAG_FULLSCREEN         = 0x00000004;
-    const jint FLAG_IMMERSIVE_STICKY   = 0x00001000;
-    const jint flags = FLAG_LAYOUT_STABLE | FLAG_LAYOUT_HIDE_NAV | FLAG_LAYOUT_FULLSCREEN
-                     | FLAG_HIDE_NAV | FLAG_FULLSCREEN | FLAG_IMMERSIVE_STICKY;
-
-    jobject actObj = activity->clazz;
-    jclass activityClass = env->GetObjectClass(actObj);
-    if (!activityClass) return;
-
-    jmethodID getWindow = env->GetMethodID(activityClass, "getWindow",
-                                           "()Landroid/view/Window;");
-    if (!getWindow) {
-        env->DeleteLocalRef(activityClass);
-        return;
-    }
-    jobject window = env->CallObjectMethod(actObj, getWindow);
-    env->DeleteLocalRef(activityClass);
-    if (!window) return;
-
-    jclass windowClass = env->GetObjectClass(window);
-    jmethodID getDecor = env->GetMethodID(windowClass, "getDecorView",
-                                          "()Landroid/view/View;");
-    jobject decor = getDecor ? env->CallObjectMethod(window, getDecor) : nullptr;
-    if (decor) {
-        jclass viewClass = env->GetObjectClass(decor);
-        jmethodID setVis = env->GetMethodID(viewClass, "setSystemUiVisibility", "(I)V");
-        if (setVis)
-            env->CallVoidMethod(decor, setVis, flags);
-        env->DeleteLocalRef(viewClass);
-        env->DeleteLocalRef(decor);
-    }
-    // WindowManager.LayoutParams.FLAG_FULLSCREEN
-    jmethodID addFlags = env->GetMethodID(windowClass, "addFlags", "(I)V");
-    if (addFlags)
-        env->CallVoidMethod(window, addFlags, (jint)0x00000400);
-
-    env->DeleteLocalRef(windowClass);
-    env->DeleteLocalRef(window);
-    LOGI("immersive fullscreen applied on UI thread");
-}
-
-static void EnableImmersiveFullscreen(struct android_app* app) {
-    if (!app || !app->activity) return;
-    // Post to Activity main thread (NDK helper; safe from game/native thread).
-    ANativeActivity_runOnUiThread(app->activity, ApplyImmersiveFullscreenUiThread,
-                                  app->activity);
-}
-#else
-static void EnableImmersiveFullscreen(struct android_app*) {}
-#endif
 
 ApplicationBase::ApplicationBase(bool, int)
     : mApp(nullptr), mDisplay(EGL_NO_DISPLAY), mSurface(EGL_NO_SURFACE),
@@ -120,7 +48,6 @@ void ApplicationBase::OnAppCmd(struct android_app* app, int32_t cmd) {
         case APP_CMD_INIT_WINDOW:
             if (app->window) {
                 mApp = app;
-                EnableImmersiveFullscreen(app);
                 OnCreateGLContext();
                 mRunning = true;
             }
@@ -130,8 +57,6 @@ void ApplicationBase::OnAppCmd(struct android_app* app, int32_t cmd) {
             OnDeleteGLContext();
             break;
         case APP_CMD_GAINED_FOCUS:
-            // Re-apply after notification shade / nav gesture briefly shows bars
-            EnableImmersiveFullscreen(app);
             mRunning = true;
             break;
         case APP_CMD_LOST_FOCUS:

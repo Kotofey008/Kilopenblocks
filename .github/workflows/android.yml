@@ -78,9 +78,41 @@ jobs:
           PLATFORM=$ANDROID_HOME/platforms/android-28/android.jar
           if [ ! -f "$PLATFORM" ]; then PLATFORM=$ANDROID_HOME/platforms/android-19/android.jar; fi
 
+          # ---- Java: ELNativeActivity (immersive fullscreen on UI thread) ----
+          D8=$(ls $ANDROID_HOME/build-tools/*/d8 2>/dev/null | sort | tail -1 || true)
+          DX=$(ls $ANDROID_HOME/build-tools/*/dx 2>/dev/null | sort | tail -1 || true)
+          rm -rf build/javac build/dex
+          mkdir -p build/javac build/dex
+          if [ -d java ]; then
+            echo "Compiling Java sources under java/"
+            find java -name '*.java' > build/java_sources.txt
+            javac -source 1.8 -target 1.8 -bootclasspath "$PLATFORM" \
+              -classpath "$PLATFORM" -d build/javac @build/java_sources.txt
+            if [ -n "$D8" ]; then
+              $D8 --lib "$PLATFORM" --output build/dex $(find build/javac -name '*.class')
+            elif [ -n "$DX" ]; then
+              $DX --dex --output=build/dex/classes.dex build/javac
+            else
+              echo "ERROR: neither d8 nor dx found in build-tools"; exit 1
+            fi
+            # d8 may emit classes.dex directly in --output dir
+            if [ ! -f build/dex/classes.dex ]; then
+              # some d8 versions write to the directory as classes.dex already
+              find build/dex -name 'classes*.dex' | head -1
+              test -f build/dex/classes.dex || {
+                echo "ERROR: classes.dex not produced"; find build/dex -type f; exit 1
+              }
+            fi
+          fi
+
           # Build resource APK
           $AAPT package -f -M AndroidManifest.xml -S res -A assets \
             -I "$PLATFORM" -F build/base.apk
+
+          # classes.dex (required when hasCode=true)
+          if [ -f build/dex/classes.dex ]; then
+            (cd build/dex && zip -u ../base.apk classes.dex)
+          fi
 
           # Stage native libs (must use store/uncompressed for reliable install)
           rm -rf build/libstage
@@ -99,9 +131,12 @@ jobs:
             (cd build/libstage && zip -0 -r ../base.apk lib)
           fi
 
-          # Verify lib present
+          # Verify lib + dex present
           unzip -l build/base.apk | grep -E 'lib/.*/libExplorationLite\.so' || {
             echo "ERROR: native library missing from APK"; exit 1
+          }
+          unzip -l build/base.apk | grep -E 'classes\.dex' || {
+            echo "ERROR: classes.dex missing from APK (hasCode=true)"; exit 1
           }
 
           $ZIPALIGN -f 4 build/base.apk build/aligned.apk
