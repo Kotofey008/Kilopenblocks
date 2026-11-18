@@ -89,7 +89,22 @@ struct Material {
     uint8_t sizeW() const { return raw[0x18]; }
     uint8_t sizeH() const { return raw[0x19]; }
     uint8_t sizeL() const { return raw[0x1a]; }
-    uint8_t flowPerm(int flowType) const { return raw[0x1b + (flowType % 6)]; }
+    uint8_t flowPerm(int flowType) const {
+        // FTL at +0x1b, FTW at +0x1c. Binary indexes +0x1b+FlowType, but only two
+        // columns exist in blocks.txt; +0x20 is S-Index — must not be read as perm.
+        // FlowXP=0→FTL, FlowXN=1→FTW; Y/Z reuse FTL (or FTW if FTL clear).
+        int ft = flowType % 6;
+        if (ft == 0) return raw[0x1b];
+        if (ft == 1) return raw[0x1c] ? raw[0x1c] : raw[0x1b];
+        // YP/YN/ZP/ZN: expanded slots 0x1d..0x1f if set, else FTL then FTW
+        if (ft >= 2 && ft <= 4) {
+            uint8_t p = raw[0x1b + ft]; // 0x1d,0x1e,0x1f
+            if (p) return p;
+            return raw[0x1b] ? raw[0x1b] : raw[0x1c];
+        }
+        // FlowZN=5 would land on S-Index — use FTW/FTL only
+        return raw[0x1c] ? raw[0x1c] : raw[0x1b];
+    }
     int16_t selIndex() const {
         return (int16_t)(raw[0x20] | (raw[0x21] << 8));
     }

@@ -1156,8 +1156,16 @@ bool GridData::LoadMaterials(const char* path) {
         m.raw[0x18] = (uint8_t)w;
         m.raw[0x19] = (uint8_t)h;
         m.raw[0x1a] = (uint8_t)(l & 0xff);
-        m.raw[0x1b] = (uint8_t)(ftl & 0xff);  // flow perm base
-        m.raw[0x1c] = (uint8_t)(ftw & 0xff);
+        m.raw[0x1b] = (uint8_t)(ftl & 0xff);  // FTL — FlowXP / default
+        m.raw[0x1c] = (uint8_t)(ftw & 0xff);  // FTW — FlowXN
+        // Expand into Y/Z slots so IsFlowAllowed(FlowYN/YP/ZP) sees non-zero
+        // (blocks.txt only has two columns; +0x20 is S-Index — leave untouched)
+        {
+            uint8_t f = m.raw[0x1b] ? m.raw[0x1b] : m.raw[0x1c];
+            m.raw[0x1d] = f; // FlowYP
+            m.raw[0x1e] = f; // FlowYN  — vertical fall
+            m.raw[0x1f] = f; // FlowZP
+        }
 
         // S-Index → +0x20; out of range → 0xffff
         if (sIndex < 0 || sIndex >= (int)materials.size()) {
