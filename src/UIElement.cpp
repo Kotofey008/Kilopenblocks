@@ -647,15 +647,16 @@ void UIDocument::LayoutSliders() {
         } else {
             float range = th - kh;
             if (range < 0.f) range = 0.f;
-            // Vertical: value 0 at bottom
-            float y = e.screenRect.y + (1.f - v) * range;
+            // Vertical (binary): value 0 at TOP, 1 at BOTTOM.
+            // With UpdateTerrainSize index=(1-v)*(n-1)+0.5 → top=largest size.
+            float y = e.screenRect.y + v * range;
             float x = e.screenRect.x + (tw - kw) * 0.5f;
             thumb->screenRect.x = x;
             thumb->screenRect.y = y;
             thumb->screenRect.w = kw;
             thumb->screenRect.h = kh;
             thumb->posX = (tw - kw) * 0.5f;
-            thumb->posY = (1.f - v) * range;
+            thumb->posY = v * range;
         }
     }
 }
@@ -710,8 +711,8 @@ void UIDocument::UpdateDragAction(UIElement* e, float touchX, float touchY) {
         } else {
             float range = slider->screenRect.h - thumbH;
             if (range < 1.f) range = 1.f;
-            // Binary vertical: 0 at bottom, 1 at top
-            v = 1.f - (touchY - slider->screenRect.y - thumbH * 0.5f) / range;
+            // Binary vertical: 0 at TOP, 1 at BOTTOM (matches LayoutSliders).
+            v = (touchY - slider->screenRect.y - thumbH * 0.5f) / range;
         }
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;

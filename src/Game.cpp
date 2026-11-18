@@ -216,7 +216,6 @@ void Game::SetPanelVisiblePattern(const std::string& pattern, bool visible) {
                     && p.sceneName.find("new_terrain") == std::string::npos)
                     continue;
                 p.doc.LayoutSliders();
-                p.doc.ResolveLayout();
             }
         }
     }
@@ -744,26 +743,40 @@ void Game::UpdateTerrainType() {
     UpdateParameter("UpdateTerrainType");
 }
 
-// World size table (binary this+0xe74, stride 0xc = x,y,z). X shown as "%d".
-// Matches s_WorldSizesHi-style ladder used by UpdateTerrainSize.
-static const int kWorldSizeTable[][3] = {
-    {128, 128, 128},
-    {192, 128, 192},
-    {256, 128, 256},
-    {384, 128, 384},
-    {512, 128, 512},
-    {768, 128, 768},
-    {1024, 128, 1024},
+// Game::s_WorldSizesLo @ RO 0x109da0 / s_WorldSizesHi @ 0x109e00
+// Stride 0xc = {x, y, z}. Count always 6 (this+0xe78). X shown via sprintf "%d".
+// Phone (width < 640) uses Y=64; wider uses Y=128. X/Z ladder identical.
+static const int kWorldSizeTableLo[][3] = {
+    {128, 64, 128},
+    {256, 64, 256},
+    {512, 64, 512},
+    {1024, 64, 1024},
+    {2048, 64, 2048},
+    {4096, 64, 4096},
 };
-static const int kWorldSizeCount = 7;
+static const int kWorldSizeTableHi[][3] = {
+    {128, 128, 128},
+    {256, 128, 256},
+    {512, 128, 512},
+    {1024, 128, 1024},
+    {2048, 128, 2048},
+    {4096, 128, 4096},
+};
+static const int kWorldSizeCount = 6;
+
+static const int (*ActiveWorldSizeTable())[3] {
+    // Binary picks Lo when GetScreenWidth() < 0x280 (640).
+    // Approximate with design width until screen is known: prefer Hi for tablets.
+    return kWorldSizeTableHi;
+}
 
 // Game::UpdateTerrainSize @ 0x65c90
-// Binary computes index from (1-v)*(n-1)+0.5 then reads table[i].x.
-// User-requested inversion relative to previous build: use v*(n-1)+0.5 so
-// left=min / right=max matches expected UX (table order is ascending).
+// index = (int)((1-v)*(n-1) + 0.5); clamp; sprintf(terrain_size_v, "%d", table[i].x)
+// Vertical slider: v=0 at TOP → index n-1 → 4096; v=1 at BOTTOM → 128.
 void Game::UpdateTerrainSize() {
     if (terrainType_ == TerrainType::Test)
         return; // no size slider for Test
+    const int (*table)[3] = ActiveWorldSizeTable();
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
         UIElement* s = p.doc.Find("terrain_size");
@@ -772,11 +785,12 @@ void Game::UpdateTerrainSize() {
         float v = s->currentValue;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
-        int idx = (int)(v * (float)(kWorldSizeCount - 1) + 0.5f);
+        // Binary: (1 - local_64) * (n-1) + 0.5
+        int idx = (int)((1.f - v) * (float)(kWorldSizeCount - 1) + 0.5f);
         if (idx < 0) idx = 0;
         if (idx >= kWorldSizeCount) idx = kWorldSizeCount - 1;
         terrainSizeIndex_ = idx;
-        int dim = kWorldSizeTable[idx][0]; // X
+        int dim = table[idx][0]; // X
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%d", dim); // binary "%d"
         if (UIElement* lab = p.doc.Find("terrain_size_v"))
@@ -807,34 +821,33 @@ void Game::UpdateTestFlyingBlocks() {
 }
 
 // Game::UpdateFlatGroundLevel @ 0x65b40
-// Binary: inv = 1-v; mid = sizeY/2; h = (int)((mid-4)*inv + 0.5) + 4.
-// Inverted per request (matching size slider): use v so left=low, right=high.
+// inv = 1-v; mid = sizeY/2; h = (int)((mid-4)*inv + 0.5) + 4; sprintf "%d"
+// v=0 (top) → max height; v=1 (bottom) → min (~4).
 static int GroundHeightFromSlider(float v, int sizeY) {
     if (v < 0.f) v = 0.f;
     if (v > 1.f) v = 1.f;
+    float inv = 1.f - v;
     int mid = sizeY / 2;
     if (mid < 0) mid = 0;
-    int h = (int)((float)(mid - 4) * v + 0.5f) + 4;
+    int h = (int)((float)(mid - 4) * inv + 0.5f) + 4;
     if (h < 4) h = 4;
     if (h > mid && mid >= 4) h = mid;
     return h;
 }
 
 void Game::UpdateTestGroundLevel() {
-    // Covers both UpdateFlatGroundLevel and UpdateTestGroundLevel display paths:
-    // binary sprintf format is "%d" (integer block height), never fractional.
+    // Flat + Test ground labels; binary sprintf "%d".
+    const int (*table)[3] = ActiveWorldSizeTable();
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
-        // Flat ground — depends on selected terrain size Y
         {
             UIElement* s = p.doc.Find("flat_ground_level");
             if (!s) s = p.doc.Find("flat_ground_level_i");
             if (s && s->type == UIElement::Type::Slider) {
-                int sizeY = 128;
                 int idx = terrainSizeIndex_;
                 if (idx < 0) idx = 0;
                 if (idx >= kWorldSizeCount) idx = kWorldSizeCount - 1;
-                sizeY = kWorldSizeTable[idx][1];
+                int sizeY = table[idx][1];
                 int h = GroundHeightFromSlider(s->currentValue, sizeY);
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "%d", h);
@@ -842,11 +855,11 @@ void Game::UpdateTestGroundLevel() {
                     lab->text = buf;
             }
         }
-        // Test ground — fixed vertical extent (binary uses similar int path)
         {
             UIElement* s = p.doc.Find("test_ground_level");
             if (!s) s = p.doc.Find("test_ground_level_i");
             if (s && s->type == UIElement::Type::Slider) {
+                // Test world uses fixed Y extent; binary path still integer.
                 int h = GroundHeightFromSlider(s->currentValue, 128);
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "%d", h);
