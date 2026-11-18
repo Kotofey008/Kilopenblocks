@@ -3,6 +3,7 @@
 #include "GLApplication.h"
 #include <android/log.h>
 #include <android/native_window.h>
+#include <jni.h>
 #include <EGL/egl.h>
 #include <GLES/gl.h>
 
@@ -12,6 +13,72 @@
 static GLApplication* g_glApp = nullptr;
 
 void ApplicationBase::SetGLApp(GLApplication* app) { g_glApp = app; }
+
+// Immersive sticky fullscreen (not in original binary — modern Android UX).
+// Hides status bar + navigation bar; bars re-hide after transient swipe.
+static void EnableImmersiveFullscreen(struct android_app* app) {
+    if (!app || !app->activity) return;
+    JavaVM* vm = app->activity->vm;
+    jobject activity = app->activity->clazz;
+    if (!vm || !activity) return;
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env)
+            return;
+        attached = true;
+    }
+
+    // View.SYSTEM_UI_FLAG_* constants
+    const int FLAG_LAYOUT_STABLE = 0x00000100;
+    const int FLAG_LAYOUT_HIDE_NAV = 0x00000200;
+    const int FLAG_LAYOUT_FULLSCREEN = 0x00000400;
+    const int FLAG_HIDE_NAV = 0x00000002;
+    const int FLAG_FULLSCREEN = 0x00000004;
+    const int FLAG_IMMERSIVE_STICKY = 0x00001000;
+    const int flags = FLAG_LAYOUT_STABLE | FLAG_LAYOUT_HIDE_NAV | FLAG_LAYOUT_FULLSCREEN
+                    | FLAG_HIDE_NAV | FLAG_FULLSCREEN | FLAG_IMMERSIVE_STICKY;
+
+    jclass activityClass = env->GetObjectClass(activity);
+    if (!activityClass) {
+        if (attached) vm->DetachCurrentThread();
+        return;
+    }
+    jmethodID getWindow = env->GetMethodID(activityClass, "getWindow", "()Landroid/view/Window;");
+    if (!getWindow) {
+        env->DeleteLocalRef(activityClass);
+        if (attached) vm->DetachCurrentThread();
+        return;
+    }
+    jobject window = env->CallObjectMethod(activity, getWindow);
+    if (!window) {
+        env->DeleteLocalRef(activityClass);
+        if (attached) vm->DetachCurrentThread();
+        return;
+    }
+    jclass windowClass = env->GetObjectClass(window);
+    jmethodID getDecor = env->GetMethodID(windowClass, "getDecorView", "()Landroid/view/View;");
+    jobject decor = getDecor ? env->CallObjectMethod(window, getDecor) : nullptr;
+    if (decor) {
+        jclass viewClass = env->GetObjectClass(decor);
+        jmethodID setFlags = env->GetMethodID(viewClass, "setSystemUiVisibility", "(I)V");
+        if (setFlags)
+            env->CallVoidMethod(decor, setFlags, flags);
+        // Also clear translucent bars that leave a transparent nav strip on some OEMs
+        jmethodID addFlags = env->GetMethodID(windowClass, "addFlags", "(I)V");
+        // WindowManager.LayoutParams.FLAG_FULLSCREEN = 0x400
+        if (addFlags)
+            env->CallVoidMethod(window, addFlags, 0x00000400);
+        env->DeleteLocalRef(viewClass);
+        env->DeleteLocalRef(decor);
+    }
+    env->DeleteLocalRef(windowClass);
+    env->DeleteLocalRef(window);
+    env->DeleteLocalRef(activityClass);
+    if (attached) vm->DetachCurrentThread();
+    LOGI("immersive fullscreen flags applied");
+}
 
 ApplicationBase::ApplicationBase(bool, int)
     : mApp(nullptr), mDisplay(EGL_NO_DISPLAY), mSurface(EGL_NO_SURFACE),
@@ -48,6 +115,7 @@ void ApplicationBase::OnAppCmd(struct android_app* app, int32_t cmd) {
         case APP_CMD_INIT_WINDOW:
             if (app->window) {
                 mApp = app;
+                EnableImmersiveFullscreen(app);
                 OnCreateGLContext();
                 mRunning = true;
             }
@@ -57,6 +125,8 @@ void ApplicationBase::OnAppCmd(struct android_app* app, int32_t cmd) {
             OnDeleteGLContext();
             break;
         case APP_CMD_GAINED_FOCUS:
+            // Re-apply after notification shade / nav gesture briefly shows bars
+            EnableImmersiveFullscreen(app);
             mRunning = true;
             break;
         case APP_CMD_LOST_FOCUS:

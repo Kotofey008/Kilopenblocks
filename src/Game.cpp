@@ -1300,10 +1300,9 @@ void Game::ApplyControlsSettings() {
     UpdateAndSaveGameSettings(state_);
 }
 
-// Game::UpdateTimeOfDay @ 0x66a60
-// GetValue("time") → format "%02d:%02d" on time_v. Does NOT write the world
-// clock on its own (EnterGameSettings only SetValue + label). Clock is written
-// only while the user drags (applyClock_) or on ApplyGameSettings.
+// Game::UpdateTimeOfDay @ 0x66a60 (ghidra)
+// index = (int)((1 - sliderValue) * (count-1) + 0.5); label from TimesOfDay[index].
+// Continuous analogue: dayFraction = 1 - v  (same (1-v) orientation as terrain size).
 void Game::UpdateTimeOfDay() {
     for (auto& p : uiPanels_) {
         if (!p.loaded) continue;
@@ -1314,9 +1313,12 @@ void Game::UpdateTimeOfDay() {
         float v = s->currentValue;
         if (v < 0.f) v = 0.f;
         if (v > 1.f) v = 1.f;
+        // Binary: (1 - local_64) * …
+        float day = 1.f - v;
+        if (day < 0.f) day = 0.f;
+        if (day > 1.f) day = 1.f;
 
-        // Label always reflects the slider position.
-        float hoursF = v * 24.f;
+        float hoursF = day * 24.f;
         int hours = (int)hoursF;
         if (hours >= 24) hours = 23;
         int mins = (int)((hoursF - (float)hours) * 60.f);
@@ -1328,13 +1330,10 @@ void Game::UpdateTimeOfDay() {
         if (UIElement* lab = p.doc.Find("time_of_day_v"))
             lab->text = buf;
 
-        // Only commit to the world clock when the player is actively dragging
-        // (or ApplyGameSettings). Opening the panel must not rewrite timeOfDay_
-        // from a stale CurrentValue.
         if (timeSliderApplyClock_) {
-            timeOfDay_ = v;
+            timeOfDay_ = day;
             const long long kDayMs = 1209600LL;
-            long long target = (long long)(v * (double)kDayMs);
+            long long target = (long long)(day * (double)kDayMs);
             if (target < 0) target = 0;
             if (target >= kDayMs) target = kDayMs - 1;
             long long phase = worldTimeMs_ % kDayMs;
@@ -1742,12 +1741,14 @@ void Game::FinishScreenshot() {
 void Game::ShowProgressScreen(const char* msg) { ShowMessage(msg, MessagePriority::Normal); }
 void Game::HideProgressScreen() {}
 
-// Game::EnterGameSettings @ 0x66e20
-// Binary: GetTimesOfDay → SetValue("time", 1 - index/(n-1)) → UpdateTimeOfDay.
-// SetValue pushes CURRENT world phase into the slider; UpdateTimeOfDay only
-// refreshes the "%02d:%02d" label. World clock is left untouched.
+// Game::EnterGameSettings @ 0x66e20 (ghidra)
+// GetTimesOfDay → SetValue("time", 1 - index/(n-1)) → UpdateTimeOfDay (label only).
+// Continuous: sliderValue = 1 - timeOfDay_ so thumb matches binary orientation.
 void Game::EnterGameSettings() {
-    float v = timeOfDay_;
+    float day = timeOfDay_;
+    if (day < 0.f) day = 0.f;
+    if (day > 1.f) day = 1.f;
+    float v = 1.f - day; // binary SetValue(1 - index/(n-1))
     if (v < 0.f) v = 0.f;
     if (v > 1.f) v = 1.f;
     for (auto& p : uiPanels_) {
@@ -1760,7 +1761,6 @@ void Game::EnterGameSettings() {
         }
         p.doc.LayoutSliders();
     }
-    // Label only — do not write clock
     timeSliderApplyClock_ = false;
     UpdateTimeOfDay();
 }
