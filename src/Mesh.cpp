@@ -178,17 +178,24 @@ bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
 }
 
 bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
-    // Ghidra GetWaterBlockHeight: liquid if (state&0x2000) or (state&0x3c0).
-    // Type is normally 0 (Air). Material id 5 is optional test block only.
+    // Ghidra: liquid water iff (state & 0x2000). Type is normally 0.
     int idx = grid.CoordToIndex(x, y, z);
-    if (idx < 0) return false;
-    if (grid.cellTypes[idx] == 5) return true;
-    if (idx < (int)grid.cellStates.size()) {
-        unsigned short st = grid.cellStates[idx];
-        if ((st & 0x2000) != 0) return true;          // water fluid
-        if ((st & 0x03c0) != 0) return true;          // lava / logged liquid nibble
-    }
-    return false;
+    if (idx < 0 || idx >= (int)grid.cellStates.size()) return false;
+    return (grid.cellStates[idx] & 0x2000) != 0;
+}
+
+bool RegionMesher::IsLavaCell(GridData& grid, int x, int y, int z) {
+    // Ghidra Region::AddMesh: (state & 0x3c0) != 0 && (state & 0x2000) == 0
+    int idx = grid.CoordToIndex(x, y, z);
+    if (idx < 0 || idx >= (int)grid.cellStates.size()) return false;
+    unsigned short st = grid.cellStates[idx];
+    return (st & 0x03c0) != 0 && (st & 0x2000) == 0;
+}
+
+int RegionMesher::CellLiquidType(GridData& grid, int x, int y, int z) {
+    if (IsWaterCell(grid, x, y, z)) return 0; // LiquidWater
+    if (IsLavaCell(grid, x, y, z)) return 1;  // LiquidLava
+    return -1;
 }
 
 // GetWaterBlockHeight @ 0x8b4a0
@@ -197,32 +204,33 @@ bool RegionMesher::IsWaterCell(GridData& grid, int x, int y, int z) {
 //   level==0 (source): height = 0x0e (14)
 //   level>0: height = 0x0f - 2*level  (13,11,…,1)
 float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
-    // GetWaterBlockHeight @ 0x8b4a0:
-    //   no 0x2000 and no 0x3c0 → 0
-    //   water above + mutual Y flow → 0x80 (full)
-    //   level 0 → 0x0e; level n → 0x0f - 2*n
+    // GetWaterBlockHeight @ 0x8b4a0
     int idx = grid.CoordToIndex(x, y, z);
     if (idx < 0) return 0.f;
     unsigned short st = (idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
-    if ((st & 0x2000) == 0 && (st & 0x03c0) == 0 && grid.cellTypes[idx] != 5)
+    if ((st & 0x2000) == 0 && (st & 0x03c0) == 0)
         return 0.f;
-    if (IsWaterCell(grid, x, y + 1, z))
-        return 1.f;
+    int lt = CellLiquidType(grid, x, y, z);
+    // Full column if same liquid type above
+    if (lt == 0 && IsWaterCell(grid, x, y + 1, z)) return 1.f;
+    if (lt == 1 && IsLavaCell(grid, x, y + 1, z)) return 1.f;
     int level = (int)((st & 0x1c00) >> 10);
-    if ((st & 0xE000) == 0xE000) level = 0;
-    if (level > 0 && level < 7 && IsWaterCell(grid, x, y - 1, z)) {
-        bool hasChildStream = false;
-        static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-        for (auto& o : offs) {
-            if (!IsWaterCell(grid, x + o[0], y, z + o[1])) continue;
-            int ni = grid.CoordToIndex(x + o[0], y, z + o[1]);
-            if (ni < 0 || ni >= (int)grid.cellStates.size()) continue;
-            int nl = (int)((grid.cellStates[ni] & 0x1c00) >> 10);
-            if ((grid.cellStates[ni] & 0xE000) == 0xE000) nl = 0;
-            if (nl == level + 1) { hasChildStream = true; break; }
+    if (level > 0 && level < 7) {
+        bool belowSame = (lt == 0) ? IsWaterCell(grid, x, y - 1, z)
+                                   : IsLavaCell(grid, x, y - 1, z);
+        if (belowSame) {
+            bool hasChild = false;
+            static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+            for (auto& o : offs) {
+                int nx = x + o[0], nz = z + o[1];
+                if (CellLiquidType(grid, nx, y, nz) != lt) continue;
+                int ni = grid.CoordToIndex(nx, y, nz);
+                if (ni < 0 || ni >= (int)grid.cellStates.size()) continue;
+                int nl = (int)((grid.cellStates[ni] & 0x1c00) >> 10);
+                if (nl == level + 1) { hasChild = true; break; }
+            }
+            if (!hasChild) return 1.f / 16.f;
         }
-        if (!hasChildStream)
-            return 1.f / 16.f;
     }
     int units = (level == 0) ? 0xe : (0xf - 2 * level);
     if (units < 1) units = 1;
@@ -234,11 +242,13 @@ float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
 // GetWaterBlockHeight at neighbour offsets). Corner (cx,cz) ∈ {0,1}² is the
 // max height among the up-to-4 water cells that touch that vertical edge.
 static float WaterCornerHeight(GridData& grid, int x, int y, int z, int cx, int cz) {
+    // Match liquid type of centre cell (water corners only with water, lava with lava)
+    int lt = RegionMesher::CellLiquidType(grid, x, y, z);
     float best = 0.f;
     bool any = false;
     for (int ox = x + cx - 1; ox <= x + cx; ++ox) {
         for (int oz = z + cz - 1; oz <= z + cz; ++oz) {
-            if (!RegionMesher::IsWaterCell(grid, ox, y, oz)) continue;
+            if (RegionMesher::CellLiquidType(grid, ox, y, oz) != lt) continue;
             float h = RegionMesher::WaterHeightFrac(grid, ox, y, oz);
             if (!any || h > best) { best = h; any = true; }
         }
@@ -252,7 +262,9 @@ static float WaterCornerHeight(GridData& grid, int x, int y, int z, int cx, int 
 // Core rule (YN/YP recovered): if neighbour is also water and flow allowed both
 // ways → cull (return 0). Otherwise emit against air / solid / empty.
 int RegionMesher::WaterNeedFace(GridData& grid, int x, int y, int z, int face) {
-    if (!IsWaterCell(grid, x, y, z)) return 0;
+    // WaterNeedFace* family: cull against same LiquidType when mutual flow allows.
+    int lt = CellLiquidType(grid, x, y, z);
+    if (lt < 0) return 0;
     int nx = x, ny = y, nz = z;
     switch (face) {
         case 0: nx++; break; case 1: nx--; break;
@@ -261,23 +273,14 @@ int RegionMesher::WaterNeedFace(GridData& grid, int x, int y, int z, int face) {
         default: return 0;
     }
     int nIdx = grid.CoordToIndex(nx, ny, nz);
-    if (nIdx < 0) return 1; // world edge
-    if (IsWaterCell(grid, nx, ny, nz)) {
-        // Top face: still emit if this cell is lower than full and neighbour
-        // is only partial — but binary typically culls water|water entirely
-        // when both are fluid (YN/YP IsFlowAllowed both ways → false).
-        // Side faces between water: cull.
-        if (face == 2) {
-            // YP: emit only if our height is below full and above has lower
-            // surface — for connected full column, cull.
-            float h = WaterHeightFrac(grid, x, y, z);
-            if (h >= 0.999f) return 0;
-            // partial top against water above still usually culled if above exists
-            return 0;
-        }
+    if (nIdx < 0) return 1;
+    int nlt = CellLiquidType(grid, nx, ny, nz);
+    if (nlt == lt) {
+        // Same liquid: cull shared face (binary mutual IsFlowAllowed → no face)
+        // YP: still no face if both fluid of same type (connected surface)
         return 0;
     }
-    // Neighbour air / solid / non-water → emit liquid face
+    // Neighbour different liquid / air / solid → emit
     return 1;
 }
 
@@ -737,24 +740,31 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         unsigned char t = grid.cellTypes[cidx];
         unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
         // Binary: liquid is state-driven (type usually 0). Do not skip type 0 fluids.
-        const bool liquid = IsWaterCell(grid, wx, wy, wz);
-        if (t == 0 && !liquid) continue;
+        const int liquidType = CellLiquidType(grid, wx, wy, wz); // 0 water, 1 lava, -1 none
+        if (t == 0 && liquidType < 0) continue;
 
         const Material* mat = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
-        if (liquid) {
+        // Region::AddMesh end: if state&0x2000 → LiquidType 0; else if state&0x3c0 → LiquidType 1
+        if (liquidType >= 0) {
             MeshBuffer& dst = waterOut ? *waterOut : solidOut;
             float h = WaterHeightFrac(grid, wx, wy, wz);
             if (h > 0.f) {
                 for (int face = 0; face < 6; ++face) {
                     if (WaterNeedFace(grid, wx, wy, wz, face) == 0) continue;
                     float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-                    const Material* wm = grid.GetMaterial(5);
-                    if (wm) FaceUV(*wm, face, u0, v0, u1, v1);
-                    else Texture::TileUV(6, 0, u0, v0, u1, v1);
-                    uint32_t col = 0xA0FFFFFF;
+                    if (liquidType == 0) {
+                        // Water UVs from material row 5 atlas tiles (binary uses water tex / atlas)
+                        const Material* wm = grid.GetMaterial(5);
+                        if (wm) FaceUV(*wm, face, u0, v0, u1, v1);
+                        else Texture::TileUV(6, 0, u0, v0, u1, v1);
+                    } else {
+                        // Lava: distinct atlas tile (commonly near still/lava in blocks.png)
+                        Texture::TileUV(13, 14, u0, v0, u1, v1);
+                    }
+                    uint32_t col = (liquidType == 0) ? 0xA0FFFFFF : 0xE0FF6030;
                     if (lights) {
                         uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
-                        col = (lc & 0x00FFFFFFu) | 0xA0000000u;
+                        col = (lc & 0x00FFFFFFu) | ((liquidType == 0) ? 0xA0000000u : 0xE0000000u);
                     }
                     EmitWaterFace(grid, dst, wx, wy, wz, face, u0, v0, u1, v1, col);
                 }

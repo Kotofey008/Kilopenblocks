@@ -62,7 +62,10 @@ public:
     static int WaterNeedFace(GridData& grid, int x, int y, int z, int face);
 
     static float WaterHeightFrac(GridData& grid, int x, int y, int z);
+    enum LiquidType { LiquidWater = 0, LiquidLava = 1 };
     static bool IsWaterCell(GridData& grid, int x, int y, int z);
+    static bool IsLavaCell(GridData& grid, int x, int y, int z);
+    static int CellLiquidType(GridData& grid, int x, int y, int z); // -1 none, 0 water, 1 lava
 
 private:
     static bool IsSolid(GridData& grid, int x, int y, int z);

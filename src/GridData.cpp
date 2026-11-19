@@ -1346,179 +1346,184 @@ int GridData::MaxWaterHeight(unsigned char matProp01, unsigned char matProp03, u
 //   higher-level fluid. Level 7 does not spread horizontally.
 // ---------------------------------------------------------------------------
 void GridData::UpdateWater(int maxSteps) {
-    // Ghidra model (AddGrassAndWater / AddLiquidSource / SpreadWater / UpdateOneWaterState):
-    //   World liquid = type 0 (Air) + state fluid bits — NOT material id 5.
-    //   state & 0x2000  = water fluid flag
-    //   state & 0x1C00  = level 0..7 ((st>>10)&7)
-    //   state & 0x3FC0  = any liquid presence mask
-    //   source lake fill: type=0, state=0x2000
-    //   AddLiquidSource water: type=0, state=0xE000
-    // Material id 5 remains a placeable test block; if present it still drives flow,
-    // but newly written cells are always type 0 + fluid state.
+    // Recovered from UpdateWaterState @ 0xa1040 + UpdateOneWaterState + SpreadWater/Lava.
+    // World liquid = type 0 + state (NOT material id 5).
+    //   water: state & 0x2000, level = (state & 0x1C00) >> 10  (0=source .. 7)
+    //   lava:  (state & 0x3C0) != 0 && (state & 0x2000) == 0; source often 0xC3C0
+    // Horizontal: dest level = srcLevel+1 (cap 7). Level 7 does not spread sideways.
+    // Fall: prefer into empty/higher-level below; same level (false-source → max(level,1) on floor).
+    // Source form: ≥2 horizontal level-0 water neighbours + support → level 0.
     if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) return;
-    if (maxSteps <= 0) maxSteps = 32;
+    if (maxSteps <= 0) maxSteps = 128;
 
-    static constexpr unsigned char TYPE5 = 5; // legacy test block only
     static constexpr unsigned short ST_LEVEL_MASK = 0x1c00;
     static constexpr int             ST_LEVEL_SHIFT = 10;
-    static constexpr unsigned short ST_FLUID       = 0x2000;
-    static constexpr unsigned short ST_FLUID_MASK  = 0x3fc0;
+    static constexpr unsigned short ST_WATER       = 0x2000;
+    static constexpr unsigned short ST_LAVA_NIB    = 0x03c0;
+    static constexpr unsigned short ST_ANY_LIQUID  = 0x3fc0;
 
-    auto getLevel = [&](int idx) -> int {
+    auto waterLevel = [&](int idx) -> int {
         if (idx < 0 || idx >= (int)cellStates.size()) return 7;
-        unsigned short st = cellStates[idx];
-        // 0xE000 source has no level nibble → level 0
-        if ((st & 0xE000) == 0xE000) return 0;
-        return (int)((st & ST_LEVEL_MASK) >> ST_LEVEL_SHIFT);
+        // 0xE000 >> 10 & 7 == 0; 0x2000 >> 10 & 7 == 0; 0x2400 → 1 …
+        return (int)((cellStates[idx] & ST_LEVEL_MASK) >> ST_LEVEL_SHIFT);
     };
     auto makeWaterState = [](int level) -> unsigned short {
         if (level < 0) level = 0;
         if (level > 7) level = 7;
-        if (level == 0)
-            return (unsigned short)0xE000; // match AddLiquidSource water source
-        return (unsigned short)(ST_FLUID | ((level & 7) << ST_LEVEL_SHIFT));
+        // Always pack level nibble; fluid bit set. (0xE000 used only by AddLiquidSource.)
+        return (unsigned short)(ST_WATER | ((level & 7) << ST_LEVEL_SHIFT));
     };
-    auto isWaterFluid = [&](int idx) -> bool {
-        if (idx < 0 || idx >= (int)cellTypes.size()) return false;
-        if (cellTypes[idx] == TYPE5) return true;
-        if (idx < (int)cellStates.size() && (cellStates[idx] & ST_FLUID) != 0)
-            return true;
-        return false;
+    auto makeLavaState = [](int level) -> unsigned short {
+        if (level < 0) level = 0;
+        if (level > 7) level = 7;
+        // Lava: 0x3c0 profile, no 0x2000. Pack level in 0x1c00 like water.
+        return (unsigned short)(ST_LAVA_NIB | 0xC000 | ((level & 7) << ST_LEVEL_SHIFT));
     };
-    // SpreadWater receive: materials[type].+0x1c != 0 AND (empty liquid mask or higher level)
-    auto canReceiveFluid = [&](int idx) -> bool {
+    auto isWater = [&](int idx) -> bool {
+        if (idx < 0 || idx >= (int)cellStates.size()) return false;
+        return (cellStates[idx] & ST_WATER) != 0;
+    };
+    auto isLava = [&](int idx) -> bool {
+        if (idx < 0 || idx >= (int)cellStates.size()) return false;
+        unsigned short st = cellStates[idx];
+        return (st & ST_LAVA_NIB) != 0 && (st & ST_WATER) == 0;
+    };
+    auto isAnyLiquid = [&](int idx) -> bool {
+        return isWater(idx) || isLava(idx);
+    };
+    auto canReceive = [&](int idx) -> bool {
         if (idx < 0 || idx >= (int)cellTypes.size()) return false;
         unsigned char t = cellTypes[idx];
         if (!materials.empty() && t < materials.size()) {
+            // SpreadWater gate: materials[+0x1c] (FTW) — also accept FTL
             if (materials[t].raw[0x1c] == 0 && materials[t].raw[0x1b] == 0)
-                return false;
-        } else {
-            if (!(t == 0 || t == TYPE5 || t == 11 || t == 10 || t == 20))
                 return false;
         }
         return true;
     };
+    auto isSolidSupport = [&](int idx) -> bool {
+        if (idx < 0) return false;
+        if (isAnyLiquid(idx)) return false;
+        return cellTypes[idx] != 0;
+    };
 
     struct Cell { int x, y, z; };
-    std::vector<Cell> active;
-    active.reserve(256);
+    std::vector<Cell> waterCells, lavaCells;
+    waterCells.reserve(256);
+    lavaCells.reserve(64);
     for (int z = 0; z < sizeZ; ++z)
     for (int y = 0; y < sizeY; ++y)
     for (int x = 0; x < sizeX; ++x) {
         int i = x + sizeX * (y + sizeY * z);
-        if (isWaterFluid(i))
-            active.push_back({originX + x, originY + y, originZ + z});
+        if (isWater(i))
+            waterCells.push_back({originX + x, originY + y, originZ + z});
+        else if (isLava(i))
+            lavaCells.push_back({originX + x, originY + y, originZ + z});
     }
 
     int steps = 0;
     bool any = false;
 
-    auto tryPlace = [&](int nx, int ny, int nz, int newLevel, FlowType inflow) -> bool {
+    auto tryPlaceWater = [&](int nx, int ny, int nz, int newLevel, FlowType inflow) -> bool {
         if (steps >= maxSteps) return false;
         int ni = CoordToIndex(nx, ny, nz);
-        if (ni < 0) return false;
-        if (!canReceiveFluid(ni)) return false;
-
+        if (ni < 0 || !canReceive(ni)) return false;
+        unsigned short ns = cellStates[ni];
         unsigned char nt = cellTypes[ni];
-        unsigned short ns = (ni < (int)cellStates.size()) ? cellStates[ni] : 0;
-        int nLevel = getLevel(ni);
-
-        // Empty: no liquid bits and air (or only non-fluid type)
-        bool empty = (ns & ST_FLUID_MASK) == 0 && nt == 0;
-        // Replace existing water-fluid with strictly lower level
-        bool replaceHigher = isWaterFluid(ni) && newLevel < nLevel;
+        int nLevel = waterLevel(ni);
+        bool empty = (ns & ST_ANY_LIQUID) == 0 && nt == 0;
+        bool replaceHigher = isWater(ni) && newLevel < nLevel;
         if (!empty && !replaceHigher) return false;
         if (IsFlowAllowed(ni, inflow) == 0) return false;
-
-        // Binary: type 0 + fluid state
         SetCell(nx, ny, nz, /*Air*/0, makeWaterState(newLevel));
         any = true;
         ++steps;
         return true;
     };
-
-    auto isSolidSupport = [&](int idx) -> bool {
-        if (idx < 0) return false;
-        if (isWaterFluid(idx)) return false;
-        if (idx < (int)cellStates.size() && (cellStates[idx] & ST_FLUID_MASK) != 0)
-            return false;
-        return cellTypes[idx] != 0;
+    auto tryPlaceLava = [&](int nx, int ny, int nz, int newLevel, FlowType inflow) -> bool {
+        if (steps >= maxSteps) return false;
+        int ni = CoordToIndex(nx, ny, nz);
+        if (ni < 0 || !canReceive(ni)) return false;
+        unsigned short ns = cellStates[ni];
+        unsigned char nt = cellTypes[ni];
+        int nLevel = waterLevel(ni); // same nibble
+        bool empty = (ns & ST_ANY_LIQUID) == 0 && nt == 0;
+        bool replaceHigher = isLava(ni) && newLevel < nLevel;
+        if (!empty && !replaceHigher) return false;
+        if (IsFlowAllowed(ni, inflow) == 0) return false;
+        SetCell(nx, ny, nz, /*Air*/0, makeLavaState(newLevel));
+        any = true;
+        ++steps;
+        return true;
     };
 
-    for (size_t si = 0; si < active.size() && steps < maxSteps; ++si) {
-        int x = active[si].x, y = active[si].y, z = active[si].z;
+    // ---- WATER ----
+    for (size_t si = 0; si < waterCells.size() && steps < maxSteps; ++si) {
+        int x = waterCells[si].x, y = waterCells[si].y, z = waterCells[si].z;
         int selfIdx = CoordToIndex(x, y, z);
-        if (selfIdx < 0 || !isWaterFluid(selfIdx)) continue;
-
-        int level = getLevel(selfIdx);
+        if (selfIdx < 0 || !isWater(selfIdx)) continue;
+        int level = waterLevel(selfIdx);
         int below = CoordToIndex(x, y - 1, z);
-        int above = CoordToIndex(x, y + 1, z);
-        bool waterBelow = isWaterFluid(below);
+        bool waterBelow = isWater(below);
         bool solidBelow = isSolidSupport(below);
-        bool waterAbove = isWaterFluid(above);
         bool trueSource = (level == 0);
         bool falseSource = !trueSource && solidBelow && !waterBelow;
 
-        // Vertical fall (preferred) — same level into empty below (step_slide / binary)
+        // Vertical fall preferred
         if (below >= 0) {
+            unsigned short bs = cellStates[below];
             unsigned char bt = cellTypes[below];
-            unsigned short bs = (below < (int)cellStates.size()) ? cellStates[below] : 0;
-            bool belowEmpty = (bt == 0 && (bs & ST_FLUID_MASK) == 0);
-            bool belowHigher = isWaterFluid(below) &&
-                               level < getLevel(below);
+            bool belowEmpty = (bt == 0 && (bs & ST_ANY_LIQUID) == 0);
+            bool belowHigher = isWater(below) && level < waterLevel(below);
             if (belowEmpty || belowHigher) {
                 if (IsFlowAllowed(below, FlowYN) != 0 || IsFlowAllowed(selfIdx, FlowYN) != 0) {
                     int placeLvl = level;
                     if (belowEmpty) {
                         int below2 = CoordToIndex(x, y - 2, z);
+                        // Landing on solid: never leave a second infinite source
                         if (isSolidSupport(below2) && placeLvl == 0)
                             placeLvl = 1;
                     }
-                    if (tryPlace(x, y - 1, z, placeLvl, FlowYN))
+                    if (tryPlaceWater(x, y - 1, z, placeLvl, FlowYN))
                         continue;
                 }
             }
         }
 
-        // No horizontal if any water below
-        if (waterBelow)
-            continue;
+        if (waterBelow) continue; // no horizontal if water below
 
-        int spreadFrom = trueSource || falseSource ? 0 : level;
+        int spreadFrom = (trueSource || falseSource) ? 0 : level;
         if (spreadFrom >= 7) continue;
-        const int newLevel = spreadFrom + 1;
-        struct Dir { int dx, dz; FlowType ft; };
-        static const Dir dirs[4] = {
-            { 1, 0, FlowXP}, {-1, 0, FlowXN},
-            { 0, 1, FlowZP}, { 0,-1, FlowZN}
+        int newLevel = spreadFrom + 1;
+        static const int dirs[4][3] = {
+            {1, 0, (int)FlowXP}, {-1, 0, (int)FlowXN},
+            {0, 1, (int)FlowZP}, {0, -1, (int)FlowZN}
         };
-        for (const auto& d : dirs) {
+        for (auto& d : dirs) {
             if (steps >= maxSteps) break;
-            tryPlace(x + d.dx, y, z + d.dz, newLevel, d.ft);
+            tryPlaceWater(x + d[0], y, z + d[1], newLevel, (FlowType)d[2]);
         }
-        (void)waterAbove;
     }
 
-    // New source: ≥2 horizontal level-0 water neighbours + support
+    // Source formation (≥2 level-0 water neighbours + support)
     if (steps < maxSteps) {
-        for (size_t si = 0; si < active.size() && steps < maxSteps; ++si) {
-            int x = active[si].x, y = active[si].y, z = active[si].z;
+        for (size_t si = 0; si < waterCells.size() && steps < maxSteps; ++si) {
+            int x = waterCells[si].x, y = waterCells[si].y, z = waterCells[si].z;
             int selfIdx = CoordToIndex(x, y, z);
-            if (selfIdx < 0 || !isWaterFluid(selfIdx)) continue;
-            if (getLevel(selfIdx) == 0) continue;
+            if (selfIdx < 0 || !isWater(selfIdx)) continue;
+            if (waterLevel(selfIdx) == 0) continue;
             int below = CoordToIndex(x, y - 1, z);
             bool supportOk = isSolidSupport(below) ||
-                             (isWaterFluid(below) && getLevel(below) == 0);
+                             (isWater(below) && waterLevel(below) == 0);
             if (!supportOk) continue;
             int sourceNeigh = 0;
             static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
             for (auto& o : offs) {
                 int ni = CoordToIndex(x + o[0], y, z + o[1]);
-                if (!isWaterFluid(ni)) continue;
-                if (getLevel(ni) == 0) ++sourceNeigh;
+                if (isWater(ni) && waterLevel(ni) == 0) ++sourceNeigh;
             }
             if (sourceNeigh >= 2) {
-                SetCell(x, y, z, /*Air*/0, makeWaterState(0));
+                SetCell(x, y, z, 0, makeWaterState(0));
                 any = true;
                 ++steps;
             }
@@ -1527,35 +1532,78 @@ void GridData::UpdateWater(int maxSteps) {
 
     // Dry unsupported flowing water
     if (steps < maxSteps) {
-        for (size_t si = 0; si < active.size() && steps < maxSteps; ++si) {
-            int x = active[si].x, y = active[si].y, z = active[si].z;
+        for (size_t si = 0; si < waterCells.size() && steps < maxSteps; ++si) {
+            int x = waterCells[si].x, y = waterCells[si].y, z = waterCells[si].z;
             int selfIdx = CoordToIndex(x, y, z);
-            if (selfIdx < 0 || !isWaterFluid(selfIdx)) continue;
-            int level = getLevel(selfIdx);
+            if (selfIdx < 0 || !isWater(selfIdx)) continue;
+            int level = waterLevel(selfIdx);
             if (level == 0) continue;
-            bool supported = false;
-            int above = CoordToIndex(x, y + 1, z);
-            if (isWaterFluid(above)) supported = true;
+            bool supported = isWater(CoordToIndex(x, y + 1, z));
             if (!supported) {
                 static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
                 for (auto& o : offs) {
                     int ni = CoordToIndex(x + o[0], y, z + o[1]);
-                    if (!isWaterFluid(ni)) continue;
-                    if (getLevel(ni) < level) { supported = true; break; }
+                    if (isWater(ni) && waterLevel(ni) < level) { supported = true; break; }
                 }
             }
             if (supported) continue;
             if (level >= 7)
                 SetCell(x, y, z, 0, 0);
             else
-                SetCell(x, y, z, /*Air*/0, makeWaterState(level + 1));
+                SetCell(x, y, z, 0, makeWaterState(level + 1));
             any = true;
             ++steps;
         }
     }
 
+    // ---- LAVA (SpreadLava analogue: shorter range, same level rules) ----
+    for (size_t si = 0; si < lavaCells.size() && steps < maxSteps; ++si) {
+        int x = lavaCells[si].x, y = lavaCells[si].y, z = lavaCells[si].z;
+        int selfIdx = CoordToIndex(x, y, z);
+        if (selfIdx < 0 || !isLava(selfIdx)) continue;
+        int level = waterLevel(selfIdx);
+        int below = CoordToIndex(x, y - 1, z);
+        bool lavaBelow = isLava(below);
+        bool solidBelow = isSolidSupport(below);
+        bool trueSource = (level == 0);
+        bool falseSource = !trueSource && solidBelow && !lavaBelow;
+
+        if (below >= 0) {
+            unsigned short bs = cellStates[below];
+            unsigned char bt = cellTypes[below];
+            bool belowEmpty = (bt == 0 && (bs & ST_ANY_LIQUID) == 0);
+            bool belowHigher = isLava(below) && level < waterLevel(below);
+            if (belowEmpty || belowHigher) {
+                if (IsFlowAllowed(below, FlowYN) != 0 || IsFlowAllowed(selfIdx, FlowYN) != 0) {
+                    int placeLvl = level;
+                    if (belowEmpty) {
+                        int below2 = CoordToIndex(x, y - 2, z);
+                        if (isSolidSupport(below2) && placeLvl == 0)
+                            placeLvl = 1;
+                    }
+                    if (tryPlaceLava(x, y - 1, z, placeLvl, FlowYN))
+                        continue;
+                }
+            }
+        }
+        if (lavaBelow) continue;
+        // Lava horizontal range is shorter in many builds; still use level+1, stop at 3 for closer binary feel
+        int spreadFrom = (trueSource || falseSource) ? 0 : level;
+        if (spreadFrom >= 3) continue; // lava spreads less far than water
+        int newLevel = spreadFrom + 1;
+        static const int dirs[4][3] = {
+            {1, 0, (int)FlowXP}, {-1, 0, (int)FlowXN},
+            {0, 1, (int)FlowZP}, {0, -1, (int)FlowZN}
+        };
+        for (auto& d : dirs) {
+            if (steps >= maxSteps) break;
+            tryPlaceLava(x + d[0], y, z + d[1], newLevel, (FlowType)d[2]);
+        }
+    }
+
     if (any) MarkModifiedRegions();
 }
+
 
 
 

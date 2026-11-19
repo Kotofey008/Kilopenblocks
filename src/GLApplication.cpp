@@ -402,6 +402,16 @@ void GLApplication::RenderWorld() {
     }
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glColor4f(1.f, 1.f, 1.f, 1.f);
+    // WaterTextureEffect / GridModel::SetAnimatedWater — scroll liquid UVs via
+    // texture matrix (GLES fixed pipeline). fluidAnim advances each Game tick.
+#if defined(__ANDROID__)
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    if (game_.fluidAnim.enabled) {
+        glTranslatef(game_.fluidAnim.waterOffsetU, game_.fluidAnim.waterOffsetV, 0.f);
+    }
+    glMatrixMode(GL_MODELVIEW);
+#endif
     for (auto& rm : regionMeshes_) {
         if (!rm.valid || rm.waterBuffer.IndexCount() <= 0) continue;
         DrawPrimitive(GL_TRIANGLES,
@@ -410,6 +420,9 @@ void GLApplication::RenderWorld() {
                       rm.waterBuffer.IndexCount(), 0);
     }
 #if defined(__ANDROID__)
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
     glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
@@ -638,7 +651,7 @@ void GLApplication::Frame() {
     static int waterTick = 0;
     if (++waterTick >= 15) { // ~4 Hz at 60fps
         waterTick = 0;
-        game_.GetGrid().UpdateWater(32);
+        game_.GetGrid().UpdateWater(256);
     }
     if (game_.GetGrid().MeshesDirty()) {
         // Binary does NOT recompute the full light map on every block edit.
