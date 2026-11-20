@@ -1522,14 +1522,15 @@ void GridData::UpdateWater(int maxSteps) {
         }
 
         if (isWater(below)) continue;
-        // Horizontal: only from level < 7; dest = level+1 for sources/false sources use 1
-        int spreadFrom = (level == 0 || (level > 0 && isSolid(below))) ? 0 : level;
+        // Horizontal: ALWAYS dest = srcLevel+1 (Ghidra UpdateOneWaterState / SpreadWater).
+        // Bug was: solid-floor flowing used spreadFrom=0 → infinite level-1 sheet.
+        // Only true sources stay at 0; their children are 1, grandchildren 2, …
         if (level > 0 && !isSolid(below) && !isWater(below)) {
-            // flowing without floor — don't spread sideways (will fall/dry)
+            // flowing mid-air without floor — fall/dry, no sideways
             continue;
         }
-        if (spreadFrom >= 7) continue;
-        int newLevel = spreadFrom + 1;
+        if (level >= 7) continue;
+        int newLevel = level + 1;
         for (int d = 0; d < 4; ++d) {
             if (steps >= maxSteps) break;
             tryPlaceWater(x + Hoff[d][0], y, z + Hoff[d][1], newLevel, Hft[d]);
@@ -1612,10 +1613,10 @@ void GridData::UpdateWater(int maxSteps) {
             }
         }
         if (isLava(below)) continue;
-        int spreadFrom = (level == 0 || isSolid(below)) ? 0 : level;
         if (level > 0 && !isSolid(below) && !isLava(below)) continue;
-        if (spreadFrom >= 3) continue;
-        int newLevel = spreadFrom + 1;
+        // Lava: same level+1 rule; stop sideways earlier (level>=3)
+        if (level >= 3) continue;
+        int newLevel = level + 1;
         for (int d = 0; d < 4; ++d) {
             if (steps >= maxSteps) break;
             tryPlaceLava(x + Hoff[d][0], y, z + Hoff[d][1], newLevel, Hft[d]);
