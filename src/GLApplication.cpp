@@ -202,8 +202,9 @@ void GLApplication::EnsureRegionMeshes() {
         }
         RegionMesh rm;
         rm.ox = ox; rm.oy = oy; rm.oz = oz;
-        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &rm.waterBuffer, &lightMap_);
-        rm.valid = rm.buffer.IndexCount() > 0 || rm.waterBuffer.IndexCount() > 0;
+        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &rm.waterBuffer, &rm.lavaBuffer, &lightMap_);
+        rm.valid = rm.buffer.IndexCount() > 0 || rm.waterBuffer.IndexCount() > 0
+               || rm.lavaBuffer.IndexCount() > 0;
         if (rm.valid)
             regionMeshes_.push_back(std::move(rm));
     };
@@ -395,29 +396,42 @@ void GLApplication::RenderWorld() {
     glDisable(GL_CULL_FACE);
 #endif
     glEnable(GL_TEXTURE_2D);
-    blocksAtlas_.Bind();
-    if (waterTex_.GLId()) {
-        // Optional dedicated water texture when scene provides one; atlas is default.
-        // Mesher UVs are atlas-space, so prefer blocksAtlas for correct tiling.
-    }
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glColor4f(1.f, 1.f, 1.f, 1.f);
-    // WaterTextureEffect / GridModel::SetAnimatedWater — scroll liquid UVs via
-    // texture matrix (GLES fixed pipeline). fluidAnim advances each Game tick.
+    // Water: start.scene WaterTextureFileName (textures/water.png) — full UV 0..1
+    // Animated scroll via texture matrix (WaterTextureEffect analogue).
 #if defined(__ANDROID__)
     glMatrixMode(GL_TEXTURE);
     glLoadIdentity();
-    if (game_.fluidAnim.enabled) {
+    if (game_.fluidAnim.enabled)
         glTranslatef(game_.fluidAnim.waterOffsetU, game_.fluidAnim.waterOffsetV, 0.f);
-    }
     glMatrixMode(GL_MODELVIEW);
 #endif
+    if (waterTex_.GLId()) waterTex_.Bind();
+    else blocksAtlas_.Bind();
     for (auto& rm : regionMeshes_) {
         if (!rm.valid || rm.waterBuffer.IndexCount() <= 0) continue;
         DrawPrimitive(GL_TRIANGLES,
                       rm.waterBuffer.Vertices().data(),
                       rm.waterBuffer.Indices().data(),
                       rm.waterBuffer.IndexCount(), 0);
+    }
+    // Lava: start.scene LavaTextureFileName (textures/lava.png)
+#if defined(__ANDROID__)
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    if (game_.fluidAnim.enabled)
+        glTranslatef(game_.fluidAnim.lavaOffsetU, 0.f, 0.f);
+    glMatrixMode(GL_MODELVIEW);
+#endif
+    if (lavaTex_.GLId()) lavaTex_.Bind();
+    else blocksAtlas_.Bind();
+    for (auto& rm : regionMeshes_) {
+        if (!rm.valid || rm.lavaBuffer.IndexCount() <= 0) continue;
+        DrawPrimitive(GL_TRIANGLES,
+                      rm.lavaBuffer.Vertices().data(),
+                      rm.lavaBuffer.Indices().data(),
+                      rm.lavaBuffer.IndexCount(), 0);
     }
 #if defined(__ANDROID__)
     glMatrixMode(GL_TEXTURE);

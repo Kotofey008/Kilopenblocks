@@ -79,13 +79,22 @@ void TerrainGeneratorEarth::Slice(float* out, int x, int z, int w) {
 
 void TerrainGeneratorEarth::AddGrassAndWater(GridData& grid, int x0, int z0, int x1, int z1) {
     const int waterLevel = 40;
+    const int lavaLevel = 28; // test lava lakes in deeper bowls
     for (int z = z0; z < z1; ++z) {
         for (int x = x0; x < x1; ++x) {
             int ground = GetGroundLevel(x, z);
             if (ground < waterLevel) {
-                // Binary AddGrassAndWater: type=0 (Air) + state 0x2000 — NOT material 5
+                // Binary AddGrassAndWater: type=0 + state 0x2000
                 for (int y = ground; y < waterLevel; ++y)
                     grid.SetCell(x, y, z, /*Air*/0, GridData::WATER_FILL_STATE);
+            }
+            // Test lava lakes: deeper depressions (ground well below lavaLevel)
+            // type=0 + LAVA_SOURCE_STATE (0xC3C0) matching AddLiquidSource(LiquidType!=0)
+            if (ground < lavaLevel - 4) {
+                int top = ground + 3;
+                if (top > lavaLevel) top = lavaLevel;
+                for (int y = ground; y < top; ++y)
+                    grid.SetCell(x, y, z, /*Air*/0, GridData::LAVA_SOURCE_STATE);
             }
         }
     }

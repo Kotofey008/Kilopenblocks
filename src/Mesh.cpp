@@ -717,17 +717,18 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                          const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
                          MeshBuffer* waterOut, const LightMap* lights) {
-    // Region::AddMesh @ 0x9b090 control flow (verified from Ghidra):
-    //   type = types[cell]; if 0 → skip
-    //   mat = materials[type]
-    //   class = mat[+0x01]
-    //   if class not in {0,5,6,7,8,9,0xa}:
-    //     1|4 → AddCross; 2 → AddTorch; 3 → AddLadder; done
-    //   else:
-    //     for each face bit: NeedFace* → AddBlockFace(face, flags)
-    //   if state fluid bits: WaterNeedFace* → AddWaterFace
+    Build(grid, ox, oy, oz, defs, solidOut, waterOut, nullptr, lights);
+}
+
+void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
+                         const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
+                         MeshBuffer* waterOut, MeshBuffer* lavaOut, const LightMap* lights) {
+    // Region::AddMesh @ 0x9b090: solid by class, then liquid by state LiquidType.
+    // Dedicated water/lava textures (start.scene WaterTextureFileName / LavaTextureFileName)
+    // use full 0..1 UV on their own meshes — not blocks atlas tiles.
     solidOut.Clear();
     if (waterOut) waterOut->Clear();
+    if (lavaOut) lavaOut->Clear();
     const int S = 16;
     (void)defs;
 
@@ -746,21 +747,14 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         const Material* mat = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
         // Region::AddMesh end: if state&0x2000 → LiquidType 0; else if state&0x3c0 → LiquidType 1
         if (liquidType >= 0) {
-            MeshBuffer& dst = waterOut ? *waterOut : solidOut;
+            MeshBuffer* target = (liquidType == 0) ? waterOut : lavaOut;
+            MeshBuffer& dst = target ? *target : (waterOut ? *waterOut : solidOut);
             float h = WaterHeightFrac(grid, wx, wy, wz);
             if (h > 0.f) {
                 for (int face = 0; face < 6; ++face) {
                     if (WaterNeedFace(grid, wx, wy, wz, face) == 0) continue;
-                    float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-                    if (liquidType == 0) {
-                        // Water UVs from material row 5 atlas tiles (binary uses water tex / atlas)
-                        const Material* wm = grid.GetMaterial(5);
-                        if (wm) FaceUV(*wm, face, u0, v0, u1, v1);
-                        else Texture::TileUV(6, 0, u0, v0, u1, v1);
-                    } else {
-                        // Lava: distinct atlas tile (commonly near still/lava in blocks.png)
-                        Texture::TileUV(13, 14, u0, v0, u1, v1);
-                    }
+                    // Full-quad UVs for dedicated water.png / lava.png (not atlas)
+                    float u0 = 0.f, v0 = 0.f, u1 = 1.f, v1 = 1.f;
                     uint32_t col = (liquidType == 0) ? 0xA0FFFFFF : 0xE0FF6030;
                     if (lights) {
                         uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));

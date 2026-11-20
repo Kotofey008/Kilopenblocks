@@ -17,7 +17,8 @@
 struct RegionMesh {
     int ox = 0, oy = 0, oz = 0;
     MeshBuffer buffer;       // opaque / cutout solids
-    MeshBuffer waterBuffer;  // translucent liquid faces (AddWaterFace path)
+    MeshBuffer waterBuffer;  // water faces → WaterTextureFileName
+    MeshBuffer lavaBuffer;   // lava faces → LavaTextureFileName
     bool valid = false;
 };
 

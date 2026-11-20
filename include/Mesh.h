@@ -53,6 +53,9 @@ public:
     static void Build(GridData& grid, int originX, int originY, int originZ,
                       const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
                       MeshBuffer* waterOut, const LightMap* lights);
+    static void Build(GridData& grid, int originX, int originY, int originZ,
+                      const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
+                      MeshBuffer* waterOut, MeshBuffer* lavaOut, const LightMap* lights);
 
     // NeedFace* recovery (NeedFaceXP @ 0x833d0 template).
     // Returns: 0 = no face, 1 = emit face, 2 = special/partial.
