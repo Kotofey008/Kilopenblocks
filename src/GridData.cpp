@@ -1440,19 +1440,27 @@ void GridData::UpdateWater(int maxSteps) {
         int below = CoordToIndex(x, y - 1, z);
         bool supportOk = isSolid(below) || (isWater(below) && levelOf(below) == 0);
 
+        // False-source = flowing cell resting on solid (not water). It may spread like
+        // level 0 horizontally, but without a feeder (waterAbove or path to level-0)
+        // it must vanish — never a permanent infinite source.
+        bool solidBelowOnly = isSolid(below) && !isWater(below);
         int newLevel;
         if (sourceNeigh >= 2 && supportOk) {
-            newLevel = 0; // new source formation
+            newLevel = 0; // real source formation from ≥2 level-0 neighbours
         } else if (waterAbove) {
-            // Under a column — keep or adopt above's flowing depth
-            newLevel = cur; // stable under waterfall; fall pass places these
+            // Fed by vertical stream: keep; may still tighten from stronger horiz supply
+            newLevel = cur;
             if (minAdj < 8 && minAdj + 1 < newLevel)
                 newLevel = minAdj + 1;
+            // Landing on solid under a source column: stay at least flowing (not true 0)
+            if (solidBelowOnly && newLevel == 0)
+                newLevel = 1;
         } else if (minAdj < 8) {
+            // Path to some water: level = minAdj+1 (retreats when source cut)
             newLevel = minAdj + 1;
-            if (newLevel > 7) newLevel = 8; // will clear
+            if (newLevel > 7) newLevel = 8;
         } else {
-            // No adjacent water → dry out (level 8 sentinel)
+            // No water neighbours and no water above → disappear
             newLevel = 8;
         }
 
@@ -1522,15 +1530,20 @@ void GridData::UpdateWater(int maxSteps) {
         }
 
         if (isWater(below)) continue;
-        // Horizontal: ALWAYS dest = srcLevel+1 (Ghidra UpdateOneWaterState / SpreadWater).
-        // Bug was: solid-floor flowing used spreadFrom=0 → infinite level-1 sheet.
-        // Only true sources stay at 0; their children are 1, grandchildren 2, …
-        if (level > 0 && !isSolid(below) && !isWater(below)) {
-            // flowing mid-air without floor — fall/dry, no sideways
+        // Vertical stream that landed on solid (not water): false-source.
+        // Ghidra/step_slide: falseSource = level!=0 && solidBelow && !waterBelow
+        //   → horizontal outLevel as if from source (spreadFrom 0 → place level 1).
+        // NOT infinite: Pass A recomputes non-zero levels; without waterAbove / path to
+        // a real level-0, minAdj rises and the cell dries (newLevel→8 → clear).
+        bool solidBelow = isSolid(below);
+        bool falseSource = (level > 0) && solidBelow && !isWater(below);
+        if (level > 0 && !solidBelow && !isWater(below)) {
+            // mid-air flowing, no floor — fall/dry only
             continue;
         }
-        if (level >= 7) continue;
-        int newLevel = level + 1;
+        int spreadFrom = (level == 0 || falseSource) ? 0 : level;
+        if (spreadFrom >= 7) continue;
+        int newLevel = spreadFrom + 1;
         for (int d = 0; d < 4; ++d) {
             if (steps >= maxSteps) break;
             tryPlaceWater(x + Hoff[d][0], y, z + Hoff[d][1], newLevel, Hft[d]);
@@ -1613,10 +1626,12 @@ void GridData::UpdateWater(int maxSteps) {
             }
         }
         if (isLava(below)) continue;
-        if (level > 0 && !isSolid(below) && !isLava(below)) continue;
-        // Lava: same level+1 rule; stop sideways earlier (level>=3)
-        if (level >= 3) continue;
-        int newLevel = level + 1;
+        bool solidBelowL = isSolid(below);
+        bool falseSourceL = (level > 0) && solidBelowL && !isLava(below);
+        if (level > 0 && !solidBelowL && !isLava(below)) continue;
+        int spreadFromL = (level == 0 || falseSourceL) ? 0 : level;
+        if (spreadFromL >= 3) continue;
+        int newLevel = spreadFromL + 1;
         for (int d = 0; d < 4; ++d) {
             if (steps >= maxSteps) break;
             tryPlaceLava(x + Hoff[d][0], y, z + Hoff[d][1], newLevel, Hft[d]);
