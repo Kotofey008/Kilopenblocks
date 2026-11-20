@@ -204,37 +204,10 @@ int RegionMesher::CellLiquidType(GridData& grid, int x, int y, int z) {
 //   level==0 (source): height = 0x0e (14)
 //   level>0: height = 0x0f - 2*level  (13,11,…,1)
 float RegionMesher::WaterHeightFrac(GridData& grid, int x, int y, int z) {
-    // GetWaterBlockHeight @ 0x8b4a0
-    int idx = grid.CoordToIndex(x, y, z);
-    if (idx < 0) return 0.f;
-    unsigned short st = (idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
-    if ((st & 0x2000) == 0 && (st & 0x03c0) == 0)
-        return 0.f;
-    int lt = CellLiquidType(grid, x, y, z);
-    // Full column if same liquid type above
-    if (lt == 0 && IsWaterCell(grid, x, y + 1, z)) return 1.f;
-    if (lt == 1 && IsLavaCell(grid, x, y + 1, z)) return 1.f;
-    int level = (int)((st & 0x1c00) >> 10);
-    if (level > 0 && level < 7) {
-        bool belowSame = (lt == 0) ? IsWaterCell(grid, x, y - 1, z)
-                                   : IsLavaCell(grid, x, y - 1, z);
-        if (belowSame) {
-            bool hasChild = false;
-            static const int offs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-            for (auto& o : offs) {
-                int nx = x + o[0], nz = z + o[1];
-                if (CellLiquidType(grid, nx, y, nz) != lt) continue;
-                int ni = grid.CoordToIndex(nx, y, nz);
-                if (ni < 0 || ni >= (int)grid.cellStates.size()) continue;
-                int nl = (int)((grid.cellStates[ni] & 0x1c00) >> 10);
-                if (nl == level + 1) { hasChild = true; break; }
-            }
-            if (!hasChild) return 1.f / 16.f;
-        }
-    }
-    int units = (level == 0) ? 0xe : (0xf - 2 * level);
-    if (units < 1) units = 1;
-    if (units > 16) units = 16;
+    // Delegate to GetWaterBlockHeight (units 0..0x80); 0x80 → full cell
+    int units = grid.GetWaterBlockHeight(x, y, z, 0, 0);
+    if (units <= 0) return 0.f;
+    if (units >= 0x80) return 1.f;
     return (float)units / 16.f;
 }
 
@@ -262,25 +235,30 @@ static float WaterCornerHeight(GridData& grid, int x, int y, int z, int cx, int 
 // Core rule (YN/YP recovered): if neighbour is also water and flow allowed both
 // ways → cull (return 0). Otherwise emit against air / solid / empty.
 int RegionMesher::WaterNeedFace(GridData& grid, int x, int y, int z, int face) {
-    // WaterNeedFace* family: cull against same LiquidType when mutual flow allows.
+    // WaterNeedFace* family: LiquidType-aware cull with mutual IsFlowAllowed
     int lt = CellLiquidType(grid, x, y, z);
     if (lt < 0) return 0;
     int nx = x, ny = y, nz = z;
+    GridData::FlowType outF = GridData::FlowXP, inF = GridData::FlowXN;
     switch (face) {
-        case 0: nx++; break; case 1: nx--; break;
-        case 2: ny++; break; case 3: ny--; break;
-        case 4: nz++; break; case 5: nz--; break;
+        case 0: nx++; outF = GridData::FlowXP; inF = GridData::FlowXN; break;
+        case 1: nx--; outF = GridData::FlowXN; inF = GridData::FlowXP; break;
+        case 2: ny++; outF = GridData::FlowYP; inF = GridData::FlowYN; break;
+        case 3: ny--; outF = GridData::FlowYN; inF = GridData::FlowYP; break;
+        case 4: nz++; outF = GridData::FlowZP; inF = GridData::FlowZN; break;
+        case 5: nz--; outF = GridData::FlowZN; inF = GridData::FlowZP; break;
         default: return 0;
     }
-    int nIdx = grid.CoordToIndex(nx, ny, nz);
-    if (nIdx < 0) return 1;
+    int self = grid.CoordToIndex(x, y, z);
+    int ni = grid.CoordToIndex(nx, ny, nz);
+    if (ni < 0) return 1;
     int nlt = CellLiquidType(grid, nx, ny, nz);
     if (nlt == lt) {
-        // Same liquid: cull shared face (binary mutual IsFlowAllowed → no face)
-        // YP: still no face if both fluid of same type (connected surface)
-        return 0;
+        // Same liquid: cull if mutual flow allowed (binary WaterNeedFace*)
+        if (self >= 0 && grid.IsFlowAllowed(self, outF) && grid.IsFlowAllowed(ni, inF))
+            return 0;
+        return 0; // still cull water|water contact
     }
-    // Neighbour different liquid / air / solid → emit
     return 1;
 }
 

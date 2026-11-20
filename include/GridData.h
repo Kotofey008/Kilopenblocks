@@ -184,6 +184,17 @@ public:
     bool MeshesDirty() const { return meshesDirty_; }
     void ClearMeshesDirty() { meshesDirty_ = false; }
     void UpdateWater(int maxSteps = 64);
+
+    // Binary liquid pipeline (UpdateWaterState @ 0xa1040):
+    //   UpdateOneWaterState → queue 0xFE SpreadWater / 0xFF SpreadLava / SetCell
+    //   Spread* mark-only receive gates; SetCell applies state.
+    void UpdateOneWaterState(int x, int y, int z);
+    void SpreadWater(int x, int y, int z, int srcLevel);
+    void SpreadLava(int x, int y, int z, int srcLevel);
+    bool WaterThresholdTest(int fromIdx, int toIdx, int levelHint) const;
+    unsigned short FindFlow(int x, int y, int z, int cellIdx, int maxDepth);
+    // GetWaterBlockHeight @ 0x8b4a0 — height units 0..0x80
+    int GetWaterBlockHeight(int x, int y, int z, int dx = 0, int dz = 0) const;
     // InitMaterials @ 0x98720 / LoadMaterials @ 0x987d0 (blocks.txt)
     bool InitMaterials();
     bool LoadMaterials(const char* path);
@@ -234,6 +245,16 @@ public:
     std::vector<Material> materials;
     int materialCount = 0;
     int maxSelIndex_ = 0; // binary +0xe4
+    // Liquid command queue: type 0xFE=SpreadWater, 0xFF=SpreadLava, else SetCell type
+    struct LiquidCmd {
+        int x, y, z;
+        unsigned char type;   // 0xFE / 0xFF / cell type for SetCell
+        unsigned short state; // level for Spread*, full state for SetCell
+    };
+    std::vector<LiquidCmd> liquidQueue_;
+    void QueueLiquidCmd(int x, int y, int z, unsigned char type, unsigned short state);
+    void FlushLiquidQueue(int& stepsLeft);
+
     bool meshesDirty_ = true;
     LeavesQuality leavesQuality_ = LeavesQuality::High; // +0xec default 2
     int viewDistanceCells_ = 64; // binary GridData +0x22c (from draw-distance table)
