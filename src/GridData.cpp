@@ -102,11 +102,9 @@ void GridData::SetState(int cellIndex, unsigned short newState) {
     }
 
     cellStates[cellIndex] = newState;
-    // 0x4000 is hierarchy/scheduling only — does NOT change rendered geometry.
-    // Mesh rebuild is triggered by SetCell when type / fluid / level bits change.
-    if (((oldStored ^ newState) & (STATE_BIT_2000 | STATE_BIT_3C0 | STATE_LEVEL_MASK)) != 0) {
-        meshesDirty_ = true;
-    }
+    // SetState never triggers mesh rebuild. Geometry dirty only via SetCell
+    // (which MarkRegionDirty). Raising meshesDirty_ here without region keys
+    // caused EnsureRegionMeshes full-world rebuild every frame.
 }
 
 // ---------------------------------------------------------------------------
@@ -158,26 +156,22 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
         MarkRegionDirty(x, y, z);
         meshesDirty_ = true;
 
-        // Binary SetCell ORs 0xC000 onto face-neighbour states (~16 sites).
-        // Re-dirty neighbouring liquid for hierarchy; mesh-dirty neighbour
-        // regions only on type change (solid↔air) — pure liquid level changes
-        // only need the cell's own region (avoids fill remesh storm).
-        if (typeChanged || bit2000Changed || bit3c0Changed) {
+        // Neighbour mesh keys only when solid type changes (shared faces).
+        // Do NOT OR 0x4000 onto neighbour liquids here — that re-dirtied whole
+        // lakes every SetCell and kept UpdateWater busy every frame.
+        // Binary neighbour 0xC000 OR is gated (material/+0xf0); Spread* owns
+        // liquid dirty propagation.
+        if (typeChanged) {
             static const int offs[6][3] = {
                 {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}
             };
             for (auto& o : offs) {
                 int nx = x + o[0], ny = y + o[1], nz = z + o[2];
-                int ni = CoordToIndex(nx, ny, nz);
-                if (ni < 0) continue;
-                if (typeChanged)
+                if (CoordToIndex(nx, ny, nz) >= 0)
                     MarkRegionDirty(nx, ny, nz);
-                unsigned short ns = cellStates[ni];
-                if ((ns & STATE_LIQUID_ANY) != 0 && (ns & STATE_BIT_4000) == 0)
-                    SetState(ni, (unsigned short)(ns | STATE_BIT_4000));
             }
         }
-        MarkModifiedRegions();
+        // meshesDirty_ already set; regions listed — no MarkModifiedRegions stub
     }
 }
 
@@ -660,8 +654,10 @@ void GridData::DecodeWorldPos(int& x, int& z, unsigned int key) {
 }
 
 void GridData::MarkModifiedRegions() {
-    // Original @ 0x7aad0 — walks dirty cells and flags regions
-    meshesDirty_ = true;
+    // Original @ 0x7aad0 — walks dirty cells and flags region entries.
+    // Stub must NOT raise meshesDirty_ alone: that triggered full-world
+    // EnsureRegionMeshes when dirtyRegions_ was empty (constant hitch).
+    // SetCell already MarkRegionDirty + meshesDirty_ for real edits.
 }
 
 void GridData::Invalidate() {
@@ -1511,26 +1507,24 @@ int GridData::GetWaterBlockHeight(int x, int y, int z, int dx, int dz) const {
 }
 
 void GridData::SpreadWater(int x, int y, int z, int srcLevel) {
-    // Ghidra SpreadWater @ 0x9f560 — ONLY marks receive cells with 0x4000.
-    // Does NOT SetCell / place water. Placement happens next tick in
-    // UpdateOneWaterState when the hierarchy visits those dirty cells.
-    // Immediate SetCell here was the fill hitch (cascade → mesh rebuild storm).
+    // Ghidra SpreadWater @ 0x9f560 — ONLY marks receive cells with 0x4000
+    // (writes aux+0x258 hierarchy, not SetCell). Placement is next tick.
     //
-    // Horizontal (XP/XN/ZP/ZN): material[neigh].raw[0x1c] != 0 AND
-    //   (empty && srcLevel < 7) OR (water && srcLevel < neighLevel)
-    // Vertical Y-: if y > 0 and material flowPerm: empty OR (lava-ish high level)
-    //   — NO srcLevel < 7 gate; level 7 still falls.
+    // Horizontal: mat[+0x1c]!=0 && ((empty && srcLevel<7) || (water && srcLevel<neighLevel))
+    // Vertical Y- (exact from decomp):
+    //   if (y > 0) && mat[below][+0x1c]!=0:
+    //     mark if (st & 0x3fc0)==0  OR  ((st & 0x2000) && (st & 0x1c00) > 0x400)
+    //   → empty OR water-with-level>=2; NO srcLevel<7 gate (level 7 still falls).
     int self = CoordToIndex(x, y, z);
     if (self < 0) return;
     static const int Hoff[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-    auto canMat = [&](int idx) -> bool {
+    auto flowPermOk = [&](int idx) -> bool {
         if (idx < 0 || idx >= (int)cellTypes.size()) return false;
         unsigned char t = cellTypes[idx];
-        if (!materials.empty() && t < materials.size()) {
-            if (materials[t].raw[0x1c] == 0 && materials[t].raw[0x1b] == 0)
-                return false;
-        }
-        return true;
+        if (!materials.empty() && t < materials.size())
+            return materials[t].raw[0x1c] != 0;
+        // No material table: allow air/water cells
+        return t == 0 || (cellStates[idx] & STATE_BIT_2000) != 0;
     };
     auto markDirty = [&](int ni) {
         if (ni < 0) return;
@@ -1539,32 +1533,30 @@ void GridData::SpreadWater(int x, int y, int z, int srcLevel) {
             SetState(ni, (unsigned short)(ns | STATE_BIT_4000));
     };
 
-    // Horizontal — binary empty gate: param_4 < 7
+    // Horizontal — binary empty gate uses param_4 < 7
     if (srcLevel < 7) {
         for (int d = 0; d < 4; ++d) {
             int ni = CoordToIndex(x + Hoff[d][0], y, z + Hoff[d][1]);
-            if (!canMat(ni)) continue;
+            if (!flowPermOk(ni)) continue;
             unsigned short ns = cellStates[ni];
-            unsigned char nt = cellTypes[ni];
-            bool empty = (ns & STATE_LIQUID_ANY) == 0 && nt == 0;
+            bool empty = (ns & STATE_LIQUID_ANY) == 0 && cellTypes[ni] == 0;
             bool waterHigher = (ns & STATE_BIT_2000) != 0 && srcLevel < LiquidLevel(ns);
             if (empty || waterHigher)
                 markDirty(ni);
         }
     }
 
-    // Fall (Y-) — no level gate (Ghidra: only y>0 + flowPerm + empty/lava test)
-    int below = CoordToIndex(x, y - 1, z);
-    if (below >= 0 && canMat(below)) {
-        unsigned short ns = cellStates[below];
-        unsigned char nt = cellTypes[below];
-        bool empty = (ns & STATE_LIQUID_ANY) == 0 && nt == 0;
-        // Binary also accepts lava-below with level > 1 as overwritable receive
-        bool lavaRecv = (ns & STATE_BIT_3C0) != 0 && (ns & STATE_BIT_2000) == 0 &&
-                        LiquidLevel(ns) > 1;
-        bool waterHigher = (ns & STATE_BIT_2000) != 0 && srcLevel < LiquidLevel(ns);
-        if (empty || lavaRecv || waterHigher)
-            markDirty(below);
+    // Vertical fall (Y-) — Ghidra exact receive test (no srcLevel gate)
+    if (y > originY) {
+        int below = CoordToIndex(x, y - 1, z);
+        if (flowPermOk(below)) {
+            unsigned short ns = cellStates[below];
+            bool empty = (ns & STATE_LIQUID_ANY) == 0; // (st & 0x3fc0)==0
+            // water && (st & 0x1c00) > 0x400  → level >= 2
+            bool waterDeep = (ns & STATE_BIT_2000) != 0 && (ns & STATE_LEVEL_MASK) > 0x400;
+            if (empty || waterDeep)
+                markDirty(below);
+        }
     }
 }
 
@@ -1714,8 +1706,9 @@ void GridData::UpdateOneWaterState(int x, int y, int z) {
             return;
         }
         if (newLevel != cur)
-            QueueLiquidCmd(x, y, z, 0, MakeWaterState(newLevel));
-        // Spread even at level 7 — SpreadWater still falls vertically (Ghidra)
+            QueueLiquidCmd(x, y, z, 0,
+                (unsigned short)(MakeWaterState(newLevel) | STATE_BIT_4000));
+        // Spread even at level 7 — vertical has no srcLevel gate in Ghidra
         if (newLevel <= 7 && hasEmptyNeighbor())
             QueueLiquidCmd(x, y, z, 0xFE, (unsigned short)newLevel);
         return;
@@ -1777,28 +1770,33 @@ void GridData::UpdateOneWaterState(int x, int y, int z) {
             if (nl < minL) minL = nl;
         }
         SetState(idx, (unsigned short)(st & ~STATE_BIT_4000));
+        // Keep 0x4000 on newly placed liquid so the next UpdateWaterState tick
+        // runs UpdateOneWaterState → Spread* (binary relies on neighbour dirty
+        // / same-cell re-entry; without it flow stops after one cell).
         if (waterAbove) {
             int place = LiquidLevel(cellStates[above]);
             if (place > 7) place = 7;
-            // Landing on solid: source-level 0 becomes 1 (matches SpreadWater old path)
+            // Fall keeps level; landing on solid: 0 → 1
             if (isSolid(below) && place == 0) place = 1;
-            QueueLiquidCmd(x, y, z, 0, MakeWaterState(place));
+            QueueLiquidCmd(x, y, z, 0,
+                (unsigned short)(MakeWaterState(place) | STATE_BIT_4000));
         } else if (minW < 7) {
             int place = minW + 1;
             if (place <= 7)
-                QueueLiquidCmd(x, y, z, 0, MakeWaterState(place));
+                QueueLiquidCmd(x, y, z, 0,
+                    (unsigned short)(MakeWaterState(place) | STATE_BIT_4000));
         } else if (lavaAbove) {
             int place = LiquidLevel(cellStates[above]);
             if (isSolid(below) && place == 0) place = 1;
             if (place <= 7) {
-                unsigned short ls = (unsigned short)(STATE_BIT_3C0 | 0xC000 |
+                unsigned short ls = (unsigned short)(STATE_BIT_3C0 | STATE_BIT_4000 |
                     ((place & 7) << STATE_LEVEL_SHIFT));
                 QueueLiquidCmd(x, y, z, 0, ls);
             }
         } else if (minL < 6) {
             int place = minL + 1;
             if (place <= 7) {
-                unsigned short ls = (unsigned short)(STATE_BIT_3C0 | 0xC000 |
+                unsigned short ls = (unsigned short)(STATE_BIT_3C0 | STATE_BIT_4000 |
                     ((place & 7) << STATE_LEVEL_SHIFT));
                 QueueLiquidCmd(x, y, z, 0, ls);
             }
@@ -1837,34 +1835,32 @@ void GridData::UpdateWater(int maxSteps) {
         return;
     }
 
+    // Process at most maxSteps dirty cells per call (binary budget +0x2d4).
     int processed = 0;
-    for (int i3 = 0; i3 < nL3 && processed < maxSteps * 4; ++i3) {
+    for (int i3 = 0; i3 < nL3 && processed < maxSteps; ++i3) {
         if (!aux4000L3_[i3]) continue;
         const int i2Begin = i3 << 4;
         const int i2End = std::min(i2Begin + 16, nL2);
-        for (int i2 = i2Begin; i2 < i2End && processed < maxSteps * 4; ++i2) {
+        for (int i2 = i2Begin; i2 < i2End && processed < maxSteps; ++i2) {
             if (!aux4000L2_[i2]) continue;
             const int i1Begin = i2 << 4;
             const int i1End = std::min(i1Begin + 16, nL1);
-            for (int i1 = i1Begin; i1 < i1End && processed < maxSteps * 4; ++i1) {
+            for (int i1 = i1Begin; i1 < i1End && processed < maxSteps; ++i1) {
                 if (!aux4000L1_[i1]) continue;
                 const int i0Begin = i1 << 4;
                 const int i0End = std::min(i0Begin + 16, nL0);
-                for (int i0 = i0Begin; i0 < i0End && processed < maxSteps * 4; ++i0) {
+                for (int i0 = i0Begin; i0 < i0End && processed < maxSteps; ++i0) {
                     if (!aux4000L0_[i0]) continue;
-                    // L0 covers 16 consecutive linear indices
                     const int cellBegin = i0 << 4;
                     const int cellEnd = std::min(cellBegin + 16, total);
-                    for (int idx = cellBegin; idx < cellEnd; ++idx) {
+                    for (int idx = cellBegin; idx < cellEnd && processed < maxSteps; ++idx) {
                         if ((cellStates[idx] & STATE_BIT_4000) == 0) continue;
-                        // Decode linear index → world coords
                         int lx = idx % sizeX;
                         int t = idx / sizeX;
                         int ly = t % sizeY;
                         int lz = t / sizeY;
                         UpdateOneWaterState(originX + lx, originY + ly, originZ + lz);
                         ++processed;
-                        if (processed >= maxSteps * 4) break;
                     }
                 }
             }
@@ -1872,11 +1868,10 @@ void GridData::UpdateWater(int maxSteps) {
     }
 
     int waves = 0;
-    while (!liquidQueue_.empty() && stepsLeft > 0 && waves < 8) {
+    while (!liquidQueue_.empty() && stepsLeft > 0 && waves < 4) {
         FlushLiquidQueue(stepsLeft);
         ++waves;
     }
-    // SetCell already MarkRegionDirty + meshesDirty_; no full remesh.
 }
 
 

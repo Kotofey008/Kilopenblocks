@@ -265,30 +265,30 @@ void GLApplication::EnsureRegionMeshes() {
             std::vector<GridData::RegionKey> left(dirty.begin() + (ptrdiff_t)nRebuild,
                                                   dirty.end());
             grid.ClearDirtyRegions();
-            for (const auto& k : left) {
-                // Re-queue without world-coord expansion (keys already region indices)
+            for (const auto& k : left)
                 grid.dirtyRegions_.push_back(k);
-            }
-            // Stay dirty so Frame keeps calling EnsureRegionMeshes
         }
         return;
     }
 
-    // Full rebuild (initial load / Invalidate / empty dirty + meshesDirty)
-    lightMap_.Init(grid);
-    regionMeshes_.clear();
-    int minX = (int)grid.worldMin.x & ~15;
-    int minY = (int)grid.worldMin.y & ~15;
-    int minZ = (int)grid.worldMin.z & ~15;
-    int maxX = ((int)grid.worldMax.x + 15) & ~15;
-    int maxY = ((int)grid.worldMax.y + 15) & ~15;
-    int maxZ = ((int)grid.worldMax.z + 15) & ~15;
-
-    for (int z = minZ; z < maxZ; z += 16)
-    for (int y = minY; y < maxY; y += 16)
-    for (int x = minX; x < maxX; x += 16) {
-        rebuildOne(x, y, z);
+    // meshesDirty_ with empty dirtyRegions_ must NOT full-rebuild every frame —
+    // that was the constant hitch (SetState/MarkModifiedRegions raised the flag
+    // without region keys). Only full rebuild on first load / explicit Invalidate
+    // when regionMeshes_ is still empty.
+    if (regionMeshes_.empty()) {
+        lightMap_.Init(grid);
+        int minX = (int)grid.worldMin.x & ~15;
+        int minY = (int)grid.worldMin.y & ~15;
+        int minZ = (int)grid.worldMin.z & ~15;
+        int maxX = ((int)grid.worldMax.x + 15) & ~15;
+        int maxY = ((int)grid.worldMax.y + 15) & ~15;
+        int maxZ = ((int)grid.worldMax.z + 15) & ~15;
+        for (int z = minZ; z < maxZ; z += 16)
+        for (int y = minY; y < maxY; y += 16)
+        for (int x = minX; x < maxX; x += 16)
+            rebuildOne(x, y, z);
     }
+    // else: flag-only, nothing to do (ClearMeshesDirty in Frame)
 }
 
 void GLApplication::RenderWorld() {
@@ -680,14 +680,20 @@ void GLApplication::Frame() {
 #endif
     // Game::UpdateSkyBox: Clouds::SetSkyLightScale = 0.2 + 0.8 * dayFactor
     clouds_.SetSkyLightScale(0.2f + 0.8f * skyBox_.GetDayFactor());
-    // Binary: GridModel::FixedUpdate → UpdateWaterState every physics tick.
-    // Hierarchy walk is O(dirty) and early-outs when aux4000L3_ is empty, so
-    // calling every frame is cheap and keeps flow responsive (no 1 Hz hitch).
-    game_.GetGrid().UpdateWater(200); // binary default budget +0x2d4 = 200
-    // Rebuild when meshesDirty_ or deferred dirty regions remain (budgeted).
+    // Binary UpdateWaterState budget gate (+0x2d4=200, +0x2d8 next deadline):
+    // only runs when scene tick >= deadline, then deadline += 200.
+    // Approximate with every 4 frames (~15 Hz) + step budget 64 to avoid
+    // constant per-frame liquid work when hierarchy is noisy.
+    {
+        static int waterTick = 0;
+        if (++waterTick >= 4) {
+            waterTick = 0;
+            game_.GetGrid().UpdateWater(64);
+        }
+    }
+    // Incremental mesh only — never full-world rebuild on a bare meshesDirty_ flag.
     if (game_.GetGrid().MeshesDirty() || !game_.GetGrid().dirtyRegions_.empty()) {
         EnsureRegionMeshes();
-        // Clear flag only if no deferred regions left
         if (game_.GetGrid().dirtyRegions_.empty())
             game_.GetGrid().ClearMeshesDirty();
     }
