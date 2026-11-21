@@ -661,12 +661,10 @@ void GLApplication::Frame() {
 #endif
     // Game::UpdateSkyBox: Clouds::SetSkyLightScale = 0.2 + 0.8 * dayFactor
     clouds_.SetSkyLightScale(0.2f + 0.8f * skyBox_.GetDayFactor());
-    // periodic water tick
-    static int waterTick = 0;
-    if (++waterTick >= 15) { // ~4 Hz at 60fps
-        waterTick = 0;
-        game_.GetGrid().UpdateWater(96);
-    }
+    // Binary: GridModel::FixedUpdate → UpdateWaterState every physics tick.
+    // Hierarchy walk is O(dirty) and early-outs when aux4000L3_ is empty, so
+    // calling every frame is cheap and keeps flow responsive (no 1 Hz hitch).
+    game_.GetGrid().UpdateWater(200); // binary default budget +0x2d4 = 200
     if (game_.GetGrid().MeshesDirty()) {
         // Binary does NOT recompute the full light map on every block edit.
         // lightMap_.Init is O(world volume) and was the main cause of the
