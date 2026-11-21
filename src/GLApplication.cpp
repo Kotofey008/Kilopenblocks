@@ -665,7 +665,7 @@ void GLApplication::Frame() {
     static int waterTick = 0;
     if (++waterTick >= 15) { // ~4 Hz at 60fps
         waterTick = 0;
-        game_.GetGrid().UpdateWater(256);
+        game_.GetGrid().UpdateWater(96);
     }
     if (game_.GetGrid().MeshesDirty()) {
         // Binary does NOT recompute the full light map on every block edit.
