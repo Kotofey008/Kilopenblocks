@@ -222,7 +222,6 @@ void GLApplication::EnsureRegionMeshes() {
                 if (d == k) return;
             dirty.push_back(k);
         };
-        // Expand from a copy of the original set size
         const size_t n0 = dirty.size();
         for (size_t i = 0; i < n0; ++i) {
             const auto& k = dirty[i];
@@ -234,10 +233,17 @@ void GLApplication::EnsureRegionMeshes() {
             addKey(k.rx, k.ry, k.rz - 1);
         }
 
-        if (!lightMap_.Empty()) {
+        // Cap rebuilds per frame — water fill can dirty many regions in one
+        // tick; rebuilding them all stalls the frame. Remainder stays dirty.
+        constexpr size_t kMaxRegionsPerFrame = 12;
+        const size_t nRebuild = dirty.size() < kMaxRegionsPerFrame
+                                    ? dirty.size() : kMaxRegionsPerFrame;
+
+        if (!lightMap_.Empty() && nRebuild > 0) {
             int minX = dirty[0].rx * 16, maxX = minX + 16;
             int minZ = dirty[0].rz * 16, maxZ = minZ + 16;
-            for (const auto& k : dirty) {
+            for (size_t i = 0; i < nRebuild; ++i) {
+                const auto& k = dirty[i];
                 int x0 = k.rx * 16, z0 = k.rz * 16;
                 if (x0 < minX) minX = x0;
                 if (x0 + 16 > maxX) maxX = x0 + 16;
@@ -247,11 +253,24 @@ void GLApplication::EnsureRegionMeshes() {
             lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
         }
 
-        for (const auto& k : dirty) {
-            // origin = index * 16; for negative indices e.g. -1 → -16, matches & ~15
+        for (size_t i = 0; i < nRebuild; ++i) {
+            const auto& k = dirty[i];
             rebuildOne(k.rx * 16, k.ry * 16, k.rz * 16);
         }
-        grid.ClearDirtyRegions();
+
+        if (nRebuild >= dirty.size()) {
+            grid.ClearDirtyRegions();
+        } else {
+            // Keep unprocessed tail for next frames
+            std::vector<GridData::RegionKey> left(dirty.begin() + (ptrdiff_t)nRebuild,
+                                                  dirty.end());
+            grid.ClearDirtyRegions();
+            for (const auto& k : left) {
+                // Re-queue without world-coord expansion (keys already region indices)
+                grid.dirtyRegions_.push_back(k);
+            }
+            // Stay dirty so Frame keeps calling EnsureRegionMeshes
+        }
         return;
     }
 
@@ -665,15 +684,12 @@ void GLApplication::Frame() {
     // Hierarchy walk is O(dirty) and early-outs when aux4000L3_ is empty, so
     // calling every frame is cheap and keeps flow responsive (no 1 Hz hitch).
     game_.GetGrid().UpdateWater(200); // binary default budget +0x2d4 = 200
-    if (game_.GetGrid().MeshesDirty()) {
-        // Binary does NOT recompute the full light map on every block edit.
-        // lightMap_.Init is O(world volume) and was the main cause of the
-        // half-second freeze on place/break. Lightmap is built once at world
-        // load (OnCreateGLContext); local light refresh is handled separately
-        // when lighting is explicitly invalidated or a light source changes.
-        // Meshes: only dirty regions are rebuilt (see EnsureRegionMeshes).
+    // Rebuild when meshesDirty_ or deferred dirty regions remain (budgeted).
+    if (game_.GetGrid().MeshesDirty() || !game_.GetGrid().dirtyRegions_.empty()) {
         EnsureRegionMeshes();
-        game_.GetGrid().ClearMeshesDirty();
+        // Clear flag only if no deferred regions left
+        if (game_.GetGrid().dirtyRegions_.empty())
+            game_.GetGrid().ClearMeshesDirty();
     }
     RenderWorld();
     {
