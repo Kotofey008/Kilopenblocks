@@ -88,3 +88,7 @@
 | NeedFace material occlusion | Uses Col/All/FTL/height/class |
 | NeedFace full jump table 0..0xa | Still open (ghidra too many branches) |
 | GetLight face→mode | Documented separately |
+
+## Full field semantics (merged author + binary)
+
+See **[BLOCKS_TXT_FIELDS.md](BLOCKS_TXT_FIELDS.md)** for per-field meaning, ranges, confidence (CONFIRMED/STRONG/HYPOTHESIS), and corrections (especially FTL/FTW ≠ “lava/water type”, world liquid ≠ material id 5).

@@ -48,18 +48,21 @@ void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
 // neighbour offset).
 // ---------------------------------------------------------------------------
 int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
-    // NeedFaceXP @ 0x833d0 — material class jump (simplified, structure preserved).
+    // NeedFace* @ 0x833d0 family — class jump in binary; class 0 height rules below
+    // recovered from Material+0x00 (BH) + state bit4 (upside-down) consumers in
+    // NeedFaceYP/YN world-boundary paths and AddBlockFace class-0 geometry.
     //
-    // Non-solid rendering (no full-cube solid faces / mutual face cull like water):
-    //   • alpha (All / glass FTL) 
-    //   • class 0 with height ∉ {0,16} (slabs)
-    //   • classes 1..10 (cross, torch, ladder, fence, stairs, door, lamp, gate, trapdoor)
-    // Neighbours must not keep faces that these cells cover; pairs of such
-    // cells cull shared faces the same way WaterNeedFace culls water|water.
+    // BH (height units 1..16 after LoadMaterials gating):
+    //   height==0x10 → full cell solid (may fully occlude neighbour faces)
+    //   height in 1..0x0F → partial column (slab/snow/bed…). Does NOT fully
+    //     occlude a neighbour's face: neighbour side/top faces stay visible;
+    //     self emits partial geometry (return 2).
+    //   state&4 on class 0 → slab flush to cell top (upside-down).
     int selfIdx = grid.CoordToIndex(x, y, z);
     if (selfIdx < 0) return 0;
     unsigned char selfType = grid.cellTypes[selfIdx];
     if (selfType == 0) return 0;
+    unsigned short selfSt = (selfIdx < (int)grid.cellStates.size()) ? grid.cellStates[selfIdx] : 0;
 
     int nx = x, ny = y, nz = z;
     switch (face) {
@@ -69,89 +72,114 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
         default: return 0;
     }
     int nIdx = grid.CoordToIndex(nx, ny, nz);
-    if (nIdx < 0) return 1;
+    if (nIdx < 0) {
+        // World boundary: class-0 partial still needs side/top faces (NeedFaceYP
+        // boundary path returns 1/2 from height/state).
+        const Material* sm = grid.GetMaterial((int)selfType);
+        if (sm && sm->prop01() == 0) {
+            uint8_t ht = sm->height();
+            if (ht != 0 && ht < 0x10) return 2;
+        }
+        return 1;
+    }
 
     unsigned char nType = grid.cellTypes[nIdx];
+    unsigned short nSt = (nIdx < (int)grid.cellStates.size()) ? grid.cellStates[nIdx] : 0;
     const Material* selfMat = grid.GetMaterial((int)selfType);
     const Material* nMat = grid.GetMaterial((int)nType);
 
+    // Full opaque solid: BMT==0, Col, not All-faces, height==0x10, FTL==0.
     auto isFullOpaqueSolid = [](unsigned char t, const Material* mat) -> bool {
         if (t == 0) return false;
-        if (!mat) {
-            if (t == 11 || t == 10 || t == 20) return false;
-            if (t == 12 || t == 13 || t == 14 || t == 17 || t == 18) return false;
-            return true;
-        }
+        if (!mat) return true;
         if (mat->prop01() != 0) return false;
         if (!mat->col()) return false;
         if (mat->allFaces()) return false;
         if (mat->height() != 0x10) return false;
-        if (mat->flowPerm(0) != 0) return false; // glass
+        if (mat->flowPerm(0) != 0) return false;
         return true;
     };
 
-    // Specialized / alpha / partial — not drawn as full solid cubes.
+    // Class 0 partial height (slab / snow / bed half / plate).
+    auto isPartialHeight = [](const Material* mat) -> bool {
+        if (!mat || mat->prop01() != 0) return false;
+        uint8_t ht = mat->height();
+        return ht != 0 && ht < 0x10;
+    };
+
+    // Non-cube models (not including partial-height solids — those are solid geometry).
     auto isNonSolidModel = [](unsigned char t, const Material* mat) -> bool {
         if (t == 0) return false;
-        if (!mat) {
-            if (t == 11 || t == 10 || t == 20) return true;
-            if (t == 12 || t == 13 || t == 14 || t == 17 || t == 18) return true;
-            return false;
-        }
+        if (!mat) return false;
         uint8_t cls = mat->prop01();
         if (cls >= 1 && cls <= 10) return true;
         if (cls == 0) {
-            uint8_t ht = mat->height();
-            if (ht != 0 && ht != 0x10) return true;     // slab
-            if (mat->allFaces()) return true;           // leaves alpha
-            if (mat->flowPerm(0) != 0) return true;     // glass alpha
-            if (!mat->col()) return true;               // water-like
+            if (mat->allFaces()) return true;
+            if (mat->flowPerm(0) != 0) return true;
+            if (!mat->col()) return true;
         }
         return false;
     };
 
-    // Neighbour covers this face → cull (no see-through hole).
-    auto coversFace = [&](unsigned char t, const Material* mat) -> bool {
+    // Does neighbour fully occlude this face of self?
+    // Partial-height solids NEVER fully occlude (side faces of neighbours stay;
+    // only a full-height opaque solid covers completely).
+    auto coversFaceFully = [&](unsigned char t, const Material* mat,
+                               unsigned short /*st*/, int /*whichFace*/) -> bool {
         if (t == 0) return false;
         if (isFullOpaqueSolid(t, mat)) return true;
         if (!mat) return false;
         uint8_t cls = mat->prop01();
-        // Decorative cross/torch never cover
-        if (cls == 1 || cls == 2 || cls == 4) return false;
-        // Ladder / fence / stairs / door / gate / trapdoor / slab / alpha with Col
-        if (cls >= 3 && cls <= 10) return mat->col() || cls == 3;
+        if (cls == 1 || cls == 2 || cls == 4) return false; // cross / torch
+        if (cls >= 3 && cls <= 10) {
+            // Stairs/door/etc. do not fully cover a full neighbour face.
+            return false;
+        }
         if (cls == 0) {
-            if (!mat->col()) return false; // water
+            if (!mat->col()) return false;
+            // Alpha leaves/glass: still treated as covering for solid cull of
+            // hidden interior faces (All / FTL path) — full cell coverage.
             if (mat->allFaces()) return true;
-            if (mat->flowPerm(0) != 0) return true; // glass
-            uint8_t ht = mat->height();
-            if (ht != 0 && ht != 0x10) return true; // slab
-            return ht == 0x10;
+            if (mat->flowPerm(0) != 0) return true;
+            // Partial BH: does not fully cover any face of the neighbour.
+            if (isPartialHeight(mat)) return false;
+            return mat->height() == 0x10;
         }
         return false;
     };
 
+    const bool selfPartial = isPartialHeight(selfMat);
+    const bool neighPartial = isPartialHeight(nMat);
     const bool selfNS = isNonSolidModel(selfType, selfMat);
     const bool neighNS = isNonSolidModel(nType, nMat);
 
-    // Like water|water: non-solid models do not emit faces against each other.
+    // Alpha / decorative pairs: mutual cull (same idea as water|water).
+    // Partial-height solids are NOT in this set — two slabs still emit faces.
     if (selfNS && neighNS)
         return 0;
 
-    // Neighbour geometry covers this face → cull.
-    if (coversFace(nType, nMat)) {
-        // Partial self (slab/stairs/door/trapdoor) still needs geometry vs air only;
-        // against a covering neighbour there is no exposed face.
+    if (coversFaceFully(nType, nMat, nSt, face)) {
+        // Full solid neighbour occludes this face entirely.
+        // Exception: self is partial-height and the contact is a SIDE face —
+        // binary still emits the slab's short side against a full block
+        // (geometry only fills y0..y1). Y faces against full solid: cull.
+        if (selfPartial && (face == 0 || face == 1 || face == 4 || face == 5))
+            return 2;
         return 0;
     }
 
-    // Exposed to air / non-covering neighbour.
+    // Exposed: air, partial neighbour, or non-covering model.
+    if (selfPartial) {
+        // Optional: two equal-height bottom/top slabs sharing a side still emit
+        // (no mutual full cover). Return 2 → AddBlockFace class-0 slab path.
+        (void)neighPartial;
+        (void)selfSt;
+        return 2;
+    }
     if (selfMat) {
         uint8_t cls = selfMat->prop01();
-        uint8_t ht = selfMat->height();
         if (cls == 6 || cls == 7 || cls == 10) return 2;
-        if (cls == 0 && ht != 0 && ht < 0x10) return 2;
-        if (selfNS) return 1; // glass, leaves, fence, … emit against air
+        if (selfNS) return 1;
     }
     if (isFullOpaqueSolid(selfType, selfMat))
         return 1;
@@ -452,20 +480,39 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
     float fx = (float)x, fy = (float)y, fz = (float)z;
 
     if (cls == 0) {
-        // Solid / slab. height units 0..16 in +0x00; state&4 → top slab.
+        // Solid / slab from Material+0x00 height (1..16 after LoadMaterials BH gate).
+        // state&4 → upside-down (slab flush to cell ceiling) — same bit used in
+        // NeedFaceYP/YN boundary paths and ConfigureState orientation.
         int ht = (int)mat.height();
         if (ht <= 0 || ht > 16) ht = 16;
-        float y0 = fy, y1 = fy + (float)ht / 16.f;
-        if (st & 4) { // upside-down slab path from binary
+        const bool upside = (st & 4) != 0;
+        float y0 = fy;
+        float y1 = fy + (float)ht / 16.f;
+        if (upside) {
             y1 = fy + 1.f;
             y0 = y1 - (float)ht / 16.f;
         }
-        // Full cube fast path
-        if (ht >= 16 && !(st & 4)) {
+        // Full cube: standard face
+        if (ht >= 16 && !upside) {
             EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col);
             return;
         }
-        EmitAxisFace(out, fx, y0, fz, fx+1, y1, fz+1, ourFace, u0, v0, u1, v1, col);
+        // Partial height: emit only the occupied Y-range of the cell.
+        // Side faces (XP/XN/ZP/ZN): scale V so the texture maps to the slab
+        // height (bottom-aligned or top-aligned with upside-down).
+        float su0 = u0, sv0 = v0, su1 = u1, sv1 = v1;
+        if (ourFace == 0 || ourFace == 1 || ourFace == 4 || ourFace == 5) {
+            const float frac = (float)ht / 16.f;
+            if (!upside) {
+                // Bottom slab: keep v1 (bottom of tile), pull v0 down toward v1
+                sv0 = v1 + (v0 - v1) * frac;
+            } else {
+                // Top slab: keep v0 (top of tile), pull v1 up toward v0
+                sv1 = v0 + (v1 - v0) * frac;
+            }
+        }
+        EmitAxisFace(out, fx, y0, fz, fx + 1.f, y1, fz + 1.f,
+                     ourFace, su0, sv0, su1, sv1, col);
         return;
     }
 
