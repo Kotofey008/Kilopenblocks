@@ -128,13 +128,34 @@ class GridData {
 public:
     enum class LeavesQuality : int { Low = 0, Medium = 1, High = 2, Ultra = 3 };
 
+    // Binary GridData::Region stride 0xa4 (164). Confirmed layout fragments:
+    //   +0x00 / +0x04 = 0x7fffffff (Init)
+    //   +0x08 / +0x0c / +0x10 = region coords (Init args)
+    //   +0x18 / +0x19 = flags written in Region::Update (mesh-gen path)
+    //   +0x1e = region active (FindFirstUsedCell tests)
+    //   +0x1f = dirty (SetCell stores 1; Region::Update rebuilds then clears)
+    //   +0x90 = MeshBuffer (cleared in Region::Update before AddMesh)
+    // Host keeps GPU/CPU mesh payloads in GLApplication::regionMeshes_;
+    // this struct owns the binary control flags + XZ identity.
     struct Region {
-        int unknown0 = 0x7fffffff;
-        int unknown1 = 0x7fffffff;
-        int x = 0, y = 0, z = 0; // from Init
+        int unknown0 = 0x7fffffff; // +0x00
+        int unknown1 = 0x7fffffff; // +0x04
+        int x = 0;                 // +0x08 world/region X
+        int y = 0;                 // +0x0c
+        int z = 0;                 // +0x10 world/region Z
+        uint8_t pad14_[0x0e] = {}; // +0x14 .. +0x21 (covers +0x18,+0x19,+0x1e,+0x1f)
+        // Accessors for confirmed flag bytes inside pad
+        uint8_t& flag18() { return pad14_[0x18 - 0x14]; }
+        uint8_t& flag19() { return pad14_[0x19 - 0x14]; }
+        uint8_t& active() { return pad14_[0x1e - 0x14]; } // +0x1e
+        uint8_t& dirty()  { return pad14_[0x1f - 0x14]; } // +0x1f
+        const uint8_t& dirty() const { return pad14_[0x1f - 0x14]; }
+        const uint8_t& active() const { return pad14_[0x1e - 0x14]; }
         void Init(int rx, int ry, int rz);
         void Free();
     };
+    static constexpr int kRegionStride = 0xa4;
+    static constexpr int kRegionSize = 16;
 
     GridData();
     ~GridData();
@@ -264,16 +285,39 @@ public:
     int storeOriginX_ = 0, storeOriginY_ = 0, storeOriginZ_ = 0;
     int storeSizeX_ = 0, storeSizeY_ = 0, storeSizeZ_ = 0;
 
-    // Region dirty tracking (region size 16, stride 0xa4 observed in InitRegions).
-    // Key = EncodeWorldPos(regionX*16, regionZ*16) or simpler (rx,ry,rz) for now.
+    // Binary region array at GridData+0x80, stride 0xa4, indexed by XZ only.
+    // SetCell writes region[rx,rz]+0x1f = 1; Region::Update clears after AddMesh.
+    std::vector<Region> regions_;
+    int regionOriginRx_ = 0; // world region index of regions_[0]
+    int regionOriginRz_ = 0;
+    int regionCountX_ = 0;
+    int regionCountZ_ = 0;
+    // +0xf0 batch/generation flag: when non-zero, neighbour SetState |0xC000 skipped
+    uint8_t batchFlag_ = 0; // binary this+0xf0
+
+    void InitRegions();
+    Region* GetRegionByWorld(int worldX, int worldZ);
+    const Region* GetRegionByWorld(int worldX, int worldZ) const;
+    Region* GetRegionByIndex(int rx, int rz);
+    void MarkRegionDirty(int worldX, int worldY, int worldZ);
+    bool IsRegionDirtyWorld(int worldX, int worldZ) const;
+    // Collect up to maxOut dirty XZ regions (world-aligned origins); does NOT clear.
+    int CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const;
+    void ClearRegionDirtyAt(int worldOx, int worldOz);
+    void ClearAllRegionDirty();
+    // Rebuild hierarchical 0x4000 maps from cellStates (post-gen / after bulk PutCell).
+    void SyncHierarchyFromStates();
+    void SetBatchFlag(uint8_t v) { batchFlag_ = v; }
+    uint8_t GetBatchFlag() const { return batchFlag_; }
+
+    // Legacy compatibility for call sites still using the vector API during transition.
+    // Dirty truth is regions_[].dirty (+0x1f); these only mirror for debug/count.
     struct RegionKey {
         int rx, ry, rz;
         bool operator==(const RegionKey& o) const { return rx==o.rx && ry==o.ry && rz==o.rz; }
     };
-    std::vector<RegionKey> dirtyRegions_;
-    void MarkRegionDirty(int x, int y, int z);
-    bool IsRegionDirty(int rx, int ry, int rz) const;
-    void ClearDirtyRegions() { dirtyRegions_.clear(); }
+    std::vector<RegionKey> dirtyRegions_; // populated lazily by Collect; not authority
+    void ClearDirtyRegions() { ClearAllRegionDirty(); dirtyRegions_.clear(); }
 
     // Observed state bit masks from SetCell / SetState disassembly
     // --- Liquid state (binary world model, NOT material type 5) ---

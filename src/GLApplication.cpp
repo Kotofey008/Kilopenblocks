@@ -190,12 +190,12 @@ void GLApplication::OnDeleteGLContext() {
 
 void GLApplication::EnsureRegionMeshes() {
     GridData& grid = game_.GetGrid();
-    // Binary: SetCell sets region+0x1f once; Region::Update rebuilds and clears the
-    // flag. Neighbour regions are marked only at 16-boundaries in SetCell itself.
-    //
-    // BUG (hang on place/break): we re-expanded dirtyRegions_ with face-neighbours
-    // EVERY frame while draining the queue → residual 5 → expand to 30 → 100 → …
-    // until the list covered the world and each frame remeshed until freeze.
+    // Binary contract (Region::Update @ 0x9bcf0 / SetCell region+0x1f):
+    //   - dirty is a per-XZ-column flag on GridData::Region (+0x1f)
+    //   - Update clears mesh buffers, AddMesh, clears dirty
+    //   - Draw path also does streaming / GC; dirty does NOT stop GC
+    // Host keeps 16³ mesh slabs in regionMeshes_; a dirty XZ column rebuilds
+    // every existing Y-slab for that column (binary column spans full height).
 
     if (lightMap_.Empty())
         lightMap_.Init(grid);
@@ -261,45 +261,7 @@ void GLApplication::EnsureRegionMeshes() {
     int wMaxY = ((int)grid.worldMax.y + 15) & ~15;
     int wMaxZ = ((int)grid.worldMax.z + 15) & ~15;
 
-    // ---- 1) Dirty edits: NO neighbour re-expansion (SetCell already marked edges) ----
-    if (!grid.dirtyRegions_.empty()) {
-        // Safety: if list ever ballooned from older builds, hard-cap
-        if (grid.dirtyRegions_.size() > 16)
-            grid.dirtyRegions_.resize(16);
-
-        constexpr size_t kMaxDirtyPerFrame = 2;
-        const size_t n = grid.dirtyRegions_.size();
-        const size_t nRebuild = n < kMaxDirtyPerFrame ? n : kMaxDirtyPerFrame;
-
-        if (!lightMap_.Empty() && nRebuild > 0) {
-            int minX = grid.dirtyRegions_[0].rx * 16, maxX = minX + 16;
-            int minZ = grid.dirtyRegions_[0].rz * 16, maxZ = minZ + 16;
-            for (size_t i = 0; i < nRebuild; ++i) {
-                int x0 = grid.dirtyRegions_[i].rx * 16, z0 = grid.dirtyRegions_[i].rz * 16;
-                if (x0 < minX) minX = x0;
-                if (x0 + 16 > maxX) maxX = x0 + 16;
-                if (z0 < minZ) minZ = z0;
-                if (z0 + 16 > maxZ) maxZ = z0 + 16;
-            }
-            lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
-        }
-
-        for (size_t i = 0; i < nRebuild; ++i) {
-            const auto& k = grid.dirtyRegions_[i];
-            rebuildOne(k.rx * 16, k.ry * 16, k.rz * 16);
-        }
-
-        // Drop rebuilt entries; keep the unprocessed tail only
-        if (nRebuild >= n) {
-            grid.ClearDirtyRegions();
-        } else {
-            grid.dirtyRegions_.erase(grid.dirtyRegions_.begin(),
-                                     grid.dirtyRegions_.begin() + (ptrdiff_t)nRebuild);
-        }
-        return; // do not stream same frame as place/break remesh
-    }
-
-    // ---- 2) GC far past view distance ----
+    // ---- 1) GC far past view distance (ALWAYS — binary dirty is not a global stop) ----
     {
         const int dropCells = vd + 24;
         for (size_t i = 0; i < regionMeshes_.size(); ) {
@@ -322,7 +284,47 @@ void GLApplication::EnsureRegionMeshes() {
         }
     }
 
-    // ---- 3) Stream missing view-ring slots ----
+    // ---- 2) Dirty XZ columns (region+0x1f) — budgeted Region::Update analogue ----
+    {
+        int dirtyOx[16], dirtyOz[16];
+        int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
+        constexpr int kMaxDirtyCols = 2;
+        int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
+
+        if (nRebuild > 0 && !lightMap_.Empty()) {
+            int minX = dirtyOx[0], maxX = dirtyOx[0] + 16;
+            int minZ = dirtyOz[0], maxZ = dirtyOz[0] + 16;
+            for (int i = 0; i < nRebuild; ++i) {
+                if (dirtyOx[i] < minX) minX = dirtyOx[i];
+                if (dirtyOx[i] + 16 > maxX) maxX = dirtyOx[i] + 16;
+                if (dirtyOz[i] < minZ) minZ = dirtyOz[i];
+                if (dirtyOz[i] + 16 > maxZ) maxZ = dirtyOz[i] + 16;
+            }
+            lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
+        }
+
+        for (int i = 0; i < nRebuild; ++i) {
+            const int ox = dirtyOx[i];
+            const int oz = dirtyOz[i];
+            // Rebuild every Y-slab already resident for this XZ column.
+            for (size_t mi = 0; mi < regionMeshes_.size(); ++mi) {
+                if (regionMeshes_[mi].ox == ox && regionMeshes_[mi].oz == oz)
+                    rebuildOne(ox, regionMeshes_[mi].oy, oz);
+            }
+            // Also ensure view-ring Y slabs for this column exist (binary column
+            // spans full height; we keep 16³ slabs but cover camera Y range).
+            for (int dy = -rad; dy <= rad; ++dy) {
+                int oy = cy + dy * 16;
+                if (oy < wMinY || oy >= wMaxY) continue;
+                if (!hasMesh(ox, oy, oz))
+                    rebuildOne(ox, oy, oz);
+            }
+            // Region::Update clears +0x1f after AddMesh
+            grid.ClearRegionDirtyAt(ox, oz);
+        }
+    }
+
+    // ---- 3) Stream missing view-ring slots (same frame as dirty — binary does) ----
     int budget = 8;
     if (regionMeshes_.size() < (size_t)((2 * rad + 1) * (2 * rad + 1)))
         budget = 16;
@@ -749,9 +751,9 @@ void GLApplication::Frame() {
         }
     }
     // Always stream/rebuild nearby region meshes (budgeted inside).
+    // Dirty is per-Region +0x1f; EnsureRegionMeshes clears flags after Update.
     EnsureRegionMeshes();
-    if (game_.GetGrid().dirtyRegions_.empty())
-        game_.GetGrid().ClearMeshesDirty();
+    game_.GetGrid().ClearMeshesDirty();
     RenderWorld();
     {
         int w = 800, h = 480;

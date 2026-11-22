@@ -42,8 +42,4 @@ public:
     void Generate(GridData& grid, int x0, int z0, int x1, int z1) override;
     int GetGroundLevel(int x, int z) override;
     void GetStartPosition(int& x, int& y, int& z) override;
-    // From New Terrain > More… flat_ground_level slider (binary GroundHeightFromSlider).
-    void SetGroundLevel(int y) { groundLevel_ = y; }
-private:
-    int groundLevel_ = -1; // -1 → default mid-ish column
 };

@@ -34,6 +34,7 @@ void GridData::InitDimensionsFromWorldBounds() {
     aux4000L1_.assign((n >> 8) + 1, 0);
     aux4000L2_.assign((n >> 12) + 1, 0);
     aux4000L3_.assign((n >> 16) + 1, 0);
+    InitRegions();
 }
 
 int GridData::CoordToIndex(int x, int y, int z) const {
@@ -111,23 +112,10 @@ void GridData::SetState(int cellIndex, unsigned short newState) {
 // SetCell (0x77d80, 5910 B / 122 BBs) — see
 //   pseudocode/recovered/0x77d80_SetCell_COMPLETE.md
 //
-// Signature CONFIRMED.
-//
-// CONFIRMED side effects implemented here:
-//   - types[index] = type
-//   - SetState(index, state)  → primary states + aux+0x230 merge
-//     (old&0x4000)|(new&0xBFFF) + hierarchical 0x4000 occupancy
-//   - region[rx,rz]+0x1f = 1  (MarkRegionDirty)
-//   - meshesDirty_ / MarkModifiedRegions
-//   - face-neighbour region dirty when type or 0x2000/0x3c0 change
-//
-// CONFIRMED but NOT implemented (gates PARTIAL — do not invent predicates):
-//   - 16 SetState call sites that OR 0xC000 onto face-neighbour states
-//   - Per-axis dirty byte arrays at +0x66d/+0x74d/+0x82d/+0x90d/...
-//   - this+0xf0 batch/generation flag that suppresses neighbour work
-//
-// The "24 loops" reported by afi are hierarchy propagation chains and
-// shared-exit CFG diamonds, not volume iteration. See COMPLETE.md §3.
+// Side-effect order (CONFIRMED §5):
+//   type write → dirty maps → region+0x1f → aux/hierarchy → neighbour region dirty
+//   → neighbour SetState |0xC000 gated by this+0xf0 + bounds
+// Region array is XZ-only (stride 0xa4); Y is inside the column, not a key.
 // ---------------------------------------------------------------------------
 void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short state) {
     int idx = CoordToIndex(x, y, z);
@@ -137,61 +125,163 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
     unsigned short oldState = cellStates[idx];
     bool typeChanged = (oldType != type);
 
-    // Type write (full path). State-only path leaves type unchanged (already equal).
     cellTypes[idx] = type;
-
-    // Always run SetState: binary state-only path still reaches the aux-merge
-    // at 0x77ecd when (old^new)&0x3fff==0, and re-enters the full path otherwise.
     SetState(idx, state);
     unsigned short newState = cellStates[idx];
 
     bool bit2000Changed = ((oldState ^ newState) & STATE_BIT_2000) != 0;
     bool bit3c0Changed  = ((oldState ^ newState) & STATE_BIT_3C0) != 0;
     bool levelChanged   = ((oldState ^ newState) & STATE_LEVEL_MASK) != 0;
-    // 0x4000 is hierarchy scheduling only — does not change drawn geometry.
+    // 0x4000 is hierarchy scheduling only — geometry uses type / fluid bits / level.
     bool meshRelevant = typeChanged || bit2000Changed || bit3c0Changed || levelChanged;
 
     if (meshRelevant) {
-        // Region dirty (original: region entry +0x1f = 1). Region size 16.
+        // region[rx,rz] + 0x1f = 1  (XZ column)
         MarkRegionDirty(x, y, z);
         meshesDirty_ = true;
 
-        // Binary SetCell: per-axis dirty columns + region+0x1f; MarkModifiedRegions
-        // propagates only at 16-aligned edges. Mark neighbour regions only when
-        // the edited cell sits on a region face (shared face needs both meshes).
+        // Neighbour region dirty only on X/Z faces of the 16-column (binary XZ regions).
+        // Y is vertical inside the same column — no separate region key.
         if (typeChanged || bit2000Changed || bit3c0Changed) {
-            int lx = x & 15, ly = y & 15, lz = z & 15;
+            int lx = x & 15, lz = z & 15;
             if (lx == 0)  MarkRegionDirty(x - 1, y, z);
             if (lx == 15) MarkRegionDirty(x + 1, y, z);
-            if (ly == 0)  MarkRegionDirty(x, y - 1, z);
-            if (ly == 15) MarkRegionDirty(x, y + 1, z);
             if (lz == 0)  MarkRegionDirty(x, y, z - 1);
             if (lz == 15) MarkRegionDirty(x, y, z + 1);
         }
     }
+
+    // Neighbour SetState | 0xC000 — gated by this+0xf0 (batchFlag_).
+    // COMPLETE.md: 16 call sites; common pattern states[n] |= 0xC000 then SetState.
+    // Material-table predicates remain PARTIAL — apply confirmed bounds only:
+    //   X± always when in grid; Y- requires y>0; Z± when in grid.
+    // 0xC000 sets 0x4000 (hierarchy / fluid schedule) + 0x8000. SetState does NOT
+    // mark region dirty — mesh dirty stays solely on region+0x1f above.
+    if (batchFlag_ == 0) {
+        auto orNeighbour = [&](int nx, int ny, int nz) {
+            int nidx = CoordToIndex(nx, ny, nz);
+            if (nidx < 0) return;
+            unsigned short ns = cellStates[nidx];
+            unsigned short merged = (unsigned short)(ns | 0xC000);
+            if (merged != ns)
+                SetState(nidx, merged);
+        };
+        orNeighbour(x - 1, y, z);
+        orNeighbour(x + 1, y, z);
+        if (y > originY)
+            orNeighbour(x, y - 1, z);
+        orNeighbour(x, y + 1, z);
+        orNeighbour(x, y, z - 1);
+        orNeighbour(x, y, z + 1);
+    }
 }
 
-void GridData::MarkRegionDirty(int x, int y, int z) {
-    // Region size 16. Origin must match EnsureRegionMeshes / full-build alignment:
-    //   origin = coord & ~15  (two's-complement, works for negatives)
-    // The earlier (v<0 ? v+15 : v)>>4 formula maps e.g. -1 → region 0 while
-    // full-build places cells -16..-1 at origin -16 — mesh key mismatch →
-    // second-chunk edits never replaced the stored RegionMesh (physics ok, view stale).
-    int ox = x & ~15;
-    int oy = y & ~15;
-    int oz = z & ~15;
-    // Store as region indices (origin/16) for compactness; rebuild multiplies back.
-    RegionKey k{ox >> 4, oy >> 4, oz >> 4};
-    for (const auto& d : dirtyRegions_)
-        if (d == k) return;
-    dirtyRegions_.push_back(k);
+// ---------------------------------------------------------------------------
+// Region array (binary +0x80, stride 0xa4) — XZ index only
+// ---------------------------------------------------------------------------
+void GridData::InitRegions() {
+    // Cover world XZ with 16-aligned region cells.
+    int minX = originX & ~15;
+    int minZ = originZ & ~15;
+    int maxX = (originX + sizeX + 15) & ~15;
+    int maxZ = (originZ + sizeZ + 15) & ~15;
+    regionOriginRx_ = minX >> 4;
+    regionOriginRz_ = minZ >> 4;
+    regionCountX_ = (maxX - minX) >> 4;
+    regionCountZ_ = (maxZ - minZ) >> 4;
+    if (regionCountX_ < 1) regionCountX_ = 1;
+    if (regionCountZ_ < 1) regionCountZ_ = 1;
+    regions_.assign((size_t)regionCountX_ * (size_t)regionCountZ_, Region{});
+    for (int rz = 0; rz < regionCountZ_; ++rz) {
+        for (int rx = 0; rx < regionCountX_; ++rx) {
+            Region& r = regions_[(size_t)rz * (size_t)regionCountX_ + (size_t)rx];
+            int wx = (regionOriginRx_ + rx) * 16;
+            int wz = (regionOriginRz_ + rz) * 16;
+            r.Init(wx, 0, wz);
+            r.active() = 1;
+            r.dirty() = 0;
+        }
+    }
+    dirtyRegions_.clear();
 }
 
-bool GridData::IsRegionDirty(int rx, int ry, int rz) const {
-    RegionKey k{rx, ry, rz};
-    for (const auto& d : dirtyRegions_)
-        if (d == k) return true;
-    return false;
+GridData::Region* GridData::GetRegionByIndex(int rx, int rz) {
+    int ix = rx - regionOriginRx_;
+    int iz = rz - regionOriginRz_;
+    if (ix < 0 || iz < 0 || ix >= regionCountX_ || iz >= regionCountZ_)
+        return nullptr;
+    return &regions_[(size_t)iz * (size_t)regionCountX_ + (size_t)ix];
+}
+
+GridData::Region* GridData::GetRegionByWorld(int worldX, int worldZ) {
+    int ox = worldX & ~15;
+    int oz = worldZ & ~15;
+    return GetRegionByIndex(ox >> 4, oz >> 4);
+}
+
+const GridData::Region* GridData::GetRegionByWorld(int worldX, int worldZ) const {
+    int ox = worldX & ~15;
+    int oz = worldZ & ~15;
+    int ix = (ox >> 4) - regionOriginRx_;
+    int iz = (oz >> 4) - regionOriginRz_;
+    if (ix < 0 || iz < 0 || ix >= regionCountX_ || iz >= regionCountZ_)
+        return nullptr;
+    return &regions_[(size_t)iz * (size_t)regionCountX_ + (size_t)ix];
+}
+
+void GridData::MarkRegionDirty(int x, int /*y*/, int z) {
+    // Binary: region[rx,rz] + 0x1f = 1. Origin = coord & ~15 (two's-complement).
+    Region* r = GetRegionByWorld(x, z);
+    if (!r) return;
+    r->dirty() = 1;
+    r->active() = 1;
+}
+
+bool GridData::IsRegionDirtyWorld(int worldX, int worldZ) const {
+    const Region* r = GetRegionByWorld(worldX, worldZ);
+    return r && r->dirty() != 0;
+}
+
+int GridData::CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const {
+    if (!outOx || !outOz || maxOut <= 0) return 0;
+    int n = 0;
+    for (int iz = 0; iz < regionCountZ_ && n < maxOut; ++iz) {
+        for (int ix = 0; ix < regionCountX_ && n < maxOut; ++ix) {
+            const Region& r = regions_[(size_t)iz * (size_t)regionCountX_ + (size_t)ix];
+            if (r.dirty() == 0) continue;
+            outOx[n] = r.x & ~15;
+            outOz[n] = r.z & ~15;
+            ++n;
+        }
+    }
+    return n;
+}
+
+void GridData::ClearRegionDirtyAt(int worldOx, int worldOz) {
+    Region* r = GetRegionByWorld(worldOx, worldOz);
+    if (r) r->dirty() = 0;
+}
+
+void GridData::ClearAllRegionDirty() {
+    for (auto& r : regions_)
+        r.dirty() = 0;
+    dirtyRegions_.clear();
+}
+
+void GridData::SyncHierarchyFromStates() {
+    // After bulk PutCell / FillCells the primary states may carry 0x4000 while
+    // hierarchy maps are zero. Rebuild counts from cellStates so UpdateWater
+    // sees gen-time liquid sources (0xE000 / 0xC3C0).
+    if (cellStates.empty()) return;
+    std::fill(aux4000L0_.begin(), aux4000L0_.end(), 0);
+    std::fill(aux4000L1_.begin(), aux4000L1_.end(), 0);
+    std::fill(aux4000L2_.begin(), aux4000L2_.end(), 0);
+    std::fill(aux4000L3_.begin(), aux4000L3_.end(), 0);
+    const size_t n = cellStates.size();
+    for (size_t i = 0; i < n; ++i) {
+        if (cellStates[i] & STATE_BIT_4000)
+            UpdateHierarchy4000((int)i, true);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +673,12 @@ bool GridData::Resize(int minX, int minY, int minZ, int maxX, int maxY, int maxZ
             }
         }
     }
+    aux4000L0_.assign((n >> 4) + 1, 0);
+    aux4000L1_.assign((n >> 8) + 1, 0);
+    aux4000L2_.assign((n >> 12) + 1, 0);
+    aux4000L3_.assign((n >> 16) + 1, 0);
+    InitRegions();
+    SyncHierarchyFromStates();
     meshesDirty_ = true;
     return true;
 }
@@ -622,10 +718,21 @@ void GridData::InvalidateLighting() {
 
 
 void GridData::Region::Init(int rx, int ry, int rz) {
+    // Binary Region::Init @ 0x9af10: +8/+c/+10 = args; +0/+4 = 0x7fffffff
     x = rx; y = ry; z = rz;
     unknown0 = unknown1 = 0x7fffffff;
+    flag18() = 0;
+    flag19() = 0;
+    active() = 0;
+    dirty() = 0;
 }
-void GridData::Region::Free() {}
+void GridData::Region::Free() {
+    // Binary Region::Free @ 0x9af40: clears +0x18 and releases mesh resources
+    flag18() = 0;
+    flag19() = 0;
+    dirty() = 0;
+    active() = 0;
+}
 
 
 

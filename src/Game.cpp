@@ -12,11 +12,6 @@
 #include <vector>
 #include <strings.h> // strcasecmp
 
-// Forward decls — defined with the New Terrain size/ground slider helpers below.
-static const int (*ActiveWorldSizeTable())[3];
-static int GroundHeightFromSlider(float v, int sizeY);
-static const int kWorldSizeCount = 6;
-
 // Observed static world-size table (values still approximate; symbol s_WorldSizesHi size 72)
 int Game::s_WorldSizesHi[] = { 128, 256, 384, 512, 640, 768, 896, 1024, 0 };
 // Binary table @ VA 0x109e60 (GOT @ 0x12ce04), stride 12, levels 0..3
@@ -562,34 +557,10 @@ void Game::InitSceneConnections() {
 void Game::Play(int slot) {
     // Original @ 0x6c720 size 2679 — major entry: load/create world, spawn player
     state_ = GameState::Loading;
-
-    // World extents from New Terrain > More… terrain_size slider (binary +0x238
-    // index into s_WorldSizesLo/Hi). Table values are full X/Z diameters and Y
-    // height: 128…4096 — NOT the old mobile half-extent clamp of 64.
-    // Vertical slider: top (v=0) → 4096, bottom (v=1) → 128 (UpdateTerrainSize).
-    {
-        UpdateTerrainSize(); // refresh terrainSizeIndex_ from current slider
-        const int (*table)[3] = ActiveWorldSizeTable();
-        int idx = terrainSizeIndex_;
-        if (idx < 0) idx = 0;
-        if (idx >= kWorldSizeCount) idx = kWorldSizeCount - 1;
-        int sx = table[idx][0];
-        int sy = table[idx][1];
-        int sz = table[idx][2];
-        if (sx < 128) sx = 128;
-        if (sz < 128) sz = 128;
-        if (sy < 64) sy = 64;
-        int hx = sx / 2;
-        int hz = sz / 2;
-        // XZ centered on origin; Y from 0..sy (matches flat ground / column gen)
-        grid_.worldMin = Vector((float)-hx, 0.f, (float)-hz);
-        grid_.worldMax = Vector((float)hx, (float)sy, (float)hz);
-        grid_.InitDimensionsFromWorldBounds();
-        scene_.globals.worldSizeMin = grid_.worldMin;
-        scene_.globals.worldSizeMax = grid_.worldMax;
-    }
-
+    // Globals.WorldSize* with mobile XZ clamp (keep scene values in scene_.globals)
+    scene_.ApplyGlobalsToGrid(grid_, /*mobileClamp=*/true);
     // Binary ApplyGraphicsSettings: GridData+0x22c = (DrawDistanceTable[level].x - 0x20) / 2
+    // Tiny 96→32, Short 128→48, Normal 160→64, Far 192→80
     {
         int level = (int)drawDistancePending_;
         if (level < 0) level = 0;
@@ -600,6 +571,9 @@ void Game::Play(int slot) {
         if (vd < 16) vd = 16;
         grid_.SetViewDistanceCells(vd);
     }
+    // this+0xf0 batch flag: suppress neighbour SetState|0xC000 during bulk gen
+    // (SetCell COMPLETE.md — gate on batch path).
+    grid_.SetBatchFlag(1);
     switch (terrainType_) {
         case TerrainType::Earth:
             genEarth_.Init(grid_, (int64_t)slot * 0x1234ABCD);
@@ -607,29 +581,19 @@ void Game::Play(int slot) {
                 (int)grid_.worldMin.x, (int)grid_.worldMin.z,
                 (int)grid_.worldMax.x, (int)grid_.worldMax.z);
             break;
-        case TerrainType::Flat: {
+        case TerrainType::Flat:
             genFlat_.Init(grid_, 0);
-            int groundY = -1;
-            for (auto& p : uiPanels_) {
-                if (!p.loaded) continue;
-                UIElement* s = p.doc.Find("flat_ground_level");
-                if (!s) s = p.doc.Find("flat_ground_level_i");
-                if (s && s->type == UIElement::Type::Slider) {
-                    int sy = (int)(grid_.worldMax.y - grid_.worldMin.y);
-                    groundY = GroundHeightFromSlider(s->currentValue, sy);
-                    break;
-                }
-            }
-            if (groundY > 0)
-                genFlat_.SetGroundLevel(groundY);
             genFlat_.Generate(grid_,
                 (int)grid_.worldMin.x, (int)grid_.worldMin.z,
                 (int)grid_.worldMax.x, (int)grid_.worldMax.z);
             break;
-        }
         default:
             break;
     }
+    grid_.SetBatchFlag(0);
+    // PutCell wrote 0xE000/0xC3C0 with bit 0x4000 but skipped hierarchy; sync so
+    // UpdateWaterState walks gen-time liquid sources (binary post-gen path).
+    grid_.SyncHierarchyFromStates();
     SpawnPlayer();
     state_ = GameState::Playing;
     // Create/play paths in start.scene often omit "hud_* SetVisible 1"; binary shows HUD
@@ -817,6 +781,8 @@ static const int kWorldSizeTableHi[][3] = {
     {2048, 128, 2048},
     {4096, 128, 4096},
 };
+static const int kWorldSizeCount = 6;
+
 static const int (*ActiveWorldSizeTable())[3] {
     // Binary picks Lo when GetScreenWidth() < 0x280 (640).
     // Approximate with design width until screen is known: prefer Hi for tablets.
