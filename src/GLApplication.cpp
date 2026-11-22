@@ -188,9 +188,12 @@ void GLApplication::OnDeleteGLContext() {
 
 void GLApplication::EnsureRegionMeshes() {
     GridData& grid = game_.GetGrid();
-    // Binary meshes only active / near regions (Region::Update), never the whole
-    // world in one frame. Stream 16³ meshes around the camera within view
-    // distance; rebuild dirty keys with a hard per-frame budget.
+    // Binary model (Region::Update @ 0xa0e20, InitRegions, SelectDrawDistance):
+    //   - Regions cover the world; meshes built for those near the player
+    //   - GridData+0x22c viewDistance = (DrawDistanceTable[level].x - 0x20) / 2
+    //     Tiny→32, Short→48, Normal→64, Far→80
+    //   - Dirty regions rebuild via flag +0x1f; no "stream in one chunk at a time"
+    //   - Far regions GC'd past view distance — not on every place/break
 
     auto rebuildOne = [&](int ox, int oy, int oz) {
         ox &= ~15; oy &= ~15; oz &= ~15;
@@ -205,8 +208,8 @@ void GLApplication::EnsureRegionMeshes() {
         RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &rm.waterBuffer, &rm.lavaBuffer, &lightMap_);
         rm.valid = rm.buffer.IndexCount() > 0 || rm.waterBuffer.IndexCount() > 0
                || rm.lavaBuffer.IndexCount() > 0;
-        if (rm.valid)
-            regionMeshes_.push_back(std::move(rm));
+        // Keep empty shells so we do not rebuild air columns every frame
+        regionMeshes_.push_back(std::move(rm));
     };
 
     auto hasMesh = [&](int ox, int oy, int oz) -> bool {
@@ -216,7 +219,31 @@ void GLApplication::EnsureRegionMeshes() {
         return false;
     };
 
-    // ---- 1) Dirty edits (place/break/water) — budgeted ----
+    if (lightMap_.Empty())
+        lightMap_.Init(grid);
+
+    // View distance from GridData+0x22c (set by ApplyGraphicsSettings / Play)
+    int vd = grid.GetViewDistanceCells();
+    if (vd < 16) vd = 16;
+    // Region radius in 16-blocks: cover full view distance (binary uses +0x22c
+    // as half-extent style distance for region activity / IsHidden).
+    int rad = (vd + 15) / 16;
+    if (rad < 1) rad = 1;
+
+    Vector cam = game_.GetCamera().GetPosition();
+    int cx = ((int)cam.x) & ~15;
+    int cy = ((int)cam.y) & ~15;
+    int cz = ((int)cam.z) & ~15;
+
+    int wMinX = (int)grid.worldMin.x & ~15;
+    int wMinY = (int)grid.worldMin.y & ~15;
+    int wMinZ = (int)grid.worldMin.z & ~15;
+    int wMaxX = ((int)grid.worldMax.x + 15) & ~15;
+    int wMaxY = ((int)grid.worldMax.y + 15) & ~15;
+    int wMaxZ = ((int)grid.worldMax.z + 15) & ~15;
+
+    // ---- 1) Dirty edits: rebuild only listed regions (+face neighbours) ----
+    // Budget keeps place/break from remeshing half the world in one frame.
     std::vector<GridData::RegionKey> dirty = grid.dirtyRegions_;
     if (!dirty.empty()) {
         auto addKey = [&](int rx, int ry, int rz) {
@@ -236,7 +263,7 @@ void GLApplication::EnsureRegionMeshes() {
             addKey(k.rx, k.ry, k.rz - 1);
         }
 
-        constexpr size_t kMaxDirtyPerFrame = 4;
+        constexpr size_t kMaxDirtyPerFrame = 6;
         const size_t nRebuild = dirty.size() < kMaxDirtyPerFrame ? dirty.size() : kMaxDirtyPerFrame;
 
         if (!lightMap_.Empty() && nRebuild > 0) {
@@ -265,52 +292,46 @@ void GLApplication::EnsureRegionMeshes() {
         }
     }
 
-    // ---- 2) Stream missing meshes around camera (not full world) ----
-    if (lightMap_.Empty())
-        lightMap_.Init(grid);
-
-    Vector cam = game_.GetCamera().GetPosition();
-    int cx = ((int)cam.x) & ~15;
-    int cy = ((int)cam.y) & ~15;
-    int cz = ((int)cam.z) & ~15;
-
-    int vd = grid.GetViewDistanceCells();
-    if (vd < 32) vd = 32;
-    if (vd > 96) vd = 96;
-    int rad = (vd + 15) / 16;
-    if (rad < 2) rad = 2;
-    if (rad > 4) rad = 4;
-
-    int wMinX = (int)grid.worldMin.x & ~15;
-    int wMinY = (int)grid.worldMin.y & ~15;
-    int wMinZ = (int)grid.worldMin.z & ~15;
-    int wMaxX = ((int)grid.worldMax.x + 15) & ~15;
-    int wMaxY = ((int)grid.worldMax.y + 15) & ~15;
-    int wMaxZ = ((int)grid.worldMax.z + 15) & ~15;
-
-    // Drop far meshes to bound memory / draw count
+    // ---- 2) GC only far past view distance (binary Region::GarbageCollection) ----
     {
-        const int dropR = rad + 2;
+        const int dropCells = vd + 24; // margin beyond +0x22c
         for (auto it = regionMeshes_.begin(); it != regionMeshes_.end(); ) {
-            int dx = (it->ox - cx) >> 4;
-            int dy = (it->oy - cy) >> 4;
-            int dz = (it->oz - cz) >> 4;
-            if (dx > dropR || dx < -dropR || dy > dropR || dy < -dropR ||
-                dz > dropR || dz < -dropR)
+            int mcx = it->ox + 8, mcy = it->oy + 8, mcz = it->oz + 8;
+            int dx = mcx - (int)cam.x;
+            int dy = mcy - (int)cam.y;
+            int dz = mcz - (int)cam.z;
+            // Chebyshev-ish: if all axes within dropCells keep mesh
+            if (std::abs(dx) > dropCells || std::abs(dz) > dropCells || std::abs(dy) > dropCells)
                 it = regionMeshes_.erase(it);
             else
                 ++it;
         }
     }
 
-    // Build missing regions near camera, ring by ring
-    constexpr int kMaxStreamPerFrame = 3;
+    // ---- 3) Ensure all regions inside view radius exist ----
+    // First load / large holes: build many per frame so the player sees the full
+    // draw-distance ring quickly (not one chunk at a time).
+    int missing = 0;
+    for (int dz = -rad; dz <= rad; ++dz)
+    for (int dy = -rad; dy <= rad; ++dy)
+    for (int dx = -rad; dx <= rad; ++dx) {
+        int ox = cx + dx * 16;
+        int oy = cy + dy * 16;
+        int oz = cz + dz * 16;
+        if (ox < wMinX || ox >= wMaxX) continue;
+        if (oy < wMinY || oy >= wMaxY) continue;
+        if (oz < wMinZ || oz >= wMaxZ) continue;
+        if (!hasMesh(ox, oy, oz)) ++missing;
+    }
+
+    // Adaptive budget: fill holes fast when many missing (enter world), else light
+    int budget = (missing > 24) ? 24 : (missing > 8) ? 12 : 6;
     int built = 0;
-    for (int r = 0; r <= rad && built < kMaxStreamPerFrame; ++r) {
-        for (int dz = -r; dz <= r && built < kMaxStreamPerFrame; ++dz) {
-            for (int dx = -r; dx <= r && built < kMaxStreamPerFrame; ++dx) {
+    for (int r = 0; r <= rad && built < budget; ++r) {
+        for (int dz = -r; dz <= r && built < budget; ++dz) {
+            for (int dx = -r; dx <= r && built < budget; ++dx) {
                 if (r > 0 && std::abs(dx) != r && std::abs(dz) != r) continue;
-                for (int dy = -rad; dy <= rad && built < kMaxStreamPerFrame; ++dy) {
+                for (int dy = -rad; dy <= rad && built < budget; ++dy) {
                     int ox = cx + dx * 16;
                     int oy = cy + dy * 16;
                     int oz = cz + dz * 16;

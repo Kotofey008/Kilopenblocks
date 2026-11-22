@@ -559,6 +559,18 @@ void Game::Play(int slot) {
     state_ = GameState::Loading;
     // Globals.WorldSize* with mobile XZ clamp (keep scene values in scene_.globals)
     scene_.ApplyGlobalsToGrid(grid_, /*mobileClamp=*/true);
+    // Binary ApplyGraphicsSettings: GridData+0x22c = (DrawDistanceTable[level].x - 0x20) / 2
+    // Tiny 96→32, Short 128→48, Normal 160→64, Far 192→80
+    {
+        int level = (int)drawDistancePending_;
+        if (level < 0) level = 0;
+        if (level > 3) level = 3;
+        drawDistance_ = (DrawDistance)level;
+        int hx = s_DrawDistanceSize[level][0];
+        int vd = (hx - 0x20) / 2;
+        if (vd < 16) vd = 16;
+        grid_.SetViewDistanceCells(vd);
+    }
     switch (terrainType_) {
         case TerrainType::Earth:
             genEarth_.Init(grid_, (int64_t)slot * 0x1234ABCD);
@@ -1240,6 +1252,10 @@ void Game::ApplyGraphicsSettings() {
             }
         } else {
             drawDistance_ = drawDistancePending_;
+            // Still refresh +0x22c when extents already match table size
+            int vd = (hx - 0x20) / 2;
+            if (vd < 16) vd = 16;
+            grid_.SetViewDistanceCells(vd);
         }
         dirty = true;
         // ShowMessage with localized draw-distance name (0x64340 path) — optional
