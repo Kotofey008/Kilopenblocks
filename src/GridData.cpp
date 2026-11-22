@@ -1107,7 +1107,7 @@ int GridData::CellToMtlSelIndex(unsigned char cellType) const {
 static void SetLiquidStateMerge(GridData& g, unsigned char dstType, unsigned short& outState,
                                 unsigned char /*srcType*/, unsigned short srcState) {
     if (g.materials.empty() || dstType >= g.materials.size()) return;
-    const GridData::Material& mat = g.materials[dstType];
+    const Material& mat = g.materials[dstType];
     if (mat.raw[0x1c] == 0) return; // no FTW → not a liquid-capable row
     if ((srcState & 0x3fc0) == 0) return;
     int level = (int)((srcState & 0x1c00) >> 10);
