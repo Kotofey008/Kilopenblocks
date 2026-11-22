@@ -211,10 +211,18 @@ void GLApplication::EnsureRegionMeshes() {
             return a.ox == b.ox && a.oy == b.oy && a.oz == b.oz;
         }
     };
-    std::unordered_map<Key, size_t, KeyHash, KeyEq> index;
-    index.reserve(regionMeshes_.size() * 2 + 16);
-    for (size_t i = 0; i < regionMeshes_.size(); ++i)
-        index.insert({Key{regionMeshes_[i].ox, regionMeshes_[i].oy, regionMeshes_[i].oz}, i});
+    // Persistent index — rebuilding unordered_map every frame caused periodic
+    // allocator hitches on mobile (~0.5–1s). Rebuild only when mesh count changes
+    // or after GC mutations (indexInvalidated).
+    static std::unordered_map<Key, size_t, KeyHash, KeyEq> index;
+    static size_t indexEpoch = (size_t)-1;
+    if (indexEpoch != regionMeshes_.size()) {
+        index.clear();
+        index.reserve(regionMeshes_.size() * 2 + 16);
+        for (size_t i = 0; i < regionMeshes_.size(); ++i)
+            index.insert({Key{regionMeshes_[i].ox, regionMeshes_[i].oy, regionMeshes_[i].oz}, i});
+        indexEpoch = regionMeshes_.size();
+    }
 
     auto rebuildOne = [&](int ox, int oy, int oz) {
         ox &= ~15; oy &= ~15; oz &= ~15;
@@ -285,7 +293,8 @@ void GLApplication::EnsureRegionMeshes() {
     }
 
     // ---- 2) Dirty XZ columns (region+0x1f) — budgeted Region::Update analogue ----
-    {
+    // Sparse dirtyRegionIndices_ — skip entirely when idle (no O(world) scan).
+    if (grid.AnyRegionDirty()) {
         int dirtyOx[16], dirtyOz[16];
         int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
         constexpr int kMaxDirtyCols = 2;
@@ -311,15 +320,13 @@ void GLApplication::EnsureRegionMeshes() {
                 if (regionMeshes_[mi].ox == ox && regionMeshes_[mi].oz == oz)
                     rebuildOne(ox, regionMeshes_[mi].oy, oz);
             }
-            // Also ensure view-ring Y slabs for this column exist (binary column
-            // spans full height; we keep 16³ slabs but cover camera Y range).
+            // Ensure view-ring Y slabs for this column (binary column = full height).
             for (int dy = -rad; dy <= rad; ++dy) {
                 int oy = cy + dy * 16;
                 if (oy < wMinY || oy >= wMaxY) continue;
                 if (!hasMesh(ox, oy, oz))
                     rebuildOne(ox, oy, oz);
             }
-            // Region::Update clears +0x1f after AddMesh
             grid.ClearRegionDirtyAt(ox, oz);
         }
     }
@@ -348,6 +355,7 @@ void GLApplication::EnsureRegionMeshes() {
             }
         }
     }
+    indexEpoch = regionMeshes_.size();
 }
 
 void GLApplication::RenderWorld() {
@@ -739,19 +747,11 @@ void GLApplication::Frame() {
 #endif
     // Game::UpdateSkyBox: Clouds::SetSkyLightScale = 0.2 + 0.8 * dayFactor
     clouds_.SetSkyLightScale(0.2f + 0.8f * skyBox_.GetDayFactor());
-    // Binary UpdateWaterState budget gate (+0x2d4=200, +0x2d8 next deadline):
-    // only runs when scene tick >= deadline, then deadline += 200.
-    // Approximate with every 4 frames (~15 Hz) + step budget 64 to avoid
-    // constant per-frame liquid work when hierarchy is noisy.
-    {
-        static int waterTick = 0;
-        if (++waterTick >= 4) {
-            waterTick = 0;
-            game_.GetGrid().UpdateWater(64);
-        }
-    }
-    // Always stream/rebuild nearby region meshes (budgeted inside).
-    // Dirty is per-Region +0x1f; EnsureRegionMeshes clears flags after Update.
+    // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.
+    // TickWater advances clock by frame dt (~16ms) and runs body only when due.
+    // maxSteps mirrors binary budget path (default +0x2d4-related 200 cells).
+    game_.GetGrid().TickWater(16, 200);
+    // Stream/rebuild: dirty is per-Region +0x1f; GC always runs (no global stop).
     EnsureRegionMeshes();
     game_.GetGrid().ClearMeshesDirty();
     RenderWorld();

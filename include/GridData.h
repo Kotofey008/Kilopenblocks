@@ -295,12 +295,22 @@ public:
     // +0xf0 batch/generation flag: when non-zero, neighbour SetState |0xC000 skipped
     uint8_t batchFlag_ = 0; // binary this+0xf0
 
+    // UpdateWaterState schedule (binary GridData +0x2d0..+0x2dc):
+    //   +0x2d4 period (200), +0x2d8 next deadline, +0x2dc long deadline
+    // Gate: if now < +0x2d8 → entire UpdateWaterState returns; else +0x2d8 = now+period
+    int waterPeriod_ = 200;          // +0x2d4
+    int waterDeadline_ = 0;          // +0x2d8
+    int waterLongDeadline_ = 0;      // +0x2dc
+    int waterClockMs_ = 0;           // accumulated scene time (ms) for gate
+    uint8_t waterWasDue_ = 0;        // +0x2d0 setle result
+
     void InitRegions();
     Region* GetRegionByWorld(int worldX, int worldZ);
     const Region* GetRegionByWorld(int worldX, int worldZ) const;
     Region* GetRegionByIndex(int rx, int rz);
     void MarkRegionDirty(int worldX, int worldY, int worldZ);
     bool IsRegionDirtyWorld(int worldX, int worldZ) const;
+    bool AnyRegionDirty() const { return !dirtyRegionIndices_.empty(); }
     // Collect up to maxOut dirty XZ regions (world-aligned origins); does NOT clear.
     int CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const;
     void ClearRegionDirtyAt(int worldOx, int worldOz);
@@ -309,14 +319,19 @@ public:
     void SyncHierarchyFromStates();
     void SetBatchFlag(uint8_t v) { batchFlag_ = v; }
     uint8_t GetBatchFlag() const { return batchFlag_; }
+    // Advance water clock and run UpdateWaterState only when binary deadline fires.
+    void TickWater(int deltaMs, int maxSteps);
 
-    // Legacy compatibility for call sites still using the vector API during transition.
-    // Dirty truth is regions_[].dirty (+0x1f); these only mirror for debug/count.
+    // Sparse index of dirty regions (flat index into regions_[]). Authority is still
+    // region.dirty (+0x1f); this list avoids O(regionCount) scans every frame.
+    std::vector<int> dirtyRegionIndices_;
+
+    // Legacy compatibility
     struct RegionKey {
         int rx, ry, rz;
         bool operator==(const RegionKey& o) const { return rx==o.rx && ry==o.ry && rz==o.rz; }
     };
-    std::vector<RegionKey> dirtyRegions_; // populated lazily by Collect; not authority
+    std::vector<RegionKey> dirtyRegions_;
     void ClearDirtyRegions() { ClearAllRegionDirty(); dirtyRegions_.clear(); }
 
     // Observed state bit masks from SetCell / SetState disassembly

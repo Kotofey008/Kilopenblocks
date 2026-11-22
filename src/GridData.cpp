@@ -152,12 +152,11 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
     }
 
     // Neighbour SetState | 0xC000 — gated by this+0xf0 (batchFlag_).
-    // COMPLETE.md: 16 call sites; common pattern states[n] |= 0xC000 then SetState.
-    // Material-table predicates remain PARTIAL — apply confirmed bounds only:
-    //   X± always when in grid; Y- requires y>0; Z± when in grid.
-    // 0xC000 sets 0x4000 (hierarchy / fluid schedule) + 0x8000. SetState does NOT
-    // mark region dirty — mesh dirty stays solely on region+0x1f above.
-    if (batchFlag_ == 0) {
+    // Binary full-path / state-only reentry when (old^new)&0x3fff != 0 (not 0x4000 alone).
+    // Material predicates PARTIAL — bounds only (Y- requires y>originY).
+    // SetState does NOT mark region dirty — mesh dirty is region+0x1f only.
+    bool lowBitsChanged = ((oldState ^ newState) & 0x3fff) != 0;
+    if (batchFlag_ == 0 && (typeChanged || lowBitsChanged)) {
         auto orNeighbour = [&](int nx, int ny, int nz) {
             int nidx = CoordToIndex(nx, ny, nz);
             if (nidx < 0) return;
@@ -202,7 +201,11 @@ void GridData::InitRegions() {
             r.dirty() = 0;
         }
     }
+    dirtyRegionIndices_.clear();
     dirtyRegions_.clear();
+    waterDeadline_ = 0;
+    waterLongDeadline_ = 0;
+    waterClockMs_ = 0;
 }
 
 GridData::Region* GridData::GetRegionByIndex(int rx, int rz) {
@@ -231,10 +234,18 @@ const GridData::Region* GridData::GetRegionByWorld(int worldX, int worldZ) const
 
 void GridData::MarkRegionDirty(int x, int /*y*/, int z) {
     // Binary: region[rx,rz] + 0x1f = 1. Origin = coord & ~15 (two's-complement).
-    Region* r = GetRegionByWorld(x, z);
-    if (!r) return;
-    r->dirty() = 1;
-    r->active() = 1;
+    int ox = x & ~15;
+    int oz = z & ~15;
+    int ix = (ox >> 4) - regionOriginRx_;
+    int iz = (oz >> 4) - regionOriginRz_;
+    if (ix < 0 || iz < 0 || ix >= regionCountX_ || iz >= regionCountZ_)
+        return;
+    int flat = iz * regionCountX_ + ix;
+    Region& r = regions_[(size_t)flat];
+    if (r.dirty() != 0) return; // already on sparse list
+    r.dirty() = 1;
+    r.active() = 1;
+    dirtyRegionIndices_.push_back(flat);
 }
 
 bool GridData::IsRegionDirtyWorld(int worldX, int worldZ) const {
@@ -245,26 +256,44 @@ bool GridData::IsRegionDirtyWorld(int worldX, int worldZ) const {
 int GridData::CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const {
     if (!outOx || !outOz || maxOut <= 0) return 0;
     int n = 0;
-    for (int iz = 0; iz < regionCountZ_ && n < maxOut; ++iz) {
-        for (int ix = 0; ix < regionCountX_ && n < maxOut; ++ix) {
-            const Region& r = regions_[(size_t)iz * (size_t)regionCountX_ + (size_t)ix];
-            if (r.dirty() == 0) continue;
-            outOx[n] = r.x & ~15;
-            outOz[n] = r.z & ~15;
-            ++n;
-        }
+    for (size_t i = 0; i < dirtyRegionIndices_.size() && n < maxOut; ++i) {
+        int flat = dirtyRegionIndices_[i];
+        if (flat < 0 || (size_t)flat >= regions_.size()) continue;
+        const Region& r = regions_[(size_t)flat];
+        if (r.dirty() == 0) continue;
+        outOx[n] = r.x & ~15;
+        outOz[n] = r.z & ~15;
+        ++n;
     }
     return n;
 }
 
 void GridData::ClearRegionDirtyAt(int worldOx, int worldOz) {
-    Region* r = GetRegionByWorld(worldOx, worldOz);
-    if (r) r->dirty() = 0;
+    int ox = worldOx & ~15;
+    int oz = worldOz & ~15;
+    int ix = (ox >> 4) - regionOriginRx_;
+    int iz = (oz >> 4) - regionOriginRz_;
+    if (ix < 0 || iz < 0 || ix >= regionCountX_ || iz >= regionCountZ_)
+        return;
+    int flat = iz * regionCountX_ + ix;
+    regions_[(size_t)flat].dirty() = 0;
+    // Compact sparse list (swap-erase matching flats)
+    for (size_t i = 0; i < dirtyRegionIndices_.size(); ) {
+        if (dirtyRegionIndices_[i] == flat) {
+            dirtyRegionIndices_[i] = dirtyRegionIndices_.back();
+            dirtyRegionIndices_.pop_back();
+        } else {
+            ++i;
+        }
+    }
 }
 
 void GridData::ClearAllRegionDirty() {
-    for (auto& r : regions_)
-        r.dirty() = 0;
+    for (int flat : dirtyRegionIndices_) {
+        if (flat >= 0 && (size_t)flat < regions_.size())
+            regions_[(size_t)flat].dirty() = 0;
+    }
+    dirtyRegionIndices_.clear();
     dirtyRegions_.clear();
 }
 
@@ -1907,9 +1936,27 @@ void GridData::UpdateOneWaterState(int x, int y, int z) {
     }
 }
 
+void GridData::TickWater(int deltaMs, int maxSteps) {
+    // Binary UpdateWaterState @ 0xa1040 entry (pdf):
+    //   cmp [this+0x2d8], now; setle → +0x2d0; jz return (not due)
+    //   period = [this+0x2d4]; [this+0x2d8] = now + period
+    //   if now >= [this+0x2dc]: [this+0x2dc] = now + period*8
+    if (deltaMs < 0) deltaMs = 0;
+    if (deltaMs > 200) deltaMs = 200; // Scene MaxTimestep = 200
+    waterClockMs_ += deltaMs;
+    const int now = waterClockMs_;
+    waterWasDue_ = (now >= waterDeadline_) ? 1 : 0;
+    if (!waterWasDue_)
+        return;
+    waterDeadline_ = now + waterPeriod_; // +0x2d4 default 200
+    if (now >= waterLongDeadline_)
+        waterLongDeadline_ = now + waterPeriod_ * 8;
+    UpdateWater(maxSteps);
+}
+
 void GridData::UpdateWater(int maxSteps) {
     // Recovered from Ghidra GridData::UpdateWaterState @ 0xa1040:
-    //   1) budget gate (+0x2d4/+0x2d8/+0x2dc) — caller supplies maxSteps
+    //   1) budget gate (+0x2d4/+0x2d8/+0x2dc) — applied in TickWater
     //   2) walk hierarchical occupancy of bit 0x4000
     //      maps at +0x260 (>>16), +0x268 (>>12), +0x270 (>>8), +0x278 (>>4)
     //   3) for each dirty group, test cellStates[i] & 0x4000
