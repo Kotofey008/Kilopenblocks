@@ -190,9 +190,12 @@ void GLApplication::OnDeleteGLContext() {
 
 void GLApplication::EnsureRegionMeshes() {
     GridData& grid = game_.GetGrid();
-    // Binary: SetCell flags region+0x1f; Region::Update rebuilds flagged regions.
-    // Progressive FPS came from O(n) hasMesh × rad³ every frame as the view
-    // ring filled — cost grew until place/break became unplayable.
+    // Binary: SetCell sets region+0x1f once; Region::Update rebuilds and clears the
+    // flag. Neighbour regions are marked only at 16-boundaries in SetCell itself.
+    //
+    // BUG (hang on place/break): we re-expanded dirtyRegions_ with face-neighbours
+    // EVERY frame while draining the queue → residual 5 → expand to 30 → 100 → …
+    // until the list covered the world and each frame remeshed until freeze.
 
     if (lightMap_.Empty())
         lightMap_.Init(grid);
@@ -258,39 +261,21 @@ void GLApplication::EnsureRegionMeshes() {
     int wMaxY = ((int)grid.worldMax.y + 15) & ~15;
     int wMaxZ = ((int)grid.worldMax.z + 15) & ~15;
 
-    // ---- 1) Dirty edits: rebuild only flagged regions (budget 2/frame) ----
-    // Binary does not expand every dirty region to 6 face-neighbours in software
-    // list form; neighbour faces update when those regions are themselves dirty
-    // (SetCell marks boundary columns). We still expand once for shared faces,
-    // but hard-cap rebuilds so place/break never remeshes a ring of chunks.
-    std::vector<GridData::RegionKey> dirty = grid.dirtyRegions_;
-    if (!dirty.empty()) {
-        auto addKey = [&](int rx, int ry, int rz) {
-            GridData::RegionKey k{rx, ry, rz};
-            for (const auto& d : dirty)
-                if (d == k) return;
-            dirty.push_back(k);
-        };
-        // Only expand original entries (not the newly added neighbours)
-        const size_t n0 = dirty.size();
-        for (size_t i = 0; i < n0; ++i) {
-            const auto& k = dirty[i];
-            addKey(k.rx + 1, k.ry, k.rz);
-            addKey(k.rx - 1, k.ry, k.rz);
-            addKey(k.rx, k.ry + 1, k.rz);
-            addKey(k.rx, k.ry - 1, k.rz);
-            addKey(k.rx, k.ry, k.rz + 1);
-            addKey(k.rx, k.ry, k.rz - 1);
-        }
+    // ---- 1) Dirty edits: NO neighbour re-expansion (SetCell already marked edges) ----
+    if (!grid.dirtyRegions_.empty()) {
+        // Safety: if list ever ballooned from older builds, hard-cap
+        if (grid.dirtyRegions_.size() > 16)
+            grid.dirtyRegions_.resize(16);
 
         constexpr size_t kMaxDirtyPerFrame = 2;
-        const size_t nRebuild = dirty.size() < kMaxDirtyPerFrame ? dirty.size() : kMaxDirtyPerFrame;
+        const size_t n = grid.dirtyRegions_.size();
+        const size_t nRebuild = n < kMaxDirtyPerFrame ? n : kMaxDirtyPerFrame;
 
         if (!lightMap_.Empty() && nRebuild > 0) {
-            int minX = dirty[0].rx * 16, maxX = minX + 16;
-            int minZ = dirty[0].rz * 16, maxZ = minZ + 16;
+            int minX = grid.dirtyRegions_[0].rx * 16, maxX = minX + 16;
+            int minZ = grid.dirtyRegions_[0].rz * 16, maxZ = minZ + 16;
             for (size_t i = 0; i < nRebuild; ++i) {
-                int x0 = dirty[i].rx * 16, z0 = dirty[i].rz * 16;
+                int x0 = grid.dirtyRegions_[i].rx * 16, z0 = grid.dirtyRegions_[i].rz * 16;
                 if (x0 < minX) minX = x0;
                 if (x0 + 16 > maxX) maxX = x0 + 16;
                 if (z0 < minZ) minZ = z0;
@@ -299,25 +284,24 @@ void GLApplication::EnsureRegionMeshes() {
             lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
         }
 
-        for (size_t i = 0; i < nRebuild; ++i)
-            rebuildOne(dirty[i].rx * 16, dirty[i].ry * 16, dirty[i].rz * 16);
+        for (size_t i = 0; i < nRebuild; ++i) {
+            const auto& k = grid.dirtyRegions_[i];
+            rebuildOne(k.rx * 16, k.ry * 16, k.rz * 16);
+        }
 
-        if (nRebuild >= dirty.size()) {
+        // Drop rebuilt entries; keep the unprocessed tail only
+        if (nRebuild >= n) {
             grid.ClearDirtyRegions();
         } else {
-            std::vector<GridData::RegionKey> left(dirty.begin() + (ptrdiff_t)nRebuild, dirty.end());
-            grid.ClearDirtyRegions();
-            for (const auto& k : left)
-                grid.dirtyRegions_.push_back(k);
+            grid.dirtyRegions_.erase(grid.dirtyRegions_.begin(),
+                                     grid.dirtyRegions_.begin() + (ptrdiff_t)nRebuild);
         }
-        // Place/break path: do not also stream this frame (keeps frame time stable)
-        return;
+        return; // do not stream same frame as place/break remesh
     }
 
     // ---- 2) GC far past view distance ----
     {
         const int dropCells = vd + 24;
-        bool anyErase = false;
         for (size_t i = 0; i < regionMeshes_.size(); ) {
             const auto& rm = regionMeshes_[i];
             int dx = (rm.ox + 8) - (int)cam.x;
@@ -327,23 +311,19 @@ void GLApplication::EnsureRegionMeshes() {
                 Key k{rm.ox, rm.oy, rm.oz};
                 index.erase(k);
                 regionMeshes_[i] = std::move(regionMeshes_.back());
-                // fix index for swapped element
                 if (i < regionMeshes_.size() - 1) {
                     Key sk{regionMeshes_[i].ox, regionMeshes_[i].oy, regionMeshes_[i].oz};
                     index[sk] = i;
                 }
                 regionMeshes_.pop_back();
-                anyErase = true;
             } else {
                 ++i;
             }
         }
-        (void)anyErase;
     }
 
-    // ---- 3) Fill missing view-ring slots (stream) ----
+    // ---- 3) Stream missing view-ring slots ----
     int budget = 8;
-    // First frames after load: ring empty → fill faster
     if (regionMeshes_.size() < (size_t)((2 * rad + 1) * (2 * rad + 1)))
         budget = 16;
 
