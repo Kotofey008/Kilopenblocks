@@ -36,7 +36,8 @@ void LightMap::Init(GridData& grid) {
 }
 
 static bool IsOpaque(unsigned char t) {
-    if (t == BlockId::Air || t == BlockId::Water) return false;
+    // Liquid is type 0 + state — not a solid type id.
+    if (t == BlockId::Air) return false;
     if (t == BlockId::Leaves1 || t == BlockId::Leaves2) return false;
     if (t == BlockId::Flower1 || t == BlockId::Mushroom1 || t == BlockId::Mushroom2) return false;
     if (t == 11) return false; // Glass
@@ -63,15 +64,20 @@ void LightMap::UpdateSunRays(GridData& grid) {
             for (int y = sizeY_ - 1; y >= 0; --y) {
                 int idx = x + sizeX_ * (y + sizeY_ * z);
                 unsigned char t;
+                int cidx = -1;
                 if (aligned) {
                     t = grid.cellTypes[(size_t)idx];
+                    cidx = idx;
                 } else {
-                    int cidx = grid.CoordToIndex(x + ox_, y + oy_, z + oz_);
+                    cidx = grid.CoordToIndex(x + ox_, y + oy_, z + oz_);
                     t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
                 }
                 if (IsOpaque(t)) {
                     sky = 0;
-                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2 || t == BlockId::Water) {
+                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2) {
+                    if (sky > 0) sky -= 1;
+                } else if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+                           (grid.cellStates[cidx] & 0x3fc0) != 0) {
                     if (sky > 0) sky -= 1;
                 }
                 int block = LightPack::Block(data_[idx]);
@@ -101,7 +107,10 @@ void LightMap::UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, 
                 unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
                 if (IsOpaque(t)) {
                     sky = 0;
-                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2 || t == BlockId::Water) {
+                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2) {
+                    if (sky > 0) sky -= 1;
+                } else if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+                           (grid.cellStates[cidx] & 0x3fc0) != 0) {
                     if (sky > 0) sky -= 1;
                 }
                 int block = LightPack::Block(data_[idx]);

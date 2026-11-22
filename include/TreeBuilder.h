@@ -6,12 +6,15 @@
 //   BuildTree(GridDataEdit&, int x, int y, int z, int height, int woodType, bool) @ 0xea610
 // GridDataEdit is a thin edit wrapper over GridData; we use GridData directly.
 
-// Block indices from assets/scenes/blocks.txt
+// Block / material-row indices from assets/scenes/blocks.txt
 namespace BlockId {
     constexpr unsigned char Air        = 0;
     constexpr unsigned char Stone      = 1;
     constexpr unsigned char OakWood    = 4;
-    constexpr unsigned char Water      = 5;
+    // Material table row for water UV/FTW only (S-Index hidden). World liquid
+    // is always type Air(0) + state bits — never stored as cell type 5.
+    constexpr unsigned char WaterMatRow = 5;
+    constexpr unsigned char Water      = 5; // legacy alias → material row, not cell type
     constexpr unsigned char Dirt       = 7;
     constexpr unsigned char Grass      = 8;
     constexpr unsigned char Leaves1    = 10;

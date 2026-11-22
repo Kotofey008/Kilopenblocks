@@ -25,8 +25,8 @@ Matrix4 Entity::GetTransform(int) {
 // Water, air, decorative plants and leaves do not block or support.
 // ---------------------------------------------------------------------------
 bool Entity::IsCollisionSolid(unsigned char t) {
-    // Prefer material table when GridData is wired; this static path is fallback.
-    return t != BlockId::Air && t != BlockId::Water &&
+    // World liquid is type 0 + state (not material id 5). Type 0 never collides here.
+    return t != BlockId::Air &&
            t != BlockId::Flower1 && t != BlockId::Mushroom1 &&
            t != BlockId::Mushroom2 && t != BlockId::Leaves1 &&
            t != BlockId::Leaves2;

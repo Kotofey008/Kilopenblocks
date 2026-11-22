@@ -386,8 +386,9 @@ bool GridData::IsUnderwater(const Vector& pos) const {
     int bz = (int)std::floor(pos.z);
     int idx = CoordToIndex(bx, by, bz);
     if (idx < 0) return false;
-    bool fluid = (idx < (int)cellStates.size() && (cellStates[idx] & 0x3fc0) != 0) ||
-                 (cellTypes[idx] == 5);
+    // Binary: fluid = (state & 0x3fc0) != 0. World liquid is type 0 + state;
+    // material id 5 is not a world liquid carrier (blocks.txt S-Index hidden).
+    bool fluid = (idx < (int)cellStates.size() && (cellStates[idx] & 0x3fc0) != 0);
     if (!fluid) return false;
 
     // Surface height matches GetWaterBlockHeight units (0..16): source 14/16,
@@ -395,9 +396,8 @@ bool GridData::IsUnderwater(const Vector& pos) const {
     unsigned short st = (idx < (int)cellStates.size()) ? cellStates[idx] : 0;
     float hFrac = 1.f;
     int above = CoordToIndex(bx, by + 1, bz);
-    bool waterAbove = above >= 0 &&
-        ((above < (int)cellTypes.size() && cellTypes[above] == 5) ||
-         (above < (int)cellStates.size() && (cellStates[above] & 0x3fc0) != 0));
+    bool waterAbove = above >= 0 && above < (int)cellStates.size() &&
+                      (cellStates[above] & 0x3fc0) != 0;
     if (!waterAbove) {
         int level = (int)((st & 0x1c00) >> 10);
         if ((st & 0xE000) == 0xE000) level = 0;
@@ -911,8 +911,10 @@ bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
     auto isTraceSolid = [&](int cidx) -> bool {
         if (cidx < 0 || cidx >= (int)cellTypes.size()) return false;
         unsigned char t = cellTypes[cidx];
-        if (t == 0) return false;   // air / pure liquid column
-        if (t == 5) return false;   // block id 5 water-block — pass through
+        // type 0 = air or pure liquid (state carries fluid); ray continues
+        if (t == 0) return false;
+        if (cidx < (int)cellStates.size() && HasLiquidState(cellStates[cidx]))
+            return false;
         if (t == 12 || t == 13 || t == 14) return false;
         if (t == 17 || t == 18) return false;
         return true;
@@ -1044,9 +1046,9 @@ bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char bloc
         unsigned char dt = cellTypes[idx];
         unsigned short st = (idx < (int)cellStates.size()) ? cellStates[idx] : 0;
         bool empty = (dt == 0 && !HasLiquidState(st));
-        // Type 5 = project water-block (kept); also any liquid state cell
-        bool water = (dt == 5) || HasLiquidState(st);
-        if (!empty && !water) return false;
+        // Binary allows placing into liquid cells (type 0 + fluid state)
+        bool liquid = (dt == 0 && HasLiquidState(st));
+        if (!empty && !liquid) return false;
     }
 
     // Entity list walk @ 0x99630: virtual Intersects(cellX,cellY,cellZ) on each entity.
@@ -1098,19 +1100,55 @@ int GridData::CellToMtlSelIndex(unsigned char cellType) const {
 //   state 0/1/2/3 based on |look.x| vs |look.z| and signs; bit 0x04 for variants.
 // Special material property bytes at +0x01,+0x05,+0x08 drive liquid/slab paths.
 // GetDirectionMarker, SetLiquidState, FullHeightBlockVariant called for specials.
+// SetLiquidState @ 0x99720 — merge liquid bits into outState when target
+// material has FTW (+0x1c) != 0 and source state carries 0x3FC0.
+// Called from ConfigureState / ConfigureAirState. World cells stay type 0;
+// this only builds the state word (type write is caller's job → 0 for liquids).
+static void SetLiquidStateMerge(GridData& g, unsigned char dstType, unsigned short& outState,
+                                unsigned char /*srcType*/, unsigned short srcState) {
+    if (g.materials.empty() || dstType >= g.materials.size()) return;
+    const GridData::Material& mat = g.materials[dstType];
+    if (mat.raw[0x1c] == 0) return; // no FTW → not a liquid-capable row
+    if ((srcState & 0x3fc0) == 0) return;
+    int level = (int)((srcState & 0x1c00) >> 10);
+    int matLvl = (int)mat.raw[0x04];
+    if (level <= matLvl) {
+        outState = (unsigned short)(outState | (srcState & 0x3fc0));
+        return;
+    }
+    // Binary: MinWaterHeight path then recombine — approximate with clamped level
+    int mh = GridData::MinWaterHeight(mat.raw[0x01], mat.raw[0x03], outState);
+    (void)mh;
+    outState = (unsigned short)(outState | (srcState & 0x3fc0));
+}
+
 unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
                                         unsigned char blockType,
                                         const Vector& lookDir) {
-    // Liquid source: type 5 (Water). Binary SetLiquidState @ 0x99720 sets
-    // fluid bit 0x2000 and level 0 (source) in bits 10-12. Without this,
-    // placed water has state 0 and is invisible to the fluid simulation.
-    // Block id 5: keep previous project behaviour (type 5 + fluid state).
-    // Natural gen does not place this id; real world water is type 0 + state.
-    if (blockType == 5) {
-        (void)tr; (void)lookDir;
-        // 0x4000 so hierarchy immediately schedules UpdateOneWaterState
-        // (binary places liquid then neighbour-OR / same-tick dirty path).
-        return (unsigned short)(STATE_BIT_2000 | STATE_BIT_4000 | (0 << STATE_LEVEL_SHIFT));
+    (void)tr;
+    // Binary ConfigureState @ 0x997f0 calls SetLiquidState for liquid materials.
+    // World liquid is ALWAYS type 0 + state (AddLiquidSource / AddGrassAndWater).
+    // Material id 5 is a hidden UV/FTW row (S-Index -1), not a solid block id.
+    // Prior RE: place of material-5 path yields type=0 + liquid state (docs:
+    // 0xC3C0 in one path); water gameplay uses 0xE000 source with 0x4000 schedule.
+    if (!materials.empty() && blockType < materials.size()) {
+        const Material& mat = materials[blockType];
+        // Liquid-capable row: FTW != 0 and not a full opaque solid (Col==0 or height)
+        bool liquidRow = (mat.raw[0x1c] != 0) && (!mat.col() || mat.prop01() == 0x0a);
+        // Explicit blocks.txt water row id 5 (and any row with water UV class)
+        if (blockType == 5 || liquidRow) {
+            // SetLiquidState @ 0x99720 merges 0x3FC0 bits; world cell type stays 0.
+            unsigned short st = 0;
+            SetLiquidStateMerge(*this, blockType, st, blockType,
+                                (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000));
+            if (!HasLiquidState(st))
+                st = (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
+            else
+                st = (unsigned short)(st | STATE_BIT_4000);
+            return st;
+        }
+    } else if (blockType == 5) {
+        return (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
     }
 
     // Default solid orientation 0-3 from dominant horizontal look axis
@@ -1122,7 +1160,6 @@ unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
     } else {
         state = (lz >= 0.f) ? 2 : 3;
     }
-    (void)tr;
     return state;
 }
 
@@ -1134,25 +1171,37 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
     int lx = idx % sizeX;
     int ly = (idx / sizeX) % sizeY;
     int lz = idx / (sizeX * sizeY);
-    // lookDir unknown here — use face as proxy for orientation
     Vector look(0, 0, 1);
     if (face == 0 || face == 1) look = Vector(face == 0 ? 1.f : -1.f, 0, 0);
     else if (face == 4 || face == 5) look = Vector(0, 0, face == 4 ? 1.f : -1.f);
     unsigned short state = ConfigureState(tr, blockType, look);
-    SetCell(originX + lx, originY + ly, originZ + lz, blockType, state);
+
+    // World liquid cells: type 0 + state (never persist material id 5 as cell type)
+    unsigned char writeType = blockType;
+    bool liquidPlace = HasLiquidState(state);
+    if (blockType == 5) liquidPlace = true;
+    if (!materials.empty() && blockType < materials.size()) {
+        const Material& mat = materials[blockType];
+        if (mat.raw[0x1c] != 0 && !mat.col()) liquidPlace = true;
+    }
+    if (liquidPlace) {
+        writeType = 0;
+        if (!HasLiquidState(state))
+            state = (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
+        else
+            state = (unsigned short)(state | STATE_BIT_4000);
+    }
+    SetCell(originX + lx, originY + ly, originZ + lz, writeType, state);
     return true;
 }
 
 bool GridData::BreakBlock(const GridDataTraceResult& tr) {
     if (!tr.hit) return false;
-    // Type 5 water-block: not breakable (previous project behaviour).
-    // Pure liquid (type 0 + fluid state) also skipped by ray / not breakable.
-    if (tr.blockType == 5) return false;
     int idx = CoordToIndex(tr.cellX, tr.cellY, tr.cellZ);
-    if (idx >= 0 && idx < (int)cellTypes.size() && cellTypes[idx] == 5)
-        return false;
+    // Pure liquid (type 0 + fluid state): not breakable as a block — ray already
+    // skips it; guard if hit somehow lands here.
     if (idx >= 0 && idx < (int)cellStates.size() && HasLiquidState(cellStates[idx]) &&
-        cellTypes[idx] == 0)
+        (idx >= (int)cellTypes.size() || cellTypes[idx] == 0))
         return false;
     // ConfigureAirState (0x99af0) → air + state 0
     SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0);
@@ -1421,8 +1470,8 @@ int GridData::IsFlowAllowed(int cellIndex, FlowType flow) const {
         // else (bit0 set, bit3 clear) → 0x0f (already set)
         return (int)result;
     }
-    // Fallback when material table not loaded
-    if (t == 0 || t == 5 || t == 11) return 0x0f;
+    // Fallback when material table not loaded (air / glass / plants pass flow)
+    if (t == 0 || t == 11) return 0x0f;
     if (t == 10 || t == 20 || t == 17 || t == 18) return 0x0f;
     if (t == 12 || t == 13 || t == 14) return 0x0f;
     return 0;
@@ -2009,14 +2058,21 @@ void GridData::UpdateWater(int maxSteps) {
                         int t = idx / sizeX;
                         int ly = t % sizeY;
                         int lz = t / sizeY;
+                        // Binary UpdateWaterState calls UpdateOneWaterState which
+                        // immediately SetCell / SpreadWater (no deferred global queue).
+                        // Flush after each cell so side-effects apply same tick.
                         UpdateOneWaterState(originX + lx, originY + ly, originZ + lz);
+                        if (!liquidQueue_.empty() && stepsLeft > 0)
+                            FlushLiquidQueue(stepsLeft);
                         ++processed;
+                        if (stepsLeft > 0) --stepsLeft;
                     }
                 }
             }
         }
     }
 
+    // Drain any remaining queued spreads within budget
     int waves = 0;
     while (!liquidQueue_.empty() && stepsLeft > 0 && waves < 4) {
         FlushLiquidQueue(stepsLeft);

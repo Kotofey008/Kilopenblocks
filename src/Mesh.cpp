@@ -78,7 +78,7 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
     auto isFullOpaqueSolid = [](unsigned char t, const Material* mat) -> bool {
         if (t == 0) return false;
         if (!mat) {
-            if (t == 5 || t == 11 || t == 10 || t == 20) return false;
+            if (t == 11 || t == 10 || t == 20) return false;
             if (t == 12 || t == 13 || t == 14 || t == 17 || t == 18) return false;
             return true;
         }
@@ -94,7 +94,7 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
     auto isNonSolidModel = [](unsigned char t, const Material* mat) -> bool {
         if (t == 0) return false;
         if (!mat) {
-            if (t == 5 || t == 11 || t == 10 || t == 20) return true;
+            if (t == 11 || t == 10 || t == 20) return true;
             if (t == 12 || t == 13 || t == 14 || t == 17 || t == 18) return true;
             return false;
         }
@@ -171,7 +171,7 @@ bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
         if (!mat->col()) return false;
         return true;
     }
-    if (t == 5 || t == 11) return false;
+    if (t == 11) return false;
     if (t == 10 || t == 20 || t == 17 || t == 18) return false;
     if (t == 12 || t == 13 || t == 14) return false;
     return true;
@@ -254,10 +254,15 @@ int RegionMesher::WaterNeedFace(GridData& grid, int x, int y, int z, int face) {
     if (ni < 0) return 1;
     int nlt = CellLiquidType(grid, nx, ny, nz);
     if (nlt == lt) {
-        // Same liquid: cull if mutual flow allowed (binary WaterNeedFace*)
-        if (self >= 0 && grid.IsFlowAllowed(self, outF) && grid.IsFlowAllowed(ni, inF))
+        // Binary WaterNeedFace*: cull only when mutual IsFlowAllowed both ways
+        if (self >= 0 &&
+            grid.IsFlowAllowed(self, outF) &&
+            grid.IsFlowAllowed(ni, inF))
             return 0;
-        return 0; // still cull water|water contact
+        // Same liquid but flow blocked in a direction → still no internal face
+        // when both cells are full liquid columns (height continuity is meshed
+        // via corner heights on YP, not side faces between equal liquids).
+        return 0;
     }
     return 1;
 }
