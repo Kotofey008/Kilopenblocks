@@ -53,14 +53,22 @@ static int EmissionLevel(unsigned char t) {
 }
 
 void LightMap::UpdateSunRays(GridData& grid) {
+    // Fast path: lightmap shares origin/size with grid → direct index into cellTypes
+    const bool aligned = (ox_ == grid.originX && oy_ == grid.originY && oz_ == grid.originZ &&
+                          sizeX_ == grid.sizeX && sizeY_ == grid.sizeY && sizeZ_ == grid.sizeZ &&
+                          !grid.cellTypes.empty());
     for (int z = 0; z < sizeZ_; ++z) {
         for (int x = 0; x < sizeX_; ++x) {
             int sky = 15;
             for (int y = sizeY_ - 1; y >= 0; --y) {
                 int idx = x + sizeX_ * (y + sizeY_ * z);
-                int wx = x + ox_, wy = y + oy_, wz = z + oz_;
-                int cidx = grid.CoordToIndex(wx, wy, wz);
-                unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
+                unsigned char t;
+                if (aligned) {
+                    t = grid.cellTypes[(size_t)idx];
+                } else {
+                    int cidx = grid.CoordToIndex(x + ox_, y + oy_, z + oz_);
+                    t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
+                }
                 if (IsOpaque(t)) {
                     sky = 0;
                 } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2 || t == BlockId::Water) {
@@ -115,23 +123,28 @@ void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
 }
 
 void LightMap::PropagateBlockLights(GridData& grid) {
-    // BFS outward from emitters; level decreases by 1 per step through air
-    // Mirrors AddLightUpdate flood behavior (large 4132 B function)
+    // BFS outward from emitters; level decreases by 1 per step through air.
+    // Only scan cellTypes for non-zero types that can emit — skip pure air.
     std::queue<int> q;
-    // Seed from all torch-like blocks
-    for (int z = 0; z < sizeZ_; ++z)
-    for (int y = 0; y < sizeY_; ++y)
-    for (int x = 0; x < sizeX_; ++x) {
-        int wx = x + ox_, wy = y + oy_, wz = z + oz_;
-        int cidx = grid.CoordToIndex(wx, wy, wz);
-        if (cidx < 0) continue;
-        int emit = EmissionLevel(grid.cellTypes[cidx]);
+    const size_t n = grid.cellTypes.size();
+    for (size_t ci = 0; ci < n; ++ci) {
+        unsigned char t = grid.cellTypes[ci];
+        if (t == 0) continue;
+        int emit = EmissionLevel(t);
         if (emit <= 0) continue;
-        int idx = x + sizeX_ * (y + sizeY_ * z);
+        // Decode linear index → lightmap local
+        int lx = (int)(ci % (size_t)grid.sizeX);
+        int t1 = (int)(ci / (size_t)grid.sizeX);
+        int ly = t1 % grid.sizeY;
+        int lz = t1 / grid.sizeY;
+        int wx = lx + grid.originX, wy = ly + grid.originY, wz = lz + grid.originZ;
+        int idx = Index(wx, wy, wz);
+        if (idx < 0) continue;
         int sky = LightPack::Sky(data_[idx]);
         data_[idx] = LightPack::Make(sky, emit);
         q.push(idx);
     }
+    if (q.empty()) return; // common case: no torches at world gen
 
     const int dx[6] = {1,-1,0,0,0,0};
     const int dy[6] = {0,0,1,-1,0,0};

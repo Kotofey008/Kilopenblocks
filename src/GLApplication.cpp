@@ -188,9 +188,9 @@ void GLApplication::OnDeleteGLContext() {
 
 void GLApplication::EnsureRegionMeshes() {
     GridData& grid = game_.GetGrid();
-    // Binary: region+0x1f dirty → Region::Update / AddMesh only for those regions.
-    // Origins MUST be identical to full-build (coord & ~15) or the erase/replace
-    // misses the stored mesh and the old geometry stays (collision updates, view not).
+    // Binary meshes only active / near regions (Region::Update), never the whole
+    // world in one frame. Stream 16³ meshes around the camera within view
+    // distance; rebuild dirty keys with a hard per-frame budget.
 
     auto rebuildOne = [&](int ox, int oy, int oz) {
         ox &= ~15; oy &= ~15; oz &= ~15;
@@ -209,13 +209,16 @@ void GLApplication::EnsureRegionMeshes() {
             regionMeshes_.push_back(std::move(rm));
     };
 
-    // Snapshot dirty list (SetCell may still run during water in same frame before us,
-    // but we must not hold a reference across ClearDirtyRegions).
-    std::vector<GridData::RegionKey> dirty = grid.dirtyRegions_;
+    auto hasMesh = [&](int ox, int oy, int oz) -> bool {
+        ox &= ~15; oy &= ~15; oz &= ~15;
+        for (const auto& rm : regionMeshes_)
+            if (rm.ox == ox && rm.oy == oy && rm.oz == oz) return true;
+        return false;
+    };
 
+    // ---- 1) Dirty edits (place/break/water) — budgeted ----
+    std::vector<GridData::RegionKey> dirty = grid.dirtyRegions_;
     if (!dirty.empty()) {
-        // Expand with face-adjacent regions so boundary faces on the neighbour
-        // chunk also refresh (NeedFace looks across the 16³ boundary).
         auto addKey = [&](int rx, int ry, int rz) {
             GridData::RegionKey k{rx, ry, rz};
             for (const auto& d : dirty)
@@ -233,18 +236,14 @@ void GLApplication::EnsureRegionMeshes() {
             addKey(k.rx, k.ry, k.rz - 1);
         }
 
-        // Cap rebuilds per frame — water fill can dirty many regions in one
-        // tick; rebuilding them all stalls the frame. Remainder stays dirty.
-        constexpr size_t kMaxRegionsPerFrame = 12;
-        const size_t nRebuild = dirty.size() < kMaxRegionsPerFrame
-                                    ? dirty.size() : kMaxRegionsPerFrame;
+        constexpr size_t kMaxDirtyPerFrame = 4;
+        const size_t nRebuild = dirty.size() < kMaxDirtyPerFrame ? dirty.size() : kMaxDirtyPerFrame;
 
         if (!lightMap_.Empty() && nRebuild > 0) {
             int minX = dirty[0].rx * 16, maxX = minX + 16;
             int minZ = dirty[0].rz * 16, maxZ = minZ + 16;
             for (size_t i = 0; i < nRebuild; ++i) {
-                const auto& k = dirty[i];
-                int x0 = k.rx * 16, z0 = k.rz * 16;
+                int x0 = dirty[i].rx * 16, z0 = dirty[i].rz * 16;
                 if (x0 < minX) minX = x0;
                 if (x0 + 16 > maxX) maxX = x0 + 16;
                 if (z0 < minZ) minZ = z0;
@@ -253,42 +252,78 @@ void GLApplication::EnsureRegionMeshes() {
             lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
         }
 
-        for (size_t i = 0; i < nRebuild; ++i) {
-            const auto& k = dirty[i];
-            rebuildOne(k.rx * 16, k.ry * 16, k.rz * 16);
-        }
+        for (size_t i = 0; i < nRebuild; ++i)
+            rebuildOne(dirty[i].rx * 16, dirty[i].ry * 16, dirty[i].rz * 16);
 
         if (nRebuild >= dirty.size()) {
             grid.ClearDirtyRegions();
         } else {
-            // Keep unprocessed tail for next frames
-            std::vector<GridData::RegionKey> left(dirty.begin() + (ptrdiff_t)nRebuild,
-                                                  dirty.end());
+            std::vector<GridData::RegionKey> left(dirty.begin() + (ptrdiff_t)nRebuild, dirty.end());
             grid.ClearDirtyRegions();
             for (const auto& k : left)
                 grid.dirtyRegions_.push_back(k);
         }
-        return;
     }
 
-    // meshesDirty_ with empty dirtyRegions_ must NOT full-rebuild every frame —
-    // that was the constant hitch (SetState/MarkModifiedRegions raised the flag
-    // without region keys). Only full rebuild on first load / explicit Invalidate
-    // when regionMeshes_ is still empty.
-    if (regionMeshes_.empty()) {
+    // ---- 2) Stream missing meshes around camera (not full world) ----
+    if (lightMap_.Empty())
         lightMap_.Init(grid);
-        int minX = (int)grid.worldMin.x & ~15;
-        int minY = (int)grid.worldMin.y & ~15;
-        int minZ = (int)grid.worldMin.z & ~15;
-        int maxX = ((int)grid.worldMax.x + 15) & ~15;
-        int maxY = ((int)grid.worldMax.y + 15) & ~15;
-        int maxZ = ((int)grid.worldMax.z + 15) & ~15;
-        for (int z = minZ; z < maxZ; z += 16)
-        for (int y = minY; y < maxY; y += 16)
-        for (int x = minX; x < maxX; x += 16)
-            rebuildOne(x, y, z);
+
+    Vector cam = game_.GetCamera().GetPosition();
+    int cx = ((int)cam.x) & ~15;
+    int cy = ((int)cam.y) & ~15;
+    int cz = ((int)cam.z) & ~15;
+
+    int vd = grid.GetViewDistanceCells();
+    if (vd < 32) vd = 32;
+    if (vd > 96) vd = 96;
+    int rad = (vd + 15) / 16;
+    if (rad < 2) rad = 2;
+    if (rad > 4) rad = 4;
+
+    int wMinX = (int)grid.worldMin.x & ~15;
+    int wMinY = (int)grid.worldMin.y & ~15;
+    int wMinZ = (int)grid.worldMin.z & ~15;
+    int wMaxX = ((int)grid.worldMax.x + 15) & ~15;
+    int wMaxY = ((int)grid.worldMax.y + 15) & ~15;
+    int wMaxZ = ((int)grid.worldMax.z + 15) & ~15;
+
+    // Drop far meshes to bound memory / draw count
+    {
+        const int dropR = rad + 2;
+        for (auto it = regionMeshes_.begin(); it != regionMeshes_.end(); ) {
+            int dx = (it->ox - cx) >> 4;
+            int dy = (it->oy - cy) >> 4;
+            int dz = (it->oz - cz) >> 4;
+            if (dx > dropR || dx < -dropR || dy > dropR || dy < -dropR ||
+                dz > dropR || dz < -dropR)
+                it = regionMeshes_.erase(it);
+            else
+                ++it;
+        }
     }
-    // else: flag-only, nothing to do (ClearMeshesDirty in Frame)
+
+    // Build missing regions near camera, ring by ring
+    constexpr int kMaxStreamPerFrame = 3;
+    int built = 0;
+    for (int r = 0; r <= rad && built < kMaxStreamPerFrame; ++r) {
+        for (int dz = -r; dz <= r && built < kMaxStreamPerFrame; ++dz) {
+            for (int dx = -r; dx <= r && built < kMaxStreamPerFrame; ++dx) {
+                if (r > 0 && std::abs(dx) != r && std::abs(dz) != r) continue;
+                for (int dy = -rad; dy <= rad && built < kMaxStreamPerFrame; ++dy) {
+                    int ox = cx + dx * 16;
+                    int oy = cy + dy * 16;
+                    int oz = cz + dz * 16;
+                    if (ox < wMinX || ox >= wMaxX) continue;
+                    if (oy < wMinY || oy >= wMaxY) continue;
+                    if (oz < wMinZ || oz >= wMaxZ) continue;
+                    if (hasMesh(ox, oy, oz)) continue;
+                    rebuildOne(ox, oy, oz);
+                    ++built;
+                }
+            }
+        }
+    }
 }
 
 void GLApplication::RenderWorld() {
@@ -691,12 +726,10 @@ void GLApplication::Frame() {
             game_.GetGrid().UpdateWater(64);
         }
     }
-    // Incremental mesh only — never full-world rebuild on a bare meshesDirty_ flag.
-    if (game_.GetGrid().MeshesDirty() || !game_.GetGrid().dirtyRegions_.empty()) {
-        EnsureRegionMeshes();
-        if (game_.GetGrid().dirtyRegions_.empty())
-            game_.GetGrid().ClearMeshesDirty();
-    }
+    // Always stream/rebuild nearby region meshes (budgeted inside).
+    EnsureRegionMeshes();
+    if (game_.GetGrid().dirtyRegions_.empty())
+        game_.GetGrid().ClearMeshesDirty();
     RenderWorld();
     {
         int w = 800, h = 480;

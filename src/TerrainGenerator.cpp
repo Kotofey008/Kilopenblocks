@@ -9,6 +9,17 @@
 static constexpr uint32_t kLcgMul = 0x343FD;
 static constexpr uint32_t kLcgAdd = 0x269EC3;
 
+// Bulk cell write — NO SetCell side effects (hierarchy / mesh dirty / neighbours).
+// Binary terrain paths use FillCells / direct buffer writes for the same reason.
+static inline void PutCell(GridData& grid, int x, int y, int z,
+                           unsigned char type, unsigned short state = 0) {
+    int idx = grid.CoordToIndex(x, y, z);
+    if (idx < 0) return;
+    grid.cellTypes[idx] = type;
+    if (idx < (int)grid.cellStates.size())
+        grid.cellStates[idx] = state;
+}
+
 TerrainGeneratorEarth::TerrainGeneratorEarth() {}
 
 uint32_t TerrainGeneratorEarth::NextRand() {
@@ -31,7 +42,7 @@ void TerrainGeneratorEarth::Generate(GridData& grid, int x0, int z0, int x1, int
     GenerateTerrainShape(grid, ax0, az0, ax1, az1);
     AddGrassAndWater(grid, ax0, az0, ax1, az1);
 
-    // Scatter trees (density ~1 per 12x12 cells, matching typical voxel density)
+    // Scatter trees (density ~1 per 12x12 cells)
     for (int z = az0; z < az1; z += 4) {
         for (int x = ax0; x < ax1; x += 4) {
             if ((NextRand() % 12) == 0) {
@@ -48,6 +59,9 @@ void TerrainGeneratorEarth::GenerateTerrainShape(GridData& grid, int x0, int z0,
     Noise noise;
     noise.Init(rng, 4, 0.02f, 24.f, 0.5f);
 
+    const int yMin = (int)grid.worldMin.y;
+    const int yMax = (int)grid.worldMax.y - 2;
+
     for (int z = z0; z < z1; z += kRegionSize) {
         for (int x = x0; x < x1; x += kRegionSize) {
             for (int lz = 0; lz < kRegionSize; ++lz) {
@@ -55,12 +69,14 @@ void TerrainGeneratorEarth::GenerateTerrainShape(GridData& grid, int x0, int z0,
                     int wx = x + lx, wz = z + lz;
                     float n = noise.GetValue((float)wx, (float)wz);
                     int h = 48 + (int)n;
-                    h = std::max((int)grid.worldMin.y + 1, std::min((int)grid.worldMax.y - 2, h));
-                    for (int y = (int)grid.worldMin.y; y < h; ++y) {
+                    if (h < yMin + 1) h = yMin + 1;
+                    if (h > yMax) h = yMax;
+                    // Column fill — direct writes (was SetCell → multi-second gen)
+                    for (int y = yMin; y < h; ++y) {
                         unsigned char type = BlockId::Stone;
                         if (y >= h - 4 && y < h - 1) type = BlockId::Dirt;
                         if (y == h - 1) type = BlockId::Grass;
-                        grid.SetCell(wx, y, wz, type, 0);
+                        PutCell(grid, wx, y, wz, type, 0);
                     }
                 }
             }
@@ -79,58 +95,55 @@ void TerrainGeneratorEarth::Slice(float* out, int x, int z, int w) {
 
 void TerrainGeneratorEarth::AddGrassAndWater(GridData& grid, int x0, int z0, int x1, int z1) {
     const int waterLevel = 40;
-    const int lavaLevel = 28; // test lava lakes in deeper bowls
+    const int lavaLevel = 28;
+    // One Noise instance for the whole pass (GetGroundLevel used to re-Init per column).
+    Random rng(static_cast<uint32_t>(seed_));
+    Noise noise;
+    noise.Init(rng, 4, 0.02f, 24.f, 0.5f);
     for (int z = z0; z < z1; ++z) {
         for (int x = x0; x < x1; ++x) {
-            int ground = GetGroundLevel(x, z);
+            int ground = 48 + (int)noise.GetValue((float)x, (float)z);
             if (ground < waterLevel) {
-                // Binary AddGrassAndWater: type=0 + state 0x2000
                 for (int y = ground; y < waterLevel; ++y)
-                    grid.SetCell(x, y, z, /*Air*/0, GridData::WATER_FILL_STATE);
+                    PutCell(grid, x, y, z, /*Air*/0, GridData::WATER_FILL_STATE);
             }
-            // Test lava lakes: deeper depressions (ground well below lavaLevel)
-            // type=0 + LAVA_SOURCE_STATE (0xC3C0) matching AddLiquidSource(LiquidType!=0)
             if (ground < lavaLevel - 4) {
                 int top = ground + 3;
                 if (top > lavaLevel) top = lavaLevel;
                 for (int y = ground; y < top; ++y)
-                    grid.SetCell(x, y, z, /*Air*/0, GridData::LAVA_SOURCE_STATE);
+                    PutCell(grid, x, y, z, /*Air*/0, GridData::LAVA_SOURCE_STATE);
             }
         }
     }
 }
 
 void TerrainGeneratorEarth::AddTree(GridData& grid, int x, int z) {
-    int y = GetGroundLevel(x, z) + 1;
-    int h = 5 + (int)(NextRand() % 8);           // 5..12
-    int wood = (NextRand() & 4) ? BlockId::BirchWood : BlockId::OakWood;
+    int y = GetGroundLevel(x, z);
+    int h = 5 + (int)(NextRand() % 7);
+    unsigned char wood = (NextRand() & 1) ? BlockId::BirchWood : BlockId::OakWood;
     if (CheckTreePosition(grid, x, y, z, h))
         BuildTree(grid, x, y, z, h, wood, false);
 }
 
 void TerrainGeneratorEarth::AddFlowers(GridData& grid, int x, int z, unsigned char) {
-    int y = GetGroundLevel(x, z) + 1;
-    int idx = grid.CoordToIndex(x, y, z);
-    if (idx >= 0 && grid.cellTypes[idx] == BlockId::Air)
-        grid.SetCell(x, y, z, BlockId::Flower1, 0);
+    int y = GetGroundLevel(x, z);
+    if (y > (int)grid.worldMin.y)
+        PutCell(grid, x, y, z, BlockId::Flower1, 0);
 }
 
 void TerrainGeneratorEarth::AddMushrooms(GridData& grid, int x, int z, unsigned char) {
-    int y = GetGroundLevel(x, z) + 1;
-    int idx = grid.CoordToIndex(x, y, z);
-    if (idx >= 0 && grid.cellTypes[idx] == BlockId::Air)
-        grid.SetCell(x, y, z, BlockId::Mushroom1, 0);
+    int y = GetGroundLevel(x, z);
+    if (y > (int)grid.worldMin.y)
+        PutCell(grid, x, y, z, BlockId::Mushroom1, 0);
 }
 
 void TerrainGeneratorEarth::AddLiquidSource(GridData& grid, int x, int y, int z, int liquidType) {
-    // Binary AddLiquidSource: type forced to 0; LiquidType 0 → 0xE000, else → 0xC3C0
     if (liquidType == 0)
-        grid.SetCell(x, y, z, /*Air*/0, GridData::WATER_SOURCE_STATE);
+        PutCell(grid, x, y, z, /*Air*/0, GridData::WATER_SOURCE_STATE);
     else
-        grid.SetCell(x, y, z, /*Air*/0, GridData::LAVA_SOURCE_STATE);
+        PutCell(grid, x, y, z, /*Air*/0, GridData::LAVA_SOURCE_STATE);
 }
 
-int TerrainGeneratorEarth::GetPositionCost(int, int, int) { return 0; }
 void TerrainGeneratorEarth::FindStartPosition(int, int) {}
 
 int TerrainGeneratorEarth::GetGroundLevel(int x, int z) {
@@ -144,19 +157,27 @@ void TerrainGeneratorEarth::GetStartPosition(int& x, int& y, int& z) {
     x = 0; y = GetGroundLevel(0, 0) + 2; z = 0;
 }
 
+int TerrainGeneratorEarth::GetPositionCost(int, int, int) { return 0; }
+
 void TerrainGeneratorFlat::Init(GridData& grid, int64_t) {
     grid.InitDimensionsFromWorldBounds();
 }
+
 void TerrainGeneratorFlat::Generate(GridData& grid, int x0, int z0, int x1, int z1) {
-    int ground = 32;
+    int ground = (int)grid.worldMin.y + 32;
+    if (ground >= (int)grid.worldMax.y) ground = (int)grid.worldMax.y - 2;
     for (int z = z0; z <= z1; ++z)
         for (int x = x0; x <= x1; ++x) {
             for (int y = (int)grid.worldMin.y; y < ground; ++y)
-                grid.SetCell(x, y, z, BlockId::Stone, 0);
-            grid.SetCell(x, ground, z, BlockId::Grass, 0);
+                PutCell(grid, x, y, z, BlockId::Stone, 0);
+            PutCell(grid, x, ground, z, BlockId::Grass, 0);
         }
 }
-int TerrainGeneratorFlat::GetGroundLevel(int, int) { return 32; }
+
+int TerrainGeneratorFlat::GetGroundLevel(int, int) {
+    return 32;
+}
+
 void TerrainGeneratorFlat::GetStartPosition(int& x, int& y, int& z) {
-    x = 0; y = 33; z = 0;
+    x = 0; y = 34; z = 0;
 }
