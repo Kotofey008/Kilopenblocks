@@ -147,31 +147,27 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
 
     bool bit2000Changed = ((oldState ^ newState) & STATE_BIT_2000) != 0;
     bool bit3c0Changed  = ((oldState ^ newState) & STATE_BIT_3C0) != 0;
-    bool bit4000Changed = ((oldState ^ newState) & STATE_BIT_4000) != 0;
-    bool lowBitsChanged = ((oldState ^ newState) & 0x3fff) != 0;
-    bool stateRelevant = bit2000Changed || bit3c0Changed || bit4000Changed || lowBitsChanged;
+    bool levelChanged   = ((oldState ^ newState) & STATE_LEVEL_MASK) != 0;
+    // 0x4000 is hierarchy scheduling only — does not change drawn geometry.
+    bool meshRelevant = typeChanged || bit2000Changed || bit3c0Changed || levelChanged;
 
-    if (typeChanged || stateRelevant) {
+    if (meshRelevant) {
         // Region dirty (original: region entry +0x1f = 1). Region size 16.
         MarkRegionDirty(x, y, z);
         meshesDirty_ = true;
 
-        // Neighbour mesh keys only when solid type changes (shared faces).
-        // Do NOT OR 0x4000 onto neighbour liquids here — that re-dirtied whole
-        // lakes every SetCell and kept UpdateWater busy every frame.
-        // Binary neighbour 0xC000 OR is gated (material/+0xf0); Spread* owns
-        // liquid dirty propagation.
-        if (typeChanged) {
-            static const int offs[6][3] = {
-                {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}
-            };
-            for (auto& o : offs) {
-                int nx = x + o[0], ny = y + o[1], nz = z + o[2];
-                if (CoordToIndex(nx, ny, nz) >= 0)
-                    MarkRegionDirty(nx, ny, nz);
-            }
+        // Binary SetCell: per-axis dirty columns + region+0x1f; MarkModifiedRegions
+        // propagates only at 16-aligned edges. Mark neighbour regions only when
+        // the edited cell sits on a region face (shared face needs both meshes).
+        if (typeChanged || bit2000Changed || bit3c0Changed) {
+            int lx = x & 15, ly = y & 15, lz = z & 15;
+            if (lx == 0)  MarkRegionDirty(x - 1, y, z);
+            if (lx == 15) MarkRegionDirty(x + 1, y, z);
+            if (ly == 0)  MarkRegionDirty(x, y - 1, z);
+            if (ly == 15) MarkRegionDirty(x, y + 1, z);
+            if (lz == 0)  MarkRegionDirty(x, y, z - 1);
+            if (lz == 15) MarkRegionDirty(x, y, z + 1);
         }
-        // meshesDirty_ already set; regions listed — no MarkModifiedRegions stub
     }
 }
 

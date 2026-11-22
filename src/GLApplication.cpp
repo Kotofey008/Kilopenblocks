@@ -9,6 +9,8 @@
 #include <EGL/egl.h>
 #include <GLES/gl.h>
 #include <cmath>
+#include <unordered_map>
+#include <algorithm>
 
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "ExplorationLite", __VA_ARGS__))
 #define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "ExplorationLite", __VA_ARGS__))
@@ -188,45 +190,59 @@ void GLApplication::OnDeleteGLContext() {
 
 void GLApplication::EnsureRegionMeshes() {
     GridData& grid = game_.GetGrid();
-    // Binary model (Region::Update @ 0xa0e20, InitRegions, SelectDrawDistance):
-    //   - Regions cover the world; meshes built for those near the player
-    //   - GridData+0x22c viewDistance = (DrawDistanceTable[level].x - 0x20) / 2
-    //     Tiny→32, Short→48, Normal→64, Far→80
-    //   - Dirty regions rebuild via flag +0x1f; no "stream in one chunk at a time"
-    //   - Far regions GC'd past view distance — not on every place/break
-
-    auto rebuildOne = [&](int ox, int oy, int oz) {
-        ox &= ~15; oy &= ~15; oz &= ~15;
-        for (auto it = regionMeshes_.begin(); it != regionMeshes_.end(); ) {
-            if (it->ox == ox && it->oy == oy && it->oz == oz)
-                it = regionMeshes_.erase(it);
-            else
-                ++it;
-        }
-        RegionMesh rm;
-        rm.ox = ox; rm.oy = oy; rm.oz = oz;
-        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, rm.buffer, &rm.waterBuffer, &rm.lavaBuffer, &lightMap_);
-        rm.valid = rm.buffer.IndexCount() > 0 || rm.waterBuffer.IndexCount() > 0
-               || rm.lavaBuffer.IndexCount() > 0;
-        // Keep empty shells so we do not rebuild air columns every frame
-        regionMeshes_.push_back(std::move(rm));
-    };
-
-    auto hasMesh = [&](int ox, int oy, int oz) -> bool {
-        ox &= ~15; oy &= ~15; oz &= ~15;
-        for (const auto& rm : regionMeshes_)
-            if (rm.ox == ox && rm.oy == oy && rm.oz == oz) return true;
-        return false;
-    };
+    // Binary: SetCell flags region+0x1f; Region::Update rebuilds flagged regions.
+    // Progressive FPS came from O(n) hasMesh × rad³ every frame as the view
+    // ring filled — cost grew until place/break became unplayable.
 
     if (lightMap_.Empty())
         lightMap_.Init(grid);
 
-    // View distance from GridData+0x22c (set by ApplyGraphicsSettings / Play)
+    struct Key { int ox, oy, oz; };
+    struct KeyHash {
+        size_t operator()(const Key& k) const {
+            return (size_t)k.ox * 73856093u ^ (size_t)k.oy * 19349663u ^ (size_t)k.oz * 83492791u;
+        }
+    };
+    struct KeyEq {
+        bool operator()(const Key& a, const Key& b) const {
+            return a.ox == b.ox && a.oy == b.oy && a.oz == b.oz;
+        }
+    };
+    std::unordered_map<Key, size_t, KeyHash, KeyEq> index;
+    index.reserve(regionMeshes_.size() * 2 + 16);
+    for (size_t i = 0; i < regionMeshes_.size(); ++i)
+        index.insert({Key{regionMeshes_[i].ox, regionMeshes_[i].oy, regionMeshes_[i].oz}, i});
+
+    auto rebuildOne = [&](int ox, int oy, int oz) {
+        ox &= ~15; oy &= ~15; oz &= ~15;
+        Key k{ox, oy, oz};
+        RegionMesh* slot = nullptr;
+        auto it = index.find(k);
+        if (it != index.end()) {
+            slot = &regionMeshes_[it->second];
+            slot->buffer.Clear();
+            slot->waterBuffer.Clear();
+            slot->lavaBuffer.Clear();
+        } else {
+            regionMeshes_.push_back(RegionMesh{});
+            size_t ni = regionMeshes_.size() - 1;
+            index[k] = ni;
+            slot = &regionMeshes_[ni];
+            slot->ox = ox; slot->oy = oy; slot->oz = oz;
+        }
+        RegionMesher::Build(grid, ox, oy, oz, blockDefs_,
+                            slot->buffer, &slot->waterBuffer, &slot->lavaBuffer, &lightMap_);
+        slot->valid = slot->buffer.IndexCount() > 0 || slot->waterBuffer.IndexCount() > 0
+                   || slot->lavaBuffer.IndexCount() > 0;
+    };
+
+    auto hasMesh = [&](int ox, int oy, int oz) -> bool {
+        ox &= ~15; oy &= ~15; oz &= ~15;
+        return index.find(Key{ox, oy, oz}) != index.end();
+    };
+
     int vd = grid.GetViewDistanceCells();
     if (vd < 16) vd = 16;
-    // Region radius in 16-blocks: cover full view distance (binary uses +0x22c
-    // as half-extent style distance for region activity / IsHidden).
     int rad = (vd + 15) / 16;
     if (rad < 1) rad = 1;
 
@@ -242,8 +258,11 @@ void GLApplication::EnsureRegionMeshes() {
     int wMaxY = ((int)grid.worldMax.y + 15) & ~15;
     int wMaxZ = ((int)grid.worldMax.z + 15) & ~15;
 
-    // ---- 1) Dirty edits: rebuild only listed regions (+face neighbours) ----
-    // Budget keeps place/break from remeshing half the world in one frame.
+    // ---- 1) Dirty edits: rebuild only flagged regions (budget 2/frame) ----
+    // Binary does not expand every dirty region to 6 face-neighbours in software
+    // list form; neighbour faces update when those regions are themselves dirty
+    // (SetCell marks boundary columns). We still expand once for shared faces,
+    // but hard-cap rebuilds so place/break never remeshes a ring of chunks.
     std::vector<GridData::RegionKey> dirty = grid.dirtyRegions_;
     if (!dirty.empty()) {
         auto addKey = [&](int rx, int ry, int rz) {
@@ -252,6 +271,7 @@ void GLApplication::EnsureRegionMeshes() {
                 if (d == k) return;
             dirty.push_back(k);
         };
+        // Only expand original entries (not the newly added neighbours)
         const size_t n0 = dirty.size();
         for (size_t i = 0; i < n0; ++i) {
             const auto& k = dirty[i];
@@ -263,7 +283,7 @@ void GLApplication::EnsureRegionMeshes() {
             addKey(k.rx, k.ry, k.rz - 1);
         }
 
-        constexpr size_t kMaxDirtyPerFrame = 6;
+        constexpr size_t kMaxDirtyPerFrame = 2;
         const size_t nRebuild = dirty.size() < kMaxDirtyPerFrame ? dirty.size() : kMaxDirtyPerFrame;
 
         if (!lightMap_.Empty() && nRebuild > 0) {
@@ -290,42 +310,43 @@ void GLApplication::EnsureRegionMeshes() {
             for (const auto& k : left)
                 grid.dirtyRegions_.push_back(k);
         }
+        // Place/break path: do not also stream this frame (keeps frame time stable)
+        return;
     }
 
-    // ---- 2) GC only far past view distance (binary Region::GarbageCollection) ----
+    // ---- 2) GC far past view distance ----
     {
-        const int dropCells = vd + 24; // margin beyond +0x22c
-        for (auto it = regionMeshes_.begin(); it != regionMeshes_.end(); ) {
-            int mcx = it->ox + 8, mcy = it->oy + 8, mcz = it->oz + 8;
-            int dx = mcx - (int)cam.x;
-            int dy = mcy - (int)cam.y;
-            int dz = mcz - (int)cam.z;
-            // Chebyshev-ish: if all axes within dropCells keep mesh
-            if (std::abs(dx) > dropCells || std::abs(dz) > dropCells || std::abs(dy) > dropCells)
-                it = regionMeshes_.erase(it);
-            else
-                ++it;
+        const int dropCells = vd + 24;
+        bool anyErase = false;
+        for (size_t i = 0; i < regionMeshes_.size(); ) {
+            const auto& rm = regionMeshes_[i];
+            int dx = (rm.ox + 8) - (int)cam.x;
+            int dy = (rm.oy + 8) - (int)cam.y;
+            int dz = (rm.oz + 8) - (int)cam.z;
+            if (std::abs(dx) > dropCells || std::abs(dz) > dropCells || std::abs(dy) > dropCells) {
+                Key k{rm.ox, rm.oy, rm.oz};
+                index.erase(k);
+                regionMeshes_[i] = std::move(regionMeshes_.back());
+                // fix index for swapped element
+                if (i < regionMeshes_.size() - 1) {
+                    Key sk{regionMeshes_[i].ox, regionMeshes_[i].oy, regionMeshes_[i].oz};
+                    index[sk] = i;
+                }
+                regionMeshes_.pop_back();
+                anyErase = true;
+            } else {
+                ++i;
+            }
         }
+        (void)anyErase;
     }
 
-    // ---- 3) Ensure all regions inside view radius exist ----
-    // First load / large holes: build many per frame so the player sees the full
-    // draw-distance ring quickly (not one chunk at a time).
-    int missing = 0;
-    for (int dz = -rad; dz <= rad; ++dz)
-    for (int dy = -rad; dy <= rad; ++dy)
-    for (int dx = -rad; dx <= rad; ++dx) {
-        int ox = cx + dx * 16;
-        int oy = cy + dy * 16;
-        int oz = cz + dz * 16;
-        if (ox < wMinX || ox >= wMaxX) continue;
-        if (oy < wMinY || oy >= wMaxY) continue;
-        if (oz < wMinZ || oz >= wMaxZ) continue;
-        if (!hasMesh(ox, oy, oz)) ++missing;
-    }
+    // ---- 3) Fill missing view-ring slots (stream) ----
+    int budget = 8;
+    // First frames after load: ring empty → fill faster
+    if (regionMeshes_.size() < (size_t)((2 * rad + 1) * (2 * rad + 1)))
+        budget = 16;
 
-    // Adaptive budget: fill holes fast when many missing (enter world), else light
-    int budget = (missing > 24) ? 24 : (missing > 8) ? 12 : 6;
     int built = 0;
     for (int r = 0; r <= rad && built < budget; ++r) {
         for (int dz = -r; dz <= r && built < budget; ++dz) {
