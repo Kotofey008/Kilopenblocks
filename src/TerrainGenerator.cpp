@@ -164,20 +164,25 @@ void TerrainGeneratorFlat::Init(GridData& grid, int64_t) {
 }
 
 void TerrainGeneratorFlat::Generate(GridData& grid, int x0, int z0, int x1, int z1) {
-    int ground = (int)grid.worldMin.y + 32;
-    if (ground >= (int)grid.worldMax.y) ground = (int)grid.worldMax.y - 2;
+    int yMin = (int)grid.worldMin.y;
+    int yMax = (int)grid.worldMax.y;
+    int ground = groundLevel_ >= 0 ? groundLevel_ : (yMin + (yMax - yMin) / 4);
+    if (ground <= yMin) ground = yMin + 1;
+    if (ground >= yMax) ground = yMax - 2;
     for (int z = z0; z <= z1; ++z)
         for (int x = x0; x <= x1; ++x) {
-            for (int y = (int)grid.worldMin.y; y < ground; ++y)
+            for (int y = yMin; y < ground; ++y)
                 PutCell(grid, x, y, z, BlockId::Stone, 0);
             PutCell(grid, x, ground, z, BlockId::Grass, 0);
         }
 }
 
 int TerrainGeneratorFlat::GetGroundLevel(int, int) {
-    return 32;
+    return groundLevel_ >= 0 ? groundLevel_ : 32;
 }
 
 void TerrainGeneratorFlat::GetStartPosition(int& x, int& y, int& z) {
-    x = 0; y = 34; z = 0;
+    x = 0;
+    y = GetGroundLevel(0, 0) + 2;
+    z = 0;
 }

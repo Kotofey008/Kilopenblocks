@@ -307,9 +307,13 @@ bool Scene::Load(const std::string& path) {
 }
 
 void Scene::ApplyGlobalsToGrid(GridData& g, bool mobileClamp) const {
+    // mobileClamp is legacy: Play() now sizes the world from the New Terrain
+    // terrain_size slider (128…4096). When mobileClamp is false (default path),
+    // scene Globals WorldSizeMin/Max are applied unchanged.
     Vector minV = globals.worldSizeMin;
     Vector maxV = globals.worldSizeMax;
     if (mobileClamp) {
+        // Kept only for debug callers; not used by Play/Create anymore.
         float half = kMobileWorldHalfExtent;
         minV.x = std::max(minV.x, -half);
         minV.z = std::max(minV.z, -half);
