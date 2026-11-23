@@ -677,24 +677,88 @@ void GLApplication::DrawMenuMaterialSlots(int /*screenW*/, int /*screenH*/) {
         if (cell == 0) continue; // empty / air
         const Material* mat = grid.GetMaterial(cell);
         if (!mat) continue;
-        // Top face UV (YP = face index 1 in XP,YP,ZP,XN,YN,ZN order → 1)
-        int tu = mat->uFace(1);
-        int tv = mat->vFace(1);
+
+        // GridData::GetBlockIcon @ 0x8e3a0 — height = mat[+0x00]; when != 0,
+        // mesh Y components become (height<<3) in 0..128 space and UV V is
+        // reduced by height (partial BH icons match world slab proportions).
+        float pad = r.w * 0.12f;
+        float xx0 = r.x + pad, yy0 = r.y + pad;
+        float xx1 = r.x + r.w - pad, yy1 = r.y + r.h - pad;
+        float cx = (xx0 + xx1) * 0.5f;
+        int bmt = (int)mat->prop01();
+        int ht = (int)mat->height();
+        if (ht <= 0) ht = 16;
+        float hFrac = (float)ht / 16.f;
+        if (hFrac > 1.f) hFrac = 1.f;
+
+        auto drawQuad = [&](const GLfloat* verts, float u0, float v0, float u1, float v1) {
+            const GLfloat uvs[] = { u0,v0, u1,v0, u1,v1, u0,v1 };
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glVertexPointer(2, GL_FLOAT, 0, verts);
+            glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+            glDisableClientState(GL_VERTEX_ARRAY);
+        };
+
+        // Solid-branch isometric (BMT==4 || BMT<2 || BMT==3 || BMT==7) with BH scale.
+        if (bmt == 4 || bmt < 2 || bmt == 3 || bmt == 7) {
+            float bodyH = (yy1 - yy0) * hFrac;
+            float base = yy1;
+            float top = yy1 - bodyH;
+            float u0, v0, u1, v1;
+            int tuTop = (int)mat->uFace(1), tvTop = (int)mat->vFace(1);
+            int tuR = (int)mat->uFace(0), tvR = (int)mat->vFace(0);
+            int tuL = (int)mat->uFace(2), tvL = (int)mat->vFace(2);
+            Texture::TileUV(tuTop, tvTop, u0, v0, u1, v1);
+            {
+                float drop = (base - top) * 0.22f;
+                GLfloat vfan[] = {
+                    xx0, top + (base - top) * 0.15f,
+                    cx,  top - drop,
+                    xx1, top + (base - top) * 0.15f,
+                    cx,  top + (base - top) * 0.30f
+                };
+                drawQuad(vfan, u0, v0, u1, v1);
+            }
+            Texture::TileUV(tuR, tvR, u0, v0, u1, v1);
+            {
+                float sv0 = v1 + (v0 - v1) * hFrac;
+                GLfloat verts[] = {
+                    cx,  top + (base - top) * 0.30f,
+                    xx1, top + (base - top) * 0.15f,
+                    xx1, base,
+                    cx,  base
+                };
+                drawQuad(verts, u0, sv0, u1, v1);
+            }
+            Texture::TileUV(tuL, tvL, u0, v0, u1, v1);
+            {
+                float sv0 = v1 + (v0 - v1) * hFrac;
+                GLfloat verts[] = {
+                    xx0, top + (base - top) * 0.15f,
+                    cx,  top + (base - top) * 0.30f,
+                    cx,  base,
+                    xx0, base
+                };
+                drawQuad(verts, u0, sv0, u1, v1);
+            }
+            continue;
+        }
+
+        // Fallback: flat face0 with BH crop (same UV rule as world side faces).
+        int tu = mat->uFace(0);
+        int tv = mat->vFace(0);
         float u0, v0, u1, v1;
         Texture::TileUV(tu, tv, u0, v0, u1, v1);
-
-        float pad = r.w * 0.12f;
-        float x0 = r.x + pad, y0 = r.y + pad;
-        float x1 = r.x + r.w - pad, y1 = r.y + r.h - pad;
-        const GLfloat verts[] = { x0,y0, x1,y0, x1,y1, x0,y1 };
-        const GLfloat uvs[]   = { u0,v0, u1,v0, u1,v1, u0,v1 };
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-        glVertexPointer(2, GL_FLOAT, 0, verts);
-        glTexCoordPointer(2, GL_FLOAT, 0, uvs);
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-        glDisableClientState(GL_VERTEX_ARRAY);
+        if (ht > 0 && ht < 16) {
+            float bodyH = (yy1 - yy0) * hFrac;
+            yy0 = yy1 - bodyH;
+            v0 = v1 + (v0 - v1) * hFrac;
+        }
+        const GLfloat verts[] = { xx0,yy0, xx1,yy0, xx1,yy1, xx0,yy1 };
+        drawQuad(verts, u0, v0, u1, v1);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
     glDisable(GL_TEXTURE_2D);
