@@ -247,8 +247,56 @@ int RegionMesher::BinToOurFace(int binFace) {
     return (binFace >= 0 && binFace < 6) ? m[binFace] : 0;
 }
 
-void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1) {
-    int mi = OurToBinFace(ourFace);
+// Map world face → material face for UVR-oriented blocks (ConfigureState facing).
+// Binary facing state&3 from argmin{look.x,look.z,-look.x,-look.z}:
+//   0 = front +Z, 1 = front -X, 2 = front -Z, 3 = front +X
+// Material faces stored for identity placement (front = +Z / bin ZP).
+static int OrientedMaterialFace(int ourFace, int facing, uint8_t uvr) {
+    if (uvr == 0) return ourFace;
+    // UVR 7 (logs/hay): state&3 selects axis; 0=Y (default sides), 1=X, 2=Z
+    // (matches common log state packing; refined if table recovered)
+    if (uvr == 7) {
+        int axis = facing & 3;
+        if (axis == 1) {
+            // axis X: world Y faces ← material Z (rings), world Z ← material Y
+            if (ourFace == 2 || ourFace == 3) return (ourFace == 2) ? 4 : 5;
+            if (ourFace == 4 || ourFace == 5) return (ourFace == 4) ? 2 : 3;
+            return ourFace;
+        }
+        if (axis == 2) {
+            // axis Z: world Y ← material X rings
+            if (ourFace == 2 || ourFace == 3) return (ourFace == 2) ? 0 : 1;
+            if (ourFace == 0 || ourFace == 1) return (ourFace == 0) ? 2 : 3;
+            return ourFace;
+        }
+        // axis Y: only rotate sides by 0 (identity)
+        return ourFace;
+    }
+    // UVR 1 / 3: horizontal facing — rotate XZ faces about Y so front (+Z mat)
+    // lands on world facing direction.
+    if (ourFace == 2 || ourFace == 3) return ourFace; // top/bottom
+    auto toRing = [](int f) -> int {
+        if (f == 0) return 0; // +X
+        if (f == 4) return 1; // +Z
+        if (f == 1) return 2; // -X
+        return 3;             // -Z
+    };
+    auto fromRing = [](int r) -> int {
+        static const int m[4] = {0, 4, 1, 5};
+        return m[r & 3];
+    };
+    int wr = toRing(ourFace);
+    int lr = (wr - (facing & 3) + 4) & 3;
+    return fromRing(lr);
+}
+
+void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1,
+                          unsigned short orientState) {
+    int srcFace = ourFace;
+    uint8_t uvr = mat.uvr();
+    if (uvr != 0)
+        srcFace = OrientedMaterialFace(ourFace, (int)(orientState & 3), uvr);
+    int mi = OurToBinFace(srcFace);
     Texture::TileUV((int)mat.uFace(mi), (int)mat.vFace(mi), u0, v0, u1, v1);
 }
 
@@ -413,7 +461,7 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
     unsigned short st = (idx >= 0 && idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
     uint8_t cls = mat.prop01();
     float u0, v0, u1, v1;
-    FaceUV(mat, ourFace, u0, v0, u1, v1);
+    FaceUV(mat, ourFace, u0, v0, u1, v1, st);
     uint32_t col = FaceColor(lights, x, y, z, ourFace);
     float fx = (float)x, fy = (float)y, fz = (float)z;
 

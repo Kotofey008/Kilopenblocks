@@ -70,7 +70,8 @@ private:
 
     // Material UV for face (binary mat[+0x0c+face]/[+0x12+face], face=XP..ZN order).
     // ourFace 0..5 → mat slot via kOurToMatFace.
-    static void FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1);
+    static void FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1,
+                       unsigned short orientState = 0);
 
     static uint32_t FaceColor(const LightMap* lights, int x, int y, int z, int face);
 

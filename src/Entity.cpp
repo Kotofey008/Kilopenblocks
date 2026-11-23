@@ -711,7 +711,8 @@ void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
         // IsPossibleToAdd (0x99530): rejects if target cell non-empty OR any
         // registered entity AABB intersects the destination cell (vtable+0x80).
         // Player AABB = position with size_ extents (feet origin, Y-up).
-        grid_->PlaceBlock(tr, placeType, &position_, &size_);
+        Vector look = GetLookDirection();
+        grid_->PlaceBlock(tr, placeType, &position_, &size_, &look);
     }
 }
 

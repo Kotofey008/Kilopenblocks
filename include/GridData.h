@@ -202,7 +202,8 @@ public:
     int MaxSelIndex() const { return maxSelIndex_; }
     unsigned short ConfigureState(const GridDataTraceResult& tr, unsigned char blockType, const Vector& lookDir);
     bool PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
-                    const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
+                    const Vector* playerPos = nullptr, const Vector* playerSize = nullptr,
+                    const Vector* playerLook = nullptr);
     bool BreakBlock(const GridDataTraceResult& tr);
     void GetCellSelectionBox(int cellIndex, Vector& outMin, Vector& outMax);
     // GetCellCollisionBoxArray @ 0x8xx — up to 4 world-space AABBs for physics.

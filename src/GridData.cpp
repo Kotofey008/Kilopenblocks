@@ -1298,68 +1298,144 @@ static void SetLiquidStateMerge(GridData& g, unsigned char dstType, unsigned sho
     outState = (unsigned short)(outState | (srcState & 0x3fc0));
 }
 
+// Binary facing from look: argmin of {look.x, look.z, -look.x, -look.z}
+// → local_12 in {1, 2, 3, 0} respectively (ConfigureState @ 0x997f0 else-branch).
+static unsigned short BinaryLookFacingXZ(float lx, float lz) {
+    unsigned short face = 1;
+    float best = lx;
+    if (lz < best) { best = lz; face = 2; }
+    if (-lx < best) { best = -lx; face = 3; }
+    if (-lz < best) { face = 0; }
+    return face;
+}
+
+// GetDirectionMarker @ 0x991xx — simplified recovered cases used by ConfigureState.
+// Returns 1 for "upper/special" bit path, other values for BMT7 match, -1 skip.
+static int BinaryGetDirectionMarker(const GridDataTraceResult& tr,
+                                    const Material& mat, const Vector& lookDir) {
+    uint8_t bmt = mat.prop01();
+    if (bmt == 0) {
+        if (mat.height() > 0x0f) return -1;
+        // Partial height: hitY vs cell mid + face YP/YN
+        float cellY = (float)tr.cellY;
+        float hitY = tr.hitPos.y;
+        if (hitY < cellY + 0.5f)
+            return (tr.face == 3) ? 1 : 4; // YN→1 else 4
+        return (tr.face == 2) ? 4 : 1;     // YP→4 else 1
+    }
+    if (bmt == 6 || bmt == 10) {
+        // Binary: hitY vs cellY+eps → 1 or 4 family
+        float cellY = (float)tr.cellY;
+        if (tr.hitPos.y < cellY + 0.5f)
+            return (tr.face != 3) ? 4 : 1; // != YN → *3+1 pattern
+        return (tr.face == 2) ? 4 : 1;
+    }
+    if (bmt == 7) {
+        // Stairs: marker from look vs hit — recovered as face-aligned codes 0/2/3/5
+        (void)lookDir;
+        return tr.face; // used as equality checks against 0/2/3/5 in ConfigureState
+    }
+    return -1;
+}
+
 unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
                                         unsigned char blockType,
                                         const Vector& lookDir) {
-    (void)tr;
-    // Binary ConfigureState @ 0x997f0:
-    //   builds orientation bits in local_12, then ALWAYS calls
-    //   SetLiquidState(type, &local_12, destType, destState) which only ORs
-    //   dest 0x3FC0 into local_12 when mat[type].FTW!=0 AND dest already has liquid.
-    //   It does NOT turn Col=0 / FTW!=0 solids into water.
-    // EntityPlayer after ConfigureState (only special type rewrite):
-    //   if (placeType == 5) { placeType = 0; state = 0xC3C0; }
-    // Type 5 is the sole "place as world liquid" material id in that path.
-
-    // Default solid orientation 0-3 from dominant horizontal look axis
+    // Binary ConfigureState @ 0x997f0 (ghidra). UVR = mat[+0x08].
+    // Branch:
+    //   if (UVR==0 && BMT∉{6,7,10}) → face/trapdoor path; slab bit4 if marker==1
+    //   else → look-based facing 0..3 (UVR≠0 or stairs/door-ish BMT 6/7/10)
     unsigned short state = 0;
-    float lx = lookDir.x, lz = lookDir.z;
-    float ax = std::fabs(lx), az = std::fabs(lz);
-    if (ax >= az) {
-        state = (lx >= 0.f) ? 0 : 1;
-    } else {
-        state = (lz >= 0.f) ? 2 : 3;
+    if (materials.empty() || blockType >= materials.size())
+        return state;
+    const Material& mat = materials[blockType];
+    const uint8_t bmt = mat.prop01();
+    const uint8_t uvr = mat.uvr();
+    const int marker = BinaryGetDirectionMarker(tr, mat, lookDir);
+    const int face = tr.face; // 0..5 project enum
+
+    // --- Initial face bits for BMT 8 / 2 / 3 (torch / ladder / similar) ---
+    if (bmt == 8 || bmt == 2) {
+        if (face >= 0 && face < 6)
+            state = (unsigned short)(state | (unsigned)face);
+        else
+            state = (unsigned short)(state | 1);
+    } else if (bmt == 3) {
+        if (face >= 0 && face <= 5)
+            state = (unsigned short)(state | (unsigned)face);
+        else
+            state = (unsigned short)(state | 1);
     }
 
-    // Binary ConfigureState: for BMT==0 && height<=15 && FullHeightBlockVariant,
-    // GetDirectionMarker==1 → state |= 4 (upper half / upside-down slab).
-    // GetDirectionMarker @ 0x991x for BMT0 partial:
-    //   hitY < cellY+0.5: face==YN → 1 (upper), else 4
-    //   hitY >= cellY+0.5: face==YP → 4, else 1
-    // Only marker==1 ORs bit 4.
-    if (!materials.empty() && blockType < materials.size()) {
-        const Material& mat = materials[blockType];
-        if (mat.prop01() == 0 && mat.height() <= 0x0f && mat.height() != 0 &&
+    const bool useLookFacing =
+        (uvr != 0) || (bmt == 6) || (bmt == 7) || (bmt == 10);
+
+    if (!useLookFacing) {
+        // UVR==0 and not BMT 6/7/10
+        if (bmt == 9) {
+            // Trapdoor: from look X/Z signs (decompile LAB_000a9913)
+            float lx = lookDir.x, lz = lookDir.z;
+            float ax = std::fabs(lx), az = std::fabs(lz);
+            // decompile: local_12 = (lz >= lx); then refine with -lx/-lz
+            state = BinaryLookFacingXZ(lx, lz);
+        }
+        // Slab / partial BMT0: marker==1 → state |= 4
+        if (marker == 1 && bmt == 0 && mat.height() <= 0x0f && mat.height() != 0 &&
             FullHeightBlockVariant(blockType, nullptr)) {
-            // Reconstruct marker from trace face + hit Y within cell
-            float cellY = (float)tr.cellY;
-            float hitY = tr.hitPos.y; // GridDataTraceResult should have hit position
-            int marker;
-            if (hitY < cellY + 0.5f) {
-                // Project face 3 = -Y (binary YN=4)
-                marker = (tr.face == 3) ? 1 : 4;
-            } else {
-                // Project face 2 = +Y (binary YP=1)
-                marker = (tr.face == 2) ? 4 : 1;
-            }
+            state = (unsigned short)(state | 4);
+        }
+    } else {
+        // UVR≠0 OR BMT∈{6,7,10}: encode horizontal facing from player look
+        float lx = lookDir.x, lz = lookDir.z;
+        state = BinaryLookFacingXZ(lx, lz);
+        // Equality of marker to the chosen cardinal (decompile bVar7)
+        bool markerMatch = false;
+        // Map state→expected marker face codes used in decompile:
+        // state 2 → marker==3, state 1 → marker==2, state 3 → marker==5, state 0 → marker==0
+        int expect = 2;
+        if (state == 2) expect = 3;
+        else if (state == 1) expect = 2;
+        else if (state == 3) expect = 5;
+        else if (state == 0) expect = 0;
+        markerMatch = (marker == expect);
+
+        if (bmt == 7) {
+            if (markerMatch)
+                state = (unsigned short)(state | 4);
+        } else if (bmt == 10) {
             if (marker == 1)
                 state = (unsigned short)(state | 4);
+        } else if (bmt == 6) {
+            // stairs: marker path continues to bit4 when marker==1 after face encode
+            if (marker == 1)
+                state = (unsigned short)(state | 4);
+        }
+        // UVR-only BMT0 (furnace/log): state lower bits = facing; no forced bit4 here
+        if (bmt == 0 && marker == 1 && mat.height() <= 0x0f && mat.height() != 0 &&
+            FullHeightBlockVariant(blockType, nullptr)) {
+            state = (unsigned short)(state | 4);
         }
     }
     return state;
 }
 
 bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
-                          const Vector* playerPos, const Vector* playerSize) {
+                          const Vector* playerPos, const Vector* playerSize,
+                          const Vector* playerLook) {
     if (!IsPossibleToAdd(tr, blockType, 0, playerPos, playerSize)) return false;
     int idx = -1; unsigned char face = 0; unsigned char placeType = blockType;
     GetAddingPosition(tr, blockType, idx, face, &placeType);
     int lx = idx % sizeX;
     int ly = (idx / sizeX) % sizeY;
     int lz = idx / (sizeX * sizeY);
+    // Binary ConfigureState uses EntityPlayer look vector, not hit-face normal.
     Vector look(0, 0, 1);
-    if (face == 0 || face == 1) look = Vector(face == 0 ? 1.f : -1.f, 0, 0);
-    else if (face == 4 || face == 5) look = Vector(0, 0, face == 4 ? 1.f : -1.f);
+    if (playerLook) {
+        look = *playerLook;
+    } else {
+        if (face == 0 || face == 1) look = Vector(face == 0 ? 1.f : -1.f, 0, 0);
+        else if (face == 4 || face == 5) look = Vector(0, 0, face == 4 ? 1.f : -1.f);
+    }
 
     // Slab merge → full type (no upper bit; full height block).
     bool slabMerge = (placeType != blockType);
