@@ -47,8 +47,7 @@ private:
 // (mapped at call site).
 class RegionMesher {
 public:
-    // Binary: MeshBuffer 7 layers; PushQuads(..., MBI, ...) → layer[MBI].
-    // layers must point to MeshBuffer[7] (MBI 0..6).
+    // layers[7] — binary MeshBuffer layers indexed by MBI (0..6).
     static void Build(GridData& grid, int originX, int originY, int originZ,
                       const std::vector<BlockDef>& defs, MeshBuffer layers[7],
                       const LightMap* lights = nullptr);

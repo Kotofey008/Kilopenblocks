@@ -14,19 +14,11 @@
 // GLApplication extends ApplicationBase with game loop + world mesh rendering.
 // Draw path uses recovered DrawPrimitive (PCT1Vertex stride 24).
 
-// Binary MeshBuffer has 7 layers (GetTotalIndices loops i=0..6).
-// GridData::Draw → DrawMeshes(layer):
-//   0: opaque (MBI=0) — no alpha test, no blend
-//   1: cutout  (MBI=1) — glAlphaFunc(GEQUAL, 0.5), no blend
-//   2: translucent (MBI=2) — depth-only then SRC_ALPHA/ONE_MINUS_SRC_ALPHA
-//   3: water still  (MBI=3) — fluid texture, animated
-//   4: water flow   (MBI=4)
-//   5: lava still   (MBI=5)
-//   6: lava flow    (MBI=6)
-// PushQuads(this+0x90, MBI, ...) tags faces with MBI as layer index.
+// Binary MeshBuffer: 7 layers; PushQuads(..., MBI, ...) → layer[MBI].
+// DrawMeshes(layer): 0 opaque, 1 cutout GEQUAL 0.5, 2 translucent blend,
+// 3–4 water still/flow, 5–6 lava still/flow.
 struct RegionMesh {
     int ox = 0, oy = 0, oz = 0;
-    // layers[MBI] — binary 7-slot MeshBuffer (MBI 0..6)
     MeshBuffer layers[7];
     bool valid = false;
 };

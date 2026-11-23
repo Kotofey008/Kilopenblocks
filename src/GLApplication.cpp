@@ -458,13 +458,13 @@ void GLApplication::RenderWorld() {
         glEnable(GL_CULL_FACE);
     }
 
-    // Binary GridData::Draw → DrawMeshes(layer) with RenderState per MBI:
-    //   0 opaque:   no alpha test, no blend, blocks atlas
-    //   1 cutout:   AlphaFunc(GEQUAL, 0x80/255), no blend
-    //   2 translucent: depth-only (colorMask 0) then SRC_ALPHA/ONE_MINUS_SRC_ALPHA
-    //   3–4 water:  water texture + UV scroll; blend
-    //   5–6 lava:   lava texture + UV scroll; blend
-    // Order matches binary: 0, (5), 1, 2, 3–4, (6) — we draw 0,1,2,3,4,5,6.
+    glEnable(GL_TEXTURE_2D);
+    blocksAtlas_.Bind();
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glColor4f(1.f, 1.f, 1.f, 1.f);
+    // Binary GridData::Draw → DrawMeshes(layer) per MBI:
+    //   0 opaque, 1 cutout AlphaFunc(GEQUAL,0.5), 2 translucent blend,
+    //   3–4 water, 5–6 lava. NeedFace/BH geometry unchanged — only layer routing.
     auto drawLayer = [&](int layer) {
         for (auto& rm : regionMeshes_) {
             if (!rm.valid || rm.layers[layer].IndexCount() <= 0) continue;
@@ -485,24 +485,20 @@ void GLApplication::RenderWorld() {
     glEnable(GL_CULL_FACE);
 #endif
     blocksAtlas_.Bind();
-    // Layer 0 — MBI=0 fully opaque
-    drawLayer(0);
+    drawLayer(0); // MBI=0 opaque
 
 #if defined(__ANDROID__)
-    // Layer 1 — MBI=1 cutout: AlphaFunc GEQUAL ref 0x80 (binary 0x206, 0x80)
     glEnable(GL_ALPHA_TEST);
     glAlphaFunc(GL_GEQUAL, 128.f / 255.f);
     glDisable(GL_BLEND);
 #endif
     blocksAtlas_.Bind();
-    drawLayer(1);
+    drawLayer(1); // MBI=1 cutout
 #if defined(__ANDROID__)
     glDisable(GL_ALPHA_TEST);
 #endif
 
 #if defined(__ANDROID__)
-    // Layer 2 — MBI=2 translucent ice/etc.
-    // Binary: optional depth-only pass (colorMask 0) then blend draw.
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
     drawLayer(2);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -511,12 +507,11 @@ void GLApplication::RenderWorld() {
     glDepthMask(GL_FALSE);
 #endif
     blocksAtlas_.Bind();
-    drawLayer(2);
+    drawLayer(2); // MBI=2 translucent
 #if defined(__ANDROID__)
     glDepthMask(GL_TRUE);
 #endif
 
-    // Layers 3–4 water (MBI 3 still / 4 flowing) + world water cells
 #if defined(__ANDROID__)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -533,7 +528,6 @@ void GLApplication::RenderWorld() {
     drawLayer(3);
     drawLayer(4);
 
-    // Layers 5–6 lava
 #if defined(__ANDROID__)
     glMatrixMode(GL_TEXTURE);
     glLoadIdentity();
