@@ -175,9 +175,15 @@ public:
     bool FindFirstUsedCell(const Vector& from, const Vector& to, float& outT, int& outCellIndex);
     bool IsHidden(int regionCoordA, int regionCoordB) const;
     void TracePoint(const Vector& from, const Vector& to, GridDataTraceResult& result, void* entity);
-    bool GetAddingPosition(const GridDataTraceResult& tr, unsigned char blockType, int& outCellIndex, unsigned char& outFace);
+    // GetAddingPosition @ 0x99240 — neighbour cell, or same cell + full type when
+    // stacking matching partial BH slabs (FullHeightBlockVariant merge).
+    bool GetAddingPosition(const GridDataTraceResult& tr, unsigned char blockType,
+                           int& outCellIndex, unsigned char& outFace,
+                           unsigned char* outType = nullptr);
     bool IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char blockType, int flags,
                          const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
+    // FullHeightBlockVariant @ 0x98f20 — BMT0 + height!=0x10 → find UV-matching height==0x10 type
+    bool FullHeightBlockVariant(unsigned char partialType, unsigned char* outFullType) const;
     // Material S-Index (+0x20 short) → cell type; binary MtlSelIndexToCell @ 0x98ed0
     unsigned char MtlSelIndexToCell(int selIndex) const;
     int CellToMtlSelIndex(unsigned char cellType) const;

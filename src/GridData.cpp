@@ -1014,11 +1014,76 @@ void GridData::TracePoint(const Vector& from, const Vector& to,
     result.face = face;
 }
 
-// GetAddingPosition (0x99240, 743 B)
-bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char /*blockType*/,
-                                 int& outCellIndex, unsigned char& outFace) {
+// FullHeightBlockVariant @ 0x98f20
+// BMT==0 && height!=0x10: scan materials for height==0x10 with matching UV faces
+// (memcmp Uxp..Uzn and Vxp..Vzn). Returns that full type id when found.
+bool GridData::FullHeightBlockVariant(unsigned char partialType, unsigned char* outFullType) const {
+    if (materials.empty() || partialType >= materials.size()) return false;
+    const Material& src = materials[partialType];
+    if (src.prop01() != 0) return false;
+    if (src.height() == 0x10) return false;
+    for (int i = 1; i < (int)materials.size(); ++i) {
+        const Material& cand = materials[i];
+        if (cand.height() != 0x10) continue;
+        // Binary: memcmp mat+0x0c.. (6 U) and mat+0x12.. (6 V)
+        if (std::memcmp(&cand.raw[0x0c], &src.raw[0x0c], 6) != 0) continue;
+        if (std::memcmp(&cand.raw[0x12], &src.raw[0x12], 6) != 0) continue;
+        if (outFullType) *outFullType = (unsigned char)i;
+        return true;
+    }
+    if (outFullType) *outFullType = partialType;
+    return false;
+}
+
+// GetAddingPosition @ 0x99240
+// Default: step to neighbour along hit face.
+// Merge (binary): placing BMT0 onto existing BMT0 with height<=15 when
+//   face is top of bottom-slab (our face 2 / binary YP=1) or bottom of top-slab
+//   (our face 3 / binary YN=4), and both share the same FullHeightBlockVariant
+//   → write full type into the SAME cell.
+bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char blockType,
+                                 int& outCellIndex, unsigned char& outFace,
+                                 unsigned char* outType) {
     if (!tr.hit) return false;
-    if (tr.blockType == 0x4c) return false; // binary reject
+    if (tr.blockType == 0x4c) return false;
+
+    outFace = (unsigned char)tr.face;
+    if (outType) *outType = blockType;
+
+    int hitIdx = CoordToIndex(tr.cellX, tr.cellY, tr.cellZ);
+    outCellIndex = hitIdx;
+
+    // --- slab merge path (binary GetAddingPosition) ---
+    if (hitIdx >= 0 && hitIdx < (int)cellTypes.size() &&
+        !materials.empty() && blockType < materials.size()) {
+        unsigned char existType = cellTypes[hitIdx];
+        const Material* placeMat = GetMaterial((int)blockType);
+        const Material* existMat = GetMaterial((int)existType);
+        if (placeMat && existMat &&
+            placeMat->prop01() == 0 && existMat->prop01() == 0 &&
+            existMat->height() <= 0x0f) {
+            unsigned short est = (hitIdx < (int)cellStates.size()) ? cellStates[hitIdx] : 0;
+            // Project faces: 2=+Y (binary YP=1), 3=-Y (binary YN=4)
+            bool mergeFace = false;
+            if (tr.face == 2) {
+                // top of bottom slab
+                if ((est & 4) == 0) mergeFace = true;
+            } else if (tr.face == 3) {
+                // bottom of top slab
+                if ((est & 4) != 0) mergeFace = true;
+            }
+            if (mergeFace) {
+                unsigned char fullPlace = 0, fullExist = 0;
+                if (FullHeightBlockVariant(blockType, &fullPlace) &&
+                    FullHeightBlockVariant(existType, &fullExist) &&
+                    fullPlace == fullExist) {
+                    if (outType) *outType = fullPlace;
+                    outCellIndex = hitIdx;
+                    return true;
+                }
+            }
+        }
+    }
 
     int x = tr.cellX, y = tr.cellY, z = tr.cellZ;
     switch (tr.face) {
@@ -1031,24 +1096,22 @@ bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char /*
         default: break;
     }
     outCellIndex = CoordToIndex(x, y, z);
-    outFace = (unsigned char)tr.face;
     return outCellIndex >= 0;
 }
 
 bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char blockType, int /*flags*/,
                                const Vector* playerPos, const Vector* playerSize) {
-    int idx = -1; unsigned char face = 0;
-    if (!GetAddingPosition(tr, blockType, idx, face)) return false;
+    int idx = -1; unsigned char face = 0; unsigned char placeType = blockType;
+    if (!GetAddingPosition(tr, blockType, idx, face, &placeType)) return false;
     if (idx < 0 || idx >= (int)cellTypes.size()) return false;
-    // Destination must be empty OR replaceable liquid (water). Binary allows
-    // placing into water cells so streams can be blocked / seabed filled.
+    // Destination empty / liquid, OR same-cell slab merge (placeType is full variant).
     {
         unsigned char dt = cellTypes[idx];
         unsigned short st = (idx < (int)cellStates.size()) ? cellStates[idx] : 0;
         bool empty = (dt == 0 && !HasLiquidState(st));
-        // Binary allows placing into liquid cells (type 0 + fluid state)
         bool liquid = (dt == 0 && HasLiquidState(st));
-        if (!empty && !liquid) return false;
+        bool slabMerge = (placeType != blockType);
+        if (!empty && !liquid && !slabMerge) return false;
     }
 
     // Entity list walk @ 0x99630: virtual Intersects(cellX,cellY,cellZ) on each entity.
@@ -1160,28 +1223,62 @@ unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
     } else {
         state = (lz >= 0.f) ? 2 : 3;
     }
+
+    // Binary ConfigureState: for BMT==0 && height<=15 && FullHeightBlockVariant,
+    // GetDirectionMarker==1 → state |= 4 (upper half / upside-down slab).
+    // GetDirectionMarker @ 0x991x for BMT0 partial:
+    //   hitY < cellY+0.5: face==YN → 1 (upper), else 4
+    //   hitY >= cellY+0.5: face==YP → 4, else 1
+    // Only marker==1 ORs bit 4.
+    if (!materials.empty() && blockType < materials.size()) {
+        const Material& mat = materials[blockType];
+        if (mat.prop01() == 0 && mat.height() <= 0x0f && mat.height() != 0 &&
+            FullHeightBlockVariant(blockType, nullptr)) {
+            // Reconstruct marker from trace face + hit Y within cell
+            float cellY = (float)tr.cellY;
+            float hitY = tr.hitPos.y; // GridDataTraceResult should have hit position
+            int marker;
+            if (hitY < cellY + 0.5f) {
+                // Project face 3 = -Y (binary YN=4)
+                marker = (tr.face == 3) ? 1 : 4;
+            } else {
+                // Project face 2 = +Y (binary YP=1)
+                marker = (tr.face == 2) ? 4 : 1;
+            }
+            if (marker == 1)
+                state = (unsigned short)(state | 4);
+        }
+    }
     return state;
 }
 
 bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType,
                           const Vector* playerPos, const Vector* playerSize) {
     if (!IsPossibleToAdd(tr, blockType, 0, playerPos, playerSize)) return false;
-    int idx = -1; unsigned char face = 0;
-    GetAddingPosition(tr, blockType, idx, face);
+    int idx = -1; unsigned char face = 0; unsigned char placeType = blockType;
+    GetAddingPosition(tr, blockType, idx, face, &placeType);
     int lx = idx % sizeX;
     int ly = (idx / sizeX) % sizeY;
     int lz = idx / (sizeX * sizeY);
     Vector look(0, 0, 1);
     if (face == 0 || face == 1) look = Vector(face == 0 ? 1.f : -1.f, 0, 0);
     else if (face == 4 || face == 5) look = Vector(0, 0, face == 4 ? 1.f : -1.f);
-    unsigned short state = ConfigureState(tr, blockType, look);
+
+    // Slab merge → full type (no upper bit; full height block).
+    bool slabMerge = (placeType != blockType);
+    unsigned short state = 0;
+    if (slabMerge) {
+        state = 0;
+    } else {
+        state = ConfigureState(tr, placeType, look);
+    }
 
     // World liquid cells: type 0 + state (never persist material id 5 as cell type)
-    unsigned char writeType = blockType;
+    unsigned char writeType = placeType;
     bool liquidPlace = HasLiquidState(state);
-    if (blockType == 5) liquidPlace = true;
-    if (!materials.empty() && blockType < materials.size()) {
-        const Material& mat = materials[blockType];
+    if (placeType == 5) liquidPlace = true;
+    if (!materials.empty() && placeType < materials.size()) {
+        const Material& mat = materials[placeType];
         if (mat.raw[0x1c] != 0 && !mat.col()) liquidPlace = true;
     }
     if (liquidPlace) {
