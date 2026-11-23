@@ -1005,11 +1005,14 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
         glEnable(GL_TEXTURE_2D);
         glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
         glColor4f(1, 1, 1, 1);
-        // GridData::GetBlockIcon @ 0x8e3a0 — MeshBuffer + PushQuads.
+        // GridData::GetBlockIcon @ 0x8e3a0 + RenderGridModelMtlArray.
         // Solid branch (BMT==4 || BMT<2 || BMT==3 || BMT==7):
-        //   height = mat[+0x00]; if height != 0, vertex Y shorts that were non-zero
-        //   become (height << 3) in 0..128 mesh space, and UV V1 = tileV*-0x70 - height.
-        // Full BH (0x10) → Y=0x80; slab BH=8 → Y=0x40; snow BH=1 → Y=8.
+        //   ONE PushQuads (param_11=1) — a single textured quad, not a 3-face mesh.
+        //   height = mat[+0x00]; if height != 0:
+        //     geometry Y components that were non-zero become (height << 3) in 0..128 space;
+        //     UV: V0 = (tv*0x11 - 0x70) - height, V1 = tv*0x11 - 0x70
+        //       → bottom `height/16` of the atlas tile (full tile span is 16 units).
+        // RenderGridModelMtlArray then places that mesh into the UI cell with MtlScale.
         auto drawTexQuadUV = [&](const GLfloat* verts, float u0, float v0, float u1, float v1) {
             const GLfloat uvs[] = { u0,v0, u1,v0, u1,v1, u0,v1 };
             glEnableClientState(GL_VERTEX_ARRAY);
@@ -1037,7 +1040,7 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             float cw = x1 - x0, ch = y1 - y0;
             float cx = (x0 + x1) * 0.5f;
             int bmt = (int)mat->prop01();
-            // UV tile for solid-branch icons: mat[+0x0e]/[+0x14] (ZP U/V), same as binary.
+            // Binary solid-branch UV bases: mat[+0x0e]/[+0x14] (signed char)*0x11 ± 0x80/0x70
             int tu = (int)(signed char)mat->raw[0x0e];
             int tv = (int)(signed char)mat->raw[0x14];
             if (tu < 0) tu = 0;
@@ -1046,11 +1049,11 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             float xx0 = x0 + inset, xx1 = x1 - inset;
             float yy0 = y0 + inset, yy1 = y1 - inset;
 
-            // height units after LoadMaterials (1..16). Binary: if (*mat != 0) scale mesh.
-            int ht = (int)mat->height();
+            int ht = (int)mat->height(); // after LoadMaterials BH gate
             const bool solidBranch = (bmt == 4 || bmt < 2 || bmt == 3 || bmt == 7);
 
             if (bmt == 2) {
+                // Torch branch: separate templates (ebx+0xcdc / +0xd3c) — thin vertical.
                 tu = (int)mat->uFace(0);
                 tv = (int)mat->vFace(0);
                 xx0 = cx - cellW * 0.12f;
@@ -1065,83 +1068,27 @@ void UIDocument::DrawElement(const UIElement& e, float clipX, float clipY, float
             }
 
             if (solidBranch) {
-                // Isometric 3-face icon in cell, mesh space analogous to 0..128 with
-                // Y extent = (ht << 3) when ht != 0 (full 0x10 → 0x80).
-                if (ht <= 0) ht = 16; // height 0 uses unscaled template; treat as full for UI solid
-                float hFrac = (float)ht / 16.f;
-                if (hFrac > 1.f) hFrac = 1.f;
-                // Bottom-align partial blocks in the cell (world BH sits on floor).
-                float bodyH = (yy1 - yy0) * hFrac;
-                float base = yy1;
-                float top = yy1 - bodyH;
-                float midY = (top + base) * 0.5f;
-                float halfW = (xx1 - xx0) * 0.5f;
-                // Diamond top + two side faces (classic inventory isometric).
+                // Single-quad icon. height==0 uses unscaled template; height!=0 scales
+                // Y to (height<<3)/128 = height/16 and crops V to bottom height units
+                // of the 16-unit tile (GetBlockIcon iVar4 = iVar6 - height).
                 float u0, v0, u1, v1;
-                // Top face uses YP tiles when available; sides use XP/ZP.
-                int tuTop = (int)mat->uFace(1), tvTop = (int)mat->vFace(1);
-                int tuR = (int)mat->uFace(0), tvR = (int)mat->vFace(0);
-                int tuL = (int)mat->uFace(2), tvL = (int)mat->vFace(2);
-                Texture::TileUV(tuTop, tvTop, u0, v0, u1, v1);
-                // Top diamond (full tile — top of slab is full footprint).
-                {
-                    float tc = top;
-                    float peak = top - (yy1 - yy0) * 0.18f * hFrac; // slight lift for iso peak
-                    // flatter top for readability
-                    peak = top - (base - top) * 0.35f;
-                    if (peak > top) peak = top;
-                    // Use parallelogram top: left, top, right, bottom of diamond at `top` plane
-                    float tMid = top;
-                    float drop = (base - top) * 0.22f;
-                    GLfloat verts[] = {
-                        cx,           tMid - drop,           // top
-                        xx1,          tMid + (base - top) * 0.15f, // right
-                        cx,           tMid + (base - top) * 0.30f, // bottom
-                        xx0,          tMid + (base - top) * 0.15f  // left
-                    };
-                    // reorder as fan from top-left style
-                    GLfloat vfan[] = {
-                        verts[6], verts[7],
-                        verts[0], verts[1],
-                        verts[2], verts[3],
-                        verts[4], verts[5]
-                    };
-                    drawTexQuadUV(vfan, u0, v0, u1, v1);
+                Texture::TileUV(tu, tv, u0, v0, u1, v1);
+                if (ht != 0) {
+                    float hFrac = (float)ht / 16.f;
+                    if (hFrac > 1.f) hFrac = 1.f;
+                    if (hFrac < 0.f) hFrac = 0.f;
+                    // Bottom-align in cell (mesh sits on floor of 0..128 box).
+                    float bodyH = (yy1 - yy0) * hFrac;
+                    yy0 = yy1 - bodyH;
+                    // UV: keep tile bottom (v1), raise v0 toward v1 by hFrac.
+                    v0 = v1 + (v0 - v1) * hFrac;
                 }
-                // Right face (XP): UV V cropped to bottom hFrac of tile (binary V1 -= height units).
-                Texture::TileUV(tuR, tvR, u0, v0, u1, v1);
-                {
-                    float sv0 = v1 + (v0 - v1) * hFrac; // keep bottom of tile, shrink toward top
-                    float rTop = top + (base - top) * 0.15f;
-                    float rBot = base;
-                    float rPeak = top + (base - top) * 0.30f;
-                    GLfloat verts[] = {
-                        cx,  rPeak,
-                        xx1, rTop,
-                        xx1, rBot,
-                        cx,  rBot
-                    };
-                    drawTexQuadUV(verts, u0, sv0, u1, v1);
-                }
-                // Left face (ZP)
-                Texture::TileUV(tuL, tvL, u0, v0, u1, v1);
-                {
-                    float sv0 = v1 + (v0 - v1) * hFrac;
-                    float lTop = top + (base - top) * 0.15f;
-                    float lBot = base;
-                    float lPeak = top + (base - top) * 0.30f;
-                    GLfloat verts[] = {
-                        xx0, lTop,
-                        cx,  lPeak,
-                        cx,  lBot,
-                        xx0, lBot
-                    };
-                    drawTexQuadUV(verts, u0, sv0, u1, v1);
-                }
+                const GLfloat verts[] = { xx0, yy0, xx1, yy0, xx1, yy1, xx0, yy1 };
+                drawTexQuadUV(verts, u0, v0, u1, v1);
                 continue;
             }
 
-            // BMT 5/6/8/9/10: face0 tile until specialized icon templates ported.
+            // Other BMT: face0 tile; still apply BH crop when height in 1..15.
             tu = (int)mat->uFace(0);
             tv = (int)mat->vFace(0);
             {

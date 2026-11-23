@@ -678,18 +678,14 @@ void GLApplication::DrawMenuMaterialSlots(int /*screenW*/, int /*screenH*/) {
         const Material* mat = grid.GetMaterial(cell);
         if (!mat) continue;
 
-        // GridData::GetBlockIcon @ 0x8e3a0 — height = mat[+0x00]; when != 0,
-        // mesh Y components become (height<<3) in 0..128 space and UV V is
-        // reduced by height (partial BH icons match world slab proportions).
+        // GetBlockIcon @ 0x8e3a0 solid branch: single PushQuads (1 quad).
+        // height!=0 → Y scale (height<<3)/128 and UV V0 = V1 - height (tile units).
         float pad = r.w * 0.12f;
         float xx0 = r.x + pad, yy0 = r.y + pad;
         float xx1 = r.x + r.w - pad, yy1 = r.y + r.h - pad;
         float cx = (xx0 + xx1) * 0.5f;
         int bmt = (int)mat->prop01();
         int ht = (int)mat->height();
-        if (ht <= 0) ht = 16;
-        float hFrac = (float)ht / 16.f;
-        if (hFrac > 1.f) hFrac = 1.f;
 
         auto drawQuad = [&](const GLfloat* verts, float u0, float v0, float u1, float v1) {
             const GLfloat uvs[] = { u0,v0, u1,v0, u1,v1, u0,v1 };
@@ -702,57 +698,34 @@ void GLApplication::DrawMenuMaterialSlots(int /*screenW*/, int /*screenH*/) {
             glDisableClientState(GL_VERTEX_ARRAY);
         };
 
-        // Solid-branch isometric (BMT==4 || BMT<2 || BMT==3 || BMT==7) with BH scale.
-        if (bmt == 4 || bmt < 2 || bmt == 3 || bmt == 7) {
-            float bodyH = (yy1 - yy0) * hFrac;
-            float base = yy1;
-            float top = yy1 - bodyH;
+        int tu = (int)(signed char)mat->raw[0x0e];
+        int tv = (int)(signed char)mat->raw[0x14];
+        if (tu < 0) tu = 0;
+        if (tv < 0) tv = 0;
+
+        if (bmt == 2) {
+            tu = (int)mat->uFace(0);
+            tv = (int)mat->vFace(0);
+            xx0 = cx - r.w * 0.12f;
+            xx1 = cx + r.w * 0.12f;
             float u0, v0, u1, v1;
-            int tuTop = (int)mat->uFace(1), tvTop = (int)mat->vFace(1);
-            int tuR = (int)mat->uFace(0), tvR = (int)mat->vFace(0);
-            int tuL = (int)mat->uFace(2), tvL = (int)mat->vFace(2);
-            Texture::TileUV(tuTop, tvTop, u0, v0, u1, v1);
-            {
-                float drop = (base - top) * 0.22f;
-                GLfloat vfan[] = {
-                    xx0, top + (base - top) * 0.15f,
-                    cx,  top - drop,
-                    xx1, top + (base - top) * 0.15f,
-                    cx,  top + (base - top) * 0.30f
-                };
-                drawQuad(vfan, u0, v0, u1, v1);
-            }
-            Texture::TileUV(tuR, tvR, u0, v0, u1, v1);
-            {
-                float sv0 = v1 + (v0 - v1) * hFrac;
-                GLfloat verts[] = {
-                    cx,  top + (base - top) * 0.30f,
-                    xx1, top + (base - top) * 0.15f,
-                    xx1, base,
-                    cx,  base
-                };
-                drawQuad(verts, u0, sv0, u1, v1);
-            }
-            Texture::TileUV(tuL, tvL, u0, v0, u1, v1);
-            {
-                float sv0 = v1 + (v0 - v1) * hFrac;
-                GLfloat verts[] = {
-                    xx0, top + (base - top) * 0.15f,
-                    cx,  top + (base - top) * 0.30f,
-                    cx,  base,
-                    xx0, base
-                };
-                drawQuad(verts, u0, sv0, u1, v1);
-            }
+            Texture::TileUV(tu, tv, u0, v0, u1, v1);
+            const GLfloat verts[] = { xx0,yy0, xx1,yy0, xx1,yy1, xx0,yy1 };
+            drawQuad(verts, u0, v0, u1, v1);
             continue;
         }
 
-        // Fallback: flat face0 with BH crop (same UV rule as world side faces).
-        int tu = mat->uFace(0);
-        int tv = mat->vFace(0);
+        if (!(bmt == 4 || bmt < 2 || bmt == 3 || bmt == 7)) {
+            tu = (int)mat->uFace(0);
+            tv = (int)mat->vFace(0);
+        }
+
         float u0, v0, u1, v1;
         Texture::TileUV(tu, tv, u0, v0, u1, v1);
-        if (ht > 0 && ht < 16) {
+        if (ht != 0) {
+            float hFrac = (float)ht / 16.f;
+            if (hFrac > 1.f) hFrac = 1.f;
+            if (hFrac < 0.f) hFrac = 0.f;
             float bodyH = (yy1 - yy0) * hFrac;
             yy0 = yy1 - bodyH;
             v0 = v1 + (v0 - v1) * hFrac;
