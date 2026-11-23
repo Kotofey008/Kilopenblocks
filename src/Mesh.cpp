@@ -48,21 +48,19 @@ void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
 // neighbour offset).
 // ---------------------------------------------------------------------------
 int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
-    // NeedFace* @ 0x833d0 family — class jump in binary; class 0 height rules below
-    // recovered from Material+0x00 (BH) + state bit4 (upside-down) consumers in
-    // NeedFaceYP/YN world-boundary paths and AddBlockFace class-0 geometry.
+    // NeedFace* @ 0x833d0 family — per-class jump in binary.
     //
-    // BH (height units 1..16 after LoadMaterials gating):
-    //   height==0x10 → full cell solid (may fully occlude neighbour faces)
-    //   height in 1..0x0F → partial column (slab/snow/bed…). Does NOT fully
-    //     occlude a neighbour's face: neighbour side/top faces stay visible;
-    //     self emits partial geometry (return 2).
-    //   state&4 on class 0 → slab flush to cell top (upside-down).
+    // Adjacent-face cull (drop shared face between two cells) runs ONLY when
+    // BOTH materials satisfy (after LoadMaterials gating):
+    //   BMT (+0x01) == 0
+    //   height (+0x00) == 0x10  // file BH 0 or 16 → full cell; BH 1..15 partial
+    //   MBI  (+0x02) == 0       // fully opaque
+    // Any other neighbour (slab, glass MBI=1, ice MBI=2, leaves, BMT≠0, air, …)
+    // does NOT suppress the face.
     int selfIdx = grid.CoordToIndex(x, y, z);
     if (selfIdx < 0) return 0;
     unsigned char selfType = grid.cellTypes[selfIdx];
     if (selfType == 0) return 0;
-    unsigned short selfSt = (selfIdx < (int)grid.cellStates.size()) ? grid.cellStates[selfIdx] : 0;
 
     int nx = x, ny = y, nz = z;
     switch (face) {
@@ -72,117 +70,41 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
         default: return 0;
     }
     int nIdx = grid.CoordToIndex(nx, ny, nz);
-    if (nIdx < 0) {
-        // World boundary: class-0 partial still needs side/top faces (NeedFaceYP
-        // boundary path returns 1/2 from height/state).
-        const Material* sm = grid.GetMaterial((int)selfType);
-        if (sm && sm->prop01() == 0) {
-            uint8_t ht = sm->height();
-            if (ht != 0 && ht < 0x10) return 2;
-        }
-        return 1;
-    }
-
-    unsigned char nType = grid.cellTypes[nIdx];
-    unsigned short nSt = (nIdx < (int)grid.cellStates.size()) ? grid.cellStates[nIdx] : 0;
     const Material* selfMat = grid.GetMaterial((int)selfType);
-    const Material* nMat = grid.GetMaterial((int)nType);
 
-    // Full opaque solid: BMT==0, Col, not All-faces, height==0x10, FTL==0.
-    auto isFullOpaqueSolid = [](unsigned char t, const Material* mat) -> bool {
-        if (t == 0) return false;
-        if (!mat) return true;
-        if (mat->prop01() != 0) return false;
-        if (!mat->col()) return false;
-        if (mat->allFaces()) return false;
-        if (mat->height() != 0x10) return false;
-        if (mat->flowPerm(0) != 0) return false;
+    auto isMutualOccluder = [](unsigned char t, const Material* mat) -> bool {
+        if (t == 0 || !mat) return false;
+        if (mat->prop01() != 0) return false;     // BMT
+        if (mat->height() != 0x10) return false;  // full BH only
+        if (mat->prop02() != 0) return false;     // MBI
         return true;
     };
 
-    // Class 0 partial height (slab / snow / bed half / plate).
     auto isPartialHeight = [](const Material* mat) -> bool {
         if (!mat || mat->prop01() != 0) return false;
         uint8_t ht = mat->height();
         return ht != 0 && ht < 0x10;
     };
 
-    // Non-cube models (not including partial-height solids — those are solid geometry).
-    auto isNonSolidModel = [](unsigned char t, const Material* mat) -> bool {
-        if (t == 0) return false;
-        if (!mat) return false;
-        uint8_t cls = mat->prop01();
-        if (cls >= 1 && cls <= 10) return true;
-        if (cls == 0) {
-            if (mat->allFaces()) return true;
-            if (mat->flowPerm(0) != 0) return true;
-            if (!mat->col()) return true;
-        }
-        return false;
-    };
-
-    // Does neighbour fully occlude this face of self?
-    // Partial-height solids NEVER fully occlude (side faces of neighbours stay;
-    // only a full-height opaque solid covers completely).
-    auto coversFaceFully = [&](unsigned char t, const Material* mat,
-                               unsigned short /*st*/, int /*whichFace*/) -> bool {
-        if (t == 0) return false;
-        if (isFullOpaqueSolid(t, mat)) return true;
-        if (!mat) return false;
-        uint8_t cls = mat->prop01();
-        if (cls == 1 || cls == 2 || cls == 4) return false; // cross / torch
-        if (cls >= 3 && cls <= 10) {
-            // Stairs/door/etc. do not fully cover a full neighbour face.
-            return false;
-        }
-        if (cls == 0) {
-            if (!mat->col()) return false;
-            // Alpha leaves/glass: still treated as covering for solid cull of
-            // hidden interior faces (All / FTL path) — full cell coverage.
-            if (mat->allFaces()) return true;
-            if (mat->flowPerm(0) != 0) return true;
-            // Partial BH: does not fully cover any face of the neighbour.
-            if (isPartialHeight(mat)) return false;
-            return mat->height() == 0x10;
-        }
-        return false;
-    };
-
-    const bool selfPartial = isPartialHeight(selfMat);
-    const bool neighPartial = isPartialHeight(nMat);
-    const bool selfNS = isNonSolidModel(selfType, selfMat);
-    const bool neighNS = isNonSolidModel(nType, nMat);
-
-    // Alpha / decorative pairs: mutual cull (same idea as water|water).
-    // Partial-height solids are NOT in this set — two slabs still emit faces.
-    if (selfNS && neighNS)
-        return 0;
-
-    if (coversFaceFully(nType, nMat, nSt, face)) {
-        // Full solid neighbour occludes this face entirely.
-        // Exception: self is partial-height and the contact is a SIDE face —
-        // binary still emits the slab's short side against a full block
-        // (geometry only fills y0..y1). Y faces against full solid: cull.
-        if (selfPartial && (face == 0 || face == 1 || face == 4 || face == 5))
-            return 2;
-        return 0;
+    if (nIdx < 0) {
+        if (isPartialHeight(selfMat)) return 2;
+        return 1;
     }
 
-    // Exposed: air, partial neighbour, or non-covering model.
-    if (selfPartial) {
-        // Optional: two equal-height bottom/top slabs sharing a side still emit
-        // (no mutual full cover). Return 2 → AddBlockFace class-0 slab path.
-        (void)neighPartial;
-        (void)selfSt;
+    unsigned char nType = grid.cellTypes[nIdx];
+    const Material* nMat = grid.GetMaterial((int)nType);
+
+    // Only full opaque solid touching full opaque solid → cull shared face.
+    if (isMutualOccluder(selfType, selfMat) && isMutualOccluder(nType, nMat))
+        return 0;
+
+    if (isPartialHeight(selfMat))
         return 2;
-    }
+
     if (selfMat) {
         uint8_t cls = selfMat->prop01();
         if (cls == 6 || cls == 7 || cls == 10) return 2;
-        if (selfNS) return 1;
     }
-    if (isFullOpaqueSolid(selfType, selfMat))
-        return 1;
     return 1;
 }
 
