@@ -488,28 +488,40 @@ void GLApplication::RenderWorld() {
     drawLayer(0); // MBI=0 opaque
 
 #if defined(__ANDROID__)
+    // Layer 1 — MBI=1 cutout (binary: AlphaFunc GEQUAL, ref 0x80)
     glEnable(GL_ALPHA_TEST);
     glAlphaFunc(GL_GEQUAL, 128.f / 255.f);
     glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
 #endif
     blocksAtlas_.Bind();
-    drawLayer(1); // MBI=1 cutout
+    drawLayer(1);
 #if defined(__ANDROID__)
     glDisable(GL_ALPHA_TEST);
 #endif
 
 #if defined(__ANDROID__)
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-    drawLayer(2);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    // Layer 2 — MBI=2 translucent (binary DrawMeshes 2,2):
+    //   optional depth-only pass (colorMask 0) then color+blend.
+    // Depth func must be LEQUAL on the color pass: after depth-only the Z buffer
+    // already holds equal values; GL_LESS would discard every fragment (invisible ice).
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);
-#endif
-    blocksAtlas_.Bind();
-    drawLayer(2); // MBI=2 translucent
-#if defined(__ANDROID__)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // 0x302 / 0x303
+    glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_TRUE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    blocksAtlas_.Bind();
+    drawLayer(2); // depth pre-pass
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_FALSE); // binary keeps depth from pre-pass; color composites
+    blocksAtlas_.Bind();
+    drawLayer(2); // color + blend
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_BLEND);
+#else
+    blocksAtlas_.Bind();
+    drawLayer(2);
 #endif
 
 #if defined(__ANDROID__)

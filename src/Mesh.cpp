@@ -715,9 +715,9 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             mbi = 0;
 
         MeshBuffer& dst = layers[mbi];
-
-        // MBI 3–6 test override: same solid geometry, UV 0..1 for fluid texture at draw
-        const bool fluidOverride = (mbi >= 3 && mbi <= 6);
+        // MBI 3–6: still solid block geometry (AddBlockFace / models). No liquid
+        // meshing (WaterNeedFace / height field). Draw binds water/lava texture
+        // for those layers — texture override only (binary layer routing).
 
         uint8_t cls = mat->prop01();
         if (cls == 1 || cls == 4) {
@@ -731,16 +731,7 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             for (int face = 0; face < 6; ++face) {
                 int nf = NeedFace(grid, wx, wy, wz, face);
                 if (nf == 0) continue;
-                if (fluidOverride) {
-                    // Keep BH-aware geometry from AddBlockFace path when partial
-                    if (mat->height() != 0 && mat->height() < 0x10)
-                        AddBlockFace(dst, grid, wx, wy, wz, *mat, face, nf, lights);
-                    else
-                        EmitFace(dst, wx, wy, wz, face, 0.f, 0.f, 1.f, 1.f,
-                                 FaceColor(lights, wx, wy, wz, face));
-                } else {
-                    AddBlockFace(dst, grid, wx, wy, wz, *mat, face, nf, lights);
-                }
+                AddBlockFace(dst, grid, wx, wy, wz, *mat, face, nf, lights);
             }
         } else {
             for (int face = 0; face < 6; ++face) {
