@@ -92,9 +92,11 @@ private:
     // Geometry helpers used by AddBlockFace
     static void EmitAxisFace(MeshBuffer& out, float x0, float y0, float z0,
                              float x1, float y1, float z1, int ourFace,
-                             float u0, float v0, float u1, float v1, uint32_t color);
+                             float u0, float v0, float u1, float v1, uint32_t color,
+                             int uvRot = 0);
     static void EmitFace(MeshBuffer& out, int x, int y, int z, int face,
-                         float u0, float v0, float u1, float v1, uint32_t color);
+                         float u0, float v0, float u1, float v1, uint32_t color,
+                         int uvRot = 0);
     static void EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, int z, int face,
                               float u0, float v0, float u1, float v1, uint32_t color);
 

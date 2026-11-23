@@ -248,33 +248,33 @@ int RegionMesher::BinToOurFace(int binFace) {
 }
 
 // Map world face → material face for UVR-oriented blocks (ConfigureState facing).
-// Binary facing state&3 from argmin{look.x,look.z,-look.x,-look.z}:
-//   0 = front +Z, 1 = front -X, 2 = front -Z, 3 = front +X
-// Material faces stored for identity placement (front = +Z / bin ZP).
+// Binary state&3 = argmin{look.x, look.z, -look.x, -look.z} from ConfigureState.
+// Observed: that encoding points *along* look; block front must face the player
+// (opposite look), so UVR=1/3 use facing^2 when mapping material front (+Z).
+// Material identity: front texture on +Z (Uzp/Vzp).
 static int OrientedMaterialFace(int ourFace, int facing, uint8_t uvr) {
     if (uvr == 0) return ourFace;
-    // UVR 7 (logs/hay): state&3 selects axis; 0=Y (default sides), 1=X, 2=Z
-    // (matches common log state packing; refined if table recovered)
+    // UVR 7 kept for save compatibility (axis remap); lying-log gameplay separate.
     if (uvr == 7) {
         int axis = facing & 3;
         if (axis == 1) {
-            // axis X: world Y faces ← material Z (rings), world Z ← material Y
             if (ourFace == 2 || ourFace == 3) return (ourFace == 2) ? 4 : 5;
             if (ourFace == 4 || ourFace == 5) return (ourFace == 4) ? 2 : 3;
             return ourFace;
         }
         if (axis == 2) {
-            // axis Z: world Y ← material X rings
             if (ourFace == 2 || ourFace == 3) return (ourFace == 2) ? 0 : 1;
             if (ourFace == 0 || ourFace == 1) return (ourFace == 0) ? 2 : 3;
             return ourFace;
         }
-        // axis Y: only rotate sides by 0 (identity)
         return ourFace;
     }
-    // UVR 1 / 3: horizontal facing — rotate XZ faces about Y so front (+Z mat)
-    // lands on world facing direction.
-    if (ourFace == 2 || ourFace == 3) return ourFace; // top/bottom
+    // UVR 1 / 3: horizontal facing — front toward player ⇒ opposite look direction
+    int faceDir = (facing + 2) & 3;
+    if (ourFace == 2 || ourFace == 3) {
+        // Top/bottom: still use mat Y faces (UVR=3 rotates UVs in Emit, not face index)
+        return ourFace;
+    }
     auto toRing = [](int f) -> int {
         if (f == 0) return 0; // +X
         if (f == 4) return 1; // +Z
@@ -286,18 +286,21 @@ static int OrientedMaterialFace(int ourFace, int facing, uint8_t uvr) {
         return m[r & 3];
     };
     int wr = toRing(ourFace);
-    int lr = (wr - (facing & 3) + 4) & 3;
+    int lr = (wr - faceDir + 4) & 3;
     return fromRing(lr);
 }
+
 
 void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1,
                           unsigned short orientState) {
     int srcFace = ourFace;
     uint8_t uvr = mat.uvr();
+    int facing = (int)(orientState & 3);
     if (uvr != 0)
-        srcFace = OrientedMaterialFace(ourFace, (int)(orientState & 3), uvr);
+        srcFace = OrientedMaterialFace(ourFace, facing, uvr);
     int mi = OurToBinFace(srcFace);
     Texture::TileUV((int)mat.uFace(mi), (int)mat.vFace(mi), u0, v0, u1, v1);
+    (void)facing;
 }
 
 uint32_t RegionMesher::FaceColor(const LightMap* lights, int x, int y, int z, int face) {
@@ -309,40 +312,55 @@ uint32_t RegionMesher::FaceColor(const LightMap* lights, int x, int y, int z, in
 }
 
 void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
-                            float u0, float v0, float u1, float v1, uint32_t color) {
+                            float u0, float v0, float u1, float v1, uint32_t color,
+                            int uvRot) {
     EmitAxisFace(out, (float)x, (float)y, (float)z,
                  (float)x + 1.f, (float)y + 1.f, (float)z + 1.f,
-                 face, u0, v0, u1, v1, color);
+                 face, u0, v0, u1, v1, color, uvRot);
 }
 
 // Emit one face of an AABB [x0,x1]×[y0,y1]×[z0,z1] (world cell units).
 void RegionMesher::EmitAxisFace(MeshBuffer& out, float x0, float y0, float z0,
                                 float x1, float y1, float z1, int ourFace,
-                                float u0, float v0, float u1, float v1, uint32_t color) {
+                                float u0, float v0, float u1, float v1, uint32_t color,
+                                int uvRot) {
     PCT1Vertex v[4];
     auto set = [&](int i, float px, float py, float pz, float u, float vv) {
         v[i].x = px; v[i].y = py; v[i].z = pz;
         v[i].color = color; v[i].u = u; v[i].v = vv;
     };
+    // Corner UVs in Emit order; uvRot cycles for UVR=3 top/bottom.
+    float cu[4] = { u0, u0, u1, u1 };
+    float cv[4] = { v1, v0, v0, v1 };
+    uvRot &= 3;
+    if (uvRot != 0 && (ourFace == 2 || ourFace == 3)) {
+        float nu[4], nv[4];
+        for (int i = 0; i < 4; ++i) {
+            int j = (i - uvRot + 4) & 3;
+            nu[i] = cu[j];
+            nv[i] = cv[j];
+        }
+        for (int i = 0; i < 4; ++i) { cu[i] = nu[i]; cv[i] = nv[i]; }
+    }
     switch (ourFace) {
         case 0: // +X at x1
-            set(0, x1, y0, z0, u0, v1); set(1, x1, y1, z0, u0, v0);
-            set(2, x1, y1, z1, u1, v0); set(3, x1, y0, z1, u1, v1); break;
+            set(0, x1, y0, z0, cu[0], cv[0]); set(1, x1, y1, z0, cu[1], cv[1]);
+            set(2, x1, y1, z1, cu[2], cv[2]); set(3, x1, y0, z1, cu[3], cv[3]); break;
         case 1: // -X at x0
-            set(0, x0, y0, z1, u0, v1); set(1, x0, y1, z1, u0, v0);
-            set(2, x0, y1, z0, u1, v0); set(3, x0, y0, z0, u1, v1); break;
+            set(0, x0, y0, z1, cu[0], cv[0]); set(1, x0, y1, z1, cu[1], cv[1]);
+            set(2, x0, y1, z0, cu[2], cv[2]); set(3, x0, y0, z0, cu[3], cv[3]); break;
         case 2: // +Y at y1
-            set(0, x0, y1, z0, u0, v1); set(1, x0, y1, z1, u0, v0);
-            set(2, x1, y1, z1, u1, v0); set(3, x1, y1, z0, u1, v1); break;
+            set(0, x0, y1, z0, cu[0], cv[0]); set(1, x0, y1, z1, cu[1], cv[1]);
+            set(2, x1, y1, z1, cu[2], cv[2]); set(3, x1, y1, z0, cu[3], cv[3]); break;
         case 3: // -Y at y0
-            set(0, x0, y0, z1, u0, v1); set(1, x0, y0, z0, u0, v0);
-            set(2, x1, y0, z0, u1, v0); set(3, x1, y0, z1, u1, v1); break;
+            set(0, x0, y0, z1, cu[0], cv[0]); set(1, x0, y0, z0, cu[1], cv[1]);
+            set(2, x1, y0, z0, cu[2], cv[2]); set(3, x1, y0, z1, cu[3], cv[3]); break;
         case 4: // +Z at z1
-            set(0, x1, y0, z1, u0, v1); set(1, x1, y1, z1, u0, v0);
-            set(2, x0, y1, z1, u1, v0); set(3, x0, y0, z1, u1, v1); break;
+            set(0, x1, y0, z1, cu[0], cv[0]); set(1, x1, y1, z1, cu[1], cv[1]);
+            set(2, x0, y1, z1, cu[2], cv[2]); set(3, x0, y0, z1, cu[3], cv[3]); break;
         case 5: // -Z at z0
-            set(0, x0, y0, z0, u0, v1); set(1, x0, y1, z0, u0, v0);
-            set(2, x1, y1, z0, u1, v0); set(3, x1, y0, z0, u1, v1); break;
+            set(0, x0, y0, z0, cu[0], cv[0]); set(1, x0, y1, z0, cu[1], cv[1]);
+            set(2, x1, y1, z0, cu[2], cv[2]); set(3, x1, y0, z0, cu[3], cv[3]); break;
         default: return;
     }
     out.PushQuad(v);
@@ -464,6 +482,9 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
     FaceUV(mat, ourFace, u0, v0, u1, v1, st);
     uint32_t col = FaceColor(lights, x, y, z, ourFace);
     float fx = (float)x, fy = (float)y, fz = (float)z;
+    int uvRot = 0;
+    if (mat.uvr() == 3 && (ourFace == 2 || ourFace == 3))
+        uvRot = (((int)st & 3) + 2) & 3;
 
     if (cls == 0) {
         // Solid / slab from Material+0x00 height (1..16 after LoadMaterials BH gate).
@@ -480,7 +501,7 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
         }
         // Full cube: standard face
         if (ht >= 16 && !upside) {
-            EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col);
+            EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col, uvRot);
             return;
         }
         // Partial height: emit only the occupied Y-range of the cell.
@@ -498,7 +519,7 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
             }
         }
         EmitAxisFace(out, fx, y0, fz, fx + 1.f, y1, fz + 1.f,
-                     ourFace, su0, sv0, su1, sv1, col);
+                     ourFace, su0, sv0, su1, sv1, col, uvRot);
         return;
     }
 
