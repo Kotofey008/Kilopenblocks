@@ -98,6 +98,20 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
     if (isMutualOccluder(selfType, selfMat) && isMutualOccluder(nType, nMat))
         return 0;
 
+    // MBI=1 same-type adjacent face cull (glass / leaves):
+    // Binary: shared face between two cells of the same type with MBI==1 is
+    // dropped, except when All(+0x07)!=0 (leaves) and LeavesQuality(+0xec)!=0
+    // — then internal faces stay (fancy leaves). Quality==0 → cull like glass.
+    if (nType == selfType && selfMat && selfMat->prop02() == 1) {
+        if (selfMat->allFaces()) {
+            if (grid.GetLeavesQuality() == GridData::LeavesQuality::Low)
+                return 0;
+            // LeavesQuality >= Medium: keep face (return below)
+        } else {
+            return 0; // MBI=1 All=0 (e.g. glass): always cull same-id face
+        }
+    }
+
     if (isPartialHeight(selfMat))
         return 2;
 
@@ -669,7 +683,7 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
     for (int i = 0; i < 7; ++i) layers[i].Clear();
     const int S = 16;
     (void)defs;
-    const int leavesQ = 2; // default LeavesQuality=2 until GridData field wired
+    const int leavesQ = (int)grid.GetLeavesQuality(); // GridData+0xec
 
     for (int z = 0; z < S; ++z)
     for (int y = 0; y < S; ++y)
