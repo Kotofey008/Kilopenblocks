@@ -1036,14 +1036,13 @@ bool GridData::FullHeightBlockVariant(unsigned char partialType, unsigned char* 
 }
 
 
-// SAU (+0x05): gravity blocks (Sand 0x18, Gravel 0x19 in stock assets).
-// ConfigureState @ 0x997f0 end:
+// SAU (+0x05) — binary ConfigureState @ 0x997f0 ONLY consumer of mat[+0x05]:
 //   *sauOut = mat[+0x05];
-//   if (SAU && type∈{0x18,0x19}):
-//     if (cellY < 1 || type[cell-sizeX] != 0) *sauOut = false;
-// Place path: mode 1 (supported) vs 2 (unsupported) both SetCell; unsupported
-// sand is then subject to gravity. ApplyGravityAt moves SAU column down while
-// the cell below is empty (type 0 and no liquid), matching falling-sand semantics.
+//   if (SAU && type∈{0x18,0x19}):  // Sand / Gravel
+//     if (localY < 1 || types[cell - sizeX] != 0) *sauOut = false;
+// EntityPlayer maps sauOut→place mode 2 vs 1; BOTH modes only SetCell at the
+// same index (FixedUpdate / FixedPostUpdate). No FallingSand entity, no SAU
+// tick, no multi-cell settle in this .so (xrefs of mat[+0x05] exhausted).
 
 bool GridData::ComputeSauPlaceFlag(unsigned char blockType, int cellIndex) const {
     // Binary ConfigureState @ 0x997f0:
@@ -1063,26 +1062,6 @@ bool GridData::ComputeSauPlaceFlag(unsigned char blockType, int cellIndex) const
     return true; // unsupported → SAU flag stays
 }
 
-void GridData::ApplySauGravityAt(int worldX, int worldY, int worldZ) {
-    // Settle SAU block downward while the cell below has type==0 (same empty test
-    // as ConfigureState support gate). Chain one cell at a time via SetCell.
-    int guard = sizeY + 2;
-    while (guard-- > 0) {
-        int idx = CoordToIndex(worldX, worldY, worldZ);
-        if (idx < 0) return;
-        unsigned char t = cellTypes[idx];
-        if (t == 0) return;
-        const Material* mat = GetMaterial((int)t);
-        if (!mat || !mat->sau()) return;
-        int below = CoordToIndex(worldX, worldY - 1, worldZ);
-        if (below < 0) return;
-        if (cellTypes[below] != 0) return;
-        unsigned short st = cellStates[idx];
-        SetCell(worldX, worldY, worldZ, 0, 0);
-        SetCell(worldX, worldY - 1, worldZ, t, st);
-        worldY -= 1;
-    }
-}
 
 
 // GetAddingPosition @ 0x99240
@@ -1339,15 +1318,9 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
             state = (unsigned short)(state | STATE_BIT_4000);
     }
     SetCell(originX + lx, originY + ly, originZ + lz, writeType, state);
-    // SAU gravity: after place, fall while unsupported (binary mode-2 path places
-    // then sand rests only on solid; unsupported column settles downward).
-    if (writeType != 0) {
-        const Material* pm = GetMaterial((int)writeType);
-        if (pm && pm->sau())
-            ApplySauGravityAt(originX + lx, originY + ly, originZ + lz);
-    }
-    // Support removed: SAU block above this cell may now fall
-    ApplySauGravityAt(originX + lx, originY + ly + 1, originZ + lz);
+    // SAU: binary only sets place mode (1 vs 2) via ConfigureState; both paths
+    // SetCell at the same index. No per-tick fall / entity animation in .so.
+    (void)ComputeSauPlaceFlag(writeType, idx);
     return true;
 }
 
@@ -1361,8 +1334,6 @@ bool GridData::BreakBlock(const GridDataTraceResult& tr) {
         return false;
     // ConfigureAirState (0x99af0) → air + state 0
     SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0);
-        // SAU above may lose support
-    ApplySauGravityAt(tr.cellX, tr.cellY + 1, tr.cellZ);
     return true;
 }
 
