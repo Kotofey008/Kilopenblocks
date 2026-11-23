@@ -822,6 +822,8 @@ void GLApplication::Frame() {
     // TickWater advances clock by frame dt (~16ms) and runs body only when due.
     // maxSteps mirrors binary budget path (default +0x2d4-related 200 cells).
     game_.GetGrid().TickWater(16, 200);
+    // SELF-MADE SAU fall (not in binary): one cell / 100ms, budget 32.
+    game_.GetGrid().TickSau(16, 100, 32);
     // Stream/rebuild: dirty is per-Region +0x1f; GC always runs (no global stop).
     EnsureRegionMeshes();
     game_.GetGrid().ClearMeshesDirty();

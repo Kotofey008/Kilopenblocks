@@ -184,8 +184,17 @@ public:
                          const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
     // FullHeightBlockVariant @ 0x98f20 — BMT0 + height!=0x10 → find UV-matching height==0x10 type
     bool FullHeightBlockVariant(unsigned char partialType, unsigned char* outFullType) const;
-    // SAU (+0x05): ConfigureState place-mode gate only (no fall tick in binary).
+    // SAU (+0x05): ConfigureState place-mode gate (binary).
     bool ComputeSauPlaceFlag(unsigned char blockType, int cellIndex) const;
+    // =========================================================================
+    // SELF-MADE EXTENSION (not in binary .so — intentional):
+    // Visible SAU fall: one cell down per TickSau step so motion is stepwise,
+    // not an instant multi-cell teleport. Gate rules still follow ConfigureState
+    // (mat[+0x05], Sand/Gravel 0x18/0x19, support = type below != 0).
+    // DO NOT remove in "match binary" cleanups without explicit user request.
+    // =========================================================================
+    void ScheduleSauCheck(int worldX, int worldY, int worldZ);
+    void TickSau(int dtMs, int periodMs = 100, int maxSteps = 32);
     // Material S-Index (+0x20 short) → cell type; binary MtlSelIndexToCell @ 0x98ed0
     unsigned char MtlSelIndexToCell(int selIndex) const;
     int CellToMtlSelIndex(unsigned char cellType) const;
@@ -302,6 +311,11 @@ public:
     int regionCountZ_ = 0;
     // +0xf0 batch/generation flag: when non-zero, neighbour SetState |0xC000 skipped
     uint8_t batchFlag_ = 0; // binary this+0xf0
+
+    // SELF-MADE SAU fall queue (see TickSau). Key = packed world cell.
+    std::vector<int> sauPending_; // cell indices pending one-step fall
+    int sauClockMs_ = 0;
+    int sauDeadlineMs_ = 0;
 
     // UpdateWaterState schedule (binary GridData +0x2d0..+0x2dc):
     //   +0x2d4 period (200), +0x2d8 next deadline, +0x2dc long deadline

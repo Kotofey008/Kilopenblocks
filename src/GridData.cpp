@@ -1062,6 +1062,76 @@ bool GridData::ComputeSauPlaceFlag(unsigned char blockType, int cellIndex) const
     return true; // unsupported → SAU flag stays
 }
 
+// =============================================================================
+// SELF-MADE EXTENSION — visible SAU fall (NOT in binary .so)
+// -----------------------------------------------------------------------------
+// Binary only sets place mode from SAU flag; both modes SetCell in-place.
+// This extension keeps the same support test (type below == 0 / y>=1) but moves
+// the block ONE cell down per TickSau period so motion is stepwise, not an
+// instant multi-cell teleport.
+// DO NOT strip in binary-cleanup passes unless the user explicitly asks.
+// =============================================================================
+
+void GridData::ScheduleSauCheck(int worldX, int worldY, int worldZ) {
+    int idx = CoordToIndex(worldX, worldY, worldZ);
+    if (idx < 0 || idx >= (int)cellTypes.size()) return;
+    unsigned char t = cellTypes[idx];
+    if (t == 0) return;
+    const Material* mat = GetMaterial((int)t);
+    if (!mat || !mat->sau()) return;
+    if (!ComputeSauPlaceFlag(t, idx)) return;
+    for (int q : sauPending_)
+        if (q == idx) return;
+    sauPending_.push_back(idx);
+}
+
+void GridData::TickSau(int dtMs, int periodMs, int maxSteps) {
+    if (periodMs < 16) periodMs = 16;
+    sauClockMs_ += dtMs;
+    if (sauClockMs_ < sauDeadlineMs_) return;
+    sauDeadlineMs_ = sauClockMs_ + periodMs;
+    if (sauPending_.empty() || maxSteps <= 0) return;
+
+    // Snapshot queue so ScheduleSauCheck during processing only affects next wave
+    std::vector<int> cur = std::move(sauPending_);
+    sauPending_.clear();
+    int steps = 0;
+    for (int idx : cur) {
+        if (steps >= maxSteps) {
+            // defer remainder
+            bool dup = false;
+            for (int q : sauPending_) if (q == idx) { dup = true; break; }
+            if (!dup) sauPending_.push_back(idx);
+            continue;
+        }
+        if (idx < 0 || idx >= (int)cellTypes.size()) continue;
+        unsigned char t = cellTypes[idx];
+        if (t == 0) continue;
+        const Material* mat = GetMaterial((int)t);
+        if (!mat || !mat->sau()) continue;
+        if (!ComputeSauPlaceFlag(t, idx)) continue;
+
+        int lx = idx % sizeX;
+        int ly = (idx / sizeX) % sizeY;
+        int lz = idx / (sizeX * sizeY);
+        int wx = originX + lx, wy = originY + ly, wz = originZ + lz;
+
+        int below = CoordToIndex(wx, wy - 1, wz);
+        if (below < 0) continue; // bottom of world — remain (no void-delete in binary)
+        if (cellTypes[below] != 0) continue;
+
+        unsigned short st = cellStates[idx];
+        SetCell(wx, wy, wz, 0, 0);
+        SetCell(wx, wy - 1, wz, t, st);
+        ++steps;
+
+        // New cell may still be unsupported → schedule next step
+        ScheduleSauCheck(wx, wy - 1, wz);
+        // Column above may have lost support
+        ScheduleSauCheck(wx, wy + 1, wz);
+    }
+}
+
 
 
 // GetAddingPosition @ 0x99240
@@ -1318,9 +1388,8 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
             state = (unsigned short)(state | STATE_BIT_4000);
     }
     SetCell(originX + lx, originY + ly, originZ + lz, writeType, state);
-    // SAU: binary only sets place mode (1 vs 2) via ConfigureState; both paths
-    // SetCell at the same index. No per-tick fall / entity animation in .so.
-    (void)ComputeSauPlaceFlag(writeType, idx);
+    // Binary: place at target cell. SELF-MADE: schedule stepwise SAU fall if unsupported.
+    ScheduleSauCheck(originX + lx, originY + ly, originZ + lz);
     return true;
 }
 
@@ -1334,6 +1403,8 @@ bool GridData::BreakBlock(const GridDataTraceResult& tr) {
         return false;
     // ConfigureAirState (0x99af0) → air + state 0
     SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0);
+    // SELF-MADE: block above may be SAU and lose support
+    ScheduleSauCheck(tr.cellX, tr.cellY + 1, tr.cellZ);
     return true;
 }
 
