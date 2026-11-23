@@ -1288,30 +1288,14 @@ unsigned short GridData::ConfigureState(const GridDataTraceResult& tr,
                                         unsigned char blockType,
                                         const Vector& lookDir) {
     (void)tr;
-    // Binary ConfigureState @ 0x997f0 calls SetLiquidState for liquid materials.
-    // World liquid is ALWAYS type 0 + state (AddLiquidSource / AddGrassAndWater).
-    // Material id 5 is a hidden UV/FTW row (S-Index -1), not a solid block id.
-    // Prior RE: place of material-5 path yields type=0 + liquid state (docs:
-    // 0xC3C0 in one path); water gameplay uses 0xE000 source with 0x4000 schedule.
-    if (!materials.empty() && blockType < materials.size()) {
-        const Material& mat = materials[blockType];
-        // Liquid-capable row: FTW != 0 and not a full opaque solid (Col==0 or height)
-        bool liquidRow = (mat.raw[0x1c] != 0) && (!mat.col() || mat.prop01() == 0x0a);
-        // Explicit blocks.txt water row id 5 (and any row with water UV class)
-        if (blockType == 5 || liquidRow) {
-            // SetLiquidState @ 0x99720 merges 0x3FC0 bits; world cell type stays 0.
-            unsigned short st = 0;
-            SetLiquidStateMerge(*this, blockType, st, blockType,
-                                (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000));
-            if (!HasLiquidState(st))
-                st = (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
-            else
-                st = (unsigned short)(st | STATE_BIT_4000);
-            return st;
-        }
-    } else if (blockType == 5) {
-        return (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
-    }
+    // Binary ConfigureState @ 0x997f0:
+    //   builds orientation bits in local_12, then ALWAYS calls
+    //   SetLiquidState(type, &local_12, destType, destState) which only ORs
+    //   dest 0x3FC0 into local_12 when mat[type].FTW!=0 AND dest already has liquid.
+    //   It does NOT turn Col=0 / FTW!=0 solids into water.
+    // EntityPlayer after ConfigureState (only special type rewrite):
+    //   if (placeType == 5) { placeType = 0; state = 0xC3C0; }
+    // Type 5 is the sole "place as world liquid" material id in that path.
 
     // Default solid orientation 0-3 from dominant horizontal look axis
     unsigned short state = 0;
@@ -1372,20 +1356,22 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
         state = ConfigureState(tr, placeType, look);
     }
 
-    // World liquid cells: type 0 + state (never persist material id 5 as cell type)
+    // Binary EntityPlayer place: only type==5 becomes world liquid
+    //   type=0, state=0xC3C0 (then we use WATER_SOURCE|0x4000 schedule bits).
+    // SetLiquidState @ 0x99720: if mat[place].FTW!=0 and dest has 0x3FC0, OR those
+    // bits into state — solid type is kept (torch/trapdoor into water keep type).
     unsigned char writeType = placeType;
-    bool liquidPlace = HasLiquidState(state);
-    if (placeType == 5) liquidPlace = true;
-    if (!materials.empty() && placeType < materials.size()) {
-        const Material& mat = materials[placeType];
-        if (mat.raw[0x1c] != 0 && !mat.col()) liquidPlace = true;
-    }
-    if (liquidPlace) {
+    if (placeType == 5) {
         writeType = 0;
-        if (!HasLiquidState(state))
-            state = (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
-        else
-            state = (unsigned short)(state | STATE_BIT_4000);
+        state = (unsigned short)(WATER_SOURCE_STATE | STATE_BIT_4000);
+    } else {
+        // SetLiquidState merge from destination cell (binary end of ConfigureState)
+        if (idx >= 0 && idx < (int)cellTypes.size()) {
+            unsigned char destT = cellTypes[idx];
+            unsigned short destS = (idx < (int)cellStates.size()) ? cellStates[idx] : 0;
+            SetLiquidStateMerge(*this, placeType, state, destT, destS);
+        }
+        // state may gain 0x3FC0; writeType stays placeType (not forced to water)
     }
     SetCell(originX + lx, originY + ly, originZ + lz, writeType, state);
     // Binary: place at target cell. SELF-MADE: schedule stepwise SAU fall if unsupported.
