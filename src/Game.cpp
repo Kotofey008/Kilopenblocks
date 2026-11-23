@@ -1091,6 +1091,13 @@ void Game::SelectLeavesQuality(GridData::LeavesQuality q) {
                      + kLeaves[i];
     if (UIPanel* p = FindPanelBySceneName(uiPanels_, "graphics_options_ui"))
         SetPanelElementText(p, "leaves_quality", text.c_str());
+    // Apply to GridData immediately so NeedFace/layer change is visible without
+    // waiting for ApplyGraphicsSettings (binary only applies there; SetLeavesQuality
+    // marks every region dirty @+0x1a so meshes rebuild next frames).
+    if (leavesQualityApplied_ != q) {
+        leavesQualityApplied_ = q;
+        grid_.SetLeavesQuality(q);
+    }
 }
 
 // Game::SelectClouds @ 0x63a20 — pending +0xd38

@@ -295,7 +295,9 @@ void GLApplication::EnsureRegionMeshes() {
     if (grid.AnyRegionDirty()) {
         int dirtyOx[16], dirtyOz[16];
         int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
-        constexpr int kMaxDirtyCols = 2;
+        // Normally 2 cols/frame (place/break). When many columns dirty at once
+        // (e.g. SetLeavesQuality marks all), drain faster so quality change is visible.
+        int kMaxDirtyCols = (nDirty > 8) ? 16 : 2;
         int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
 
         if (nRebuild > 0 && !lightMap_.Empty()) {

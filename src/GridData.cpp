@@ -622,10 +622,20 @@ GridData::LeavesQuality GridData::GetLeavesQuality() const {
     return leavesQuality_; // +0xec
 }
 void GridData::SetLeavesQuality(LeavesQuality q) {
+    // Binary GridData::SetLeavesQuality @ 0x…:
+    //   if (+0xec != q) { +0xec = q; for every region slot: *(region+0x1a)=1; }
+    // Our Region dirty flag is +0x1f; mark every XZ column + sparse dirty list
+    // so EnsureRegionMeshes rebuilds without waiting for SetCell.
     if (leavesQuality_ == q) return;
     leavesQuality_ = q;
-    // LeavesQuality changes NeedFace/layer routing — rebuild region meshes.
-    MarkModifiedRegions();
+    for (size_t i = 0; i < regions_.size(); ++i) {
+        Region& r = regions_[i];
+        if (r.dirty() == 0) {
+            r.dirty() = 1;
+            r.active() = 1;
+            dirtyRegionIndices_.push_back((int)i);
+        }
+    }
     meshesDirty_ = true;
 }
 
