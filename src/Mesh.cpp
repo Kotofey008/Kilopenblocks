@@ -661,28 +661,14 @@ void RegionMesher::EmitWaterFace(GridData& grid, MeshBuffer& out, int x, int y, 
 }
 
 void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
-                         const std::vector<BlockDef>& defs, MeshBuffer& out,
+                         const std::vector<BlockDef>& defs, MeshBuffer layers[7],
                          const LightMap* lights) {
-    Build(grid, ox, oy, oz, defs, out, nullptr, lights);
-}
-
-void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
-                         const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
-                         MeshBuffer* waterOut, const LightMap* lights) {
-    Build(grid, ox, oy, oz, defs, solidOut, waterOut, nullptr, lights);
-}
-
-void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
-                         const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
-                         MeshBuffer* waterOut, MeshBuffer* lavaOut, const LightMap* lights) {
-    // Region::AddMesh @ 0x9b090: solid by class, then liquid by state LiquidType.
-    // Dedicated water/lava textures (start.scene WaterTextureFileName / LavaTextureFileName)
-    // use full 0..1 UV on their own meshes — not blocks atlas tiles.
-    solidOut.Clear();
-    if (waterOut) waterOut->Clear();
-    if (lavaOut) lavaOut->Clear();
+    // Binary MeshBuffer: 7 layers; PushQuads(this, MBI, ...) writes layer[MBI].
+    // LeavesQuality (grid +0xec)==0 forces leaves types (10, 0x14, 0x55) to layer 0.
+    for (int i = 0; i < 7; ++i) layers[i].Clear();
     const int S = 16;
     (void)defs;
+    const int leavesQ = 2; // TODO: wire GridData LeavesQuality field when exposed
 
     for (int z = 0; z < S; ++z)
     for (int y = 0; y < S; ++y)
@@ -692,20 +678,23 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         if (cidx < 0) continue;
         unsigned char t = grid.cellTypes[cidx];
         unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
-        // Binary: liquid is state-driven (type usually 0). Do not skip type 0 fluids.
-        const int liquidType = CellLiquidType(grid, wx, wy, wz); // 0 water, 1 lava, -1 none
+        const int liquidType = CellLiquidType(grid, wx, wy, wz);
         if (t == 0 && liquidType < 0) continue;
 
-        const Material* mat = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
-        // Region::AddMesh end: if state&0x2000 → LiquidType 0; else if state&0x3c0 → LiquidType 1
+        // World liquids → layer 3 (water still) / 4 (water flow) / 5–6 (lava)
+        // Approximate still vs flow: source-like high level → still, else flow.
         if (liquidType >= 0) {
-            MeshBuffer* target = (liquidType == 0) ? waterOut : lavaOut;
-            MeshBuffer& dst = target ? *target : (waterOut ? *waterOut : solidOut);
+            int level = (int)((st & 0x1c00) >> 10);
+            int layer;
+            if (liquidType == 0)
+                layer = (level <= 1) ? 3 : 4; // still vs flowing water
+            else
+                layer = (level <= 1) ? 5 : 6; // still vs flowing lava
+            MeshBuffer& dst = layers[layer];
             float h = WaterHeightFrac(grid, wx, wy, wz);
             if (h > 0.f) {
                 for (int face = 0; face < 6; ++face) {
                     if (WaterNeedFace(grid, wx, wy, wz, face) == 0) continue;
-                    // Full-quad UVs for dedicated water.png / lava.png (not atlas)
                     float u0 = 0.f, v0 = 0.f, u1 = 1.f, v1 = 1.f;
                     uint32_t col = (liquidType == 0) ? 0xA0FFFFFF : 0xE0FF6030;
                     if (lights) {
@@ -718,40 +707,46 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
             continue;
         }
 
-        // Special model classes (not in face set {0,5,6,7,8,9,10})
-        if (mat) {
-            uint8_t cls = mat->prop01();
-            if (cls == 1 || cls == 4) {
-                AddCross(solidOut, wx, wy, wz, *mat, lights);
-                // still allow liquid overlay below
-            } else if (cls == 2) {
-                AddTorch(solidOut, grid, wx, wy, wz, *mat, lights);
-            } else if (cls == 3) {
-                AddLadder(solidOut, grid, wx, wy, wz, *mat, lights);
-            } else if (cls == 0 || cls == 5 || cls == 6 || cls == 7 ||
-                       cls == 8 || cls == 9 || cls == 10) {
-                for (int face = 0; face < 6; ++face) {
-                    int nf = NeedFace(grid, wx, wy, wz, face);
-                    if (nf == 0) continue;
-                    AddBlockFace(solidOut, grid, wx, wy, wz, *mat, face, nf, lights);
-                }
-            } else {
-                // unknown class → treat as solid faces
-                for (int face = 0; face < 6; ++face) {
-                    int nf = NeedFace(grid, wx, wy, wz, face);
-                    if (nf == 0) continue;
-                    AddBlockFace(solidOut, grid, wx, wy, wz, *mat, face, nf, lights);
-                }
-            }
+        const Material* mat = grid.GetMaterial((int)t);
+        if (!mat) continue;
+
+        // MBI = prop02, clamp 0..6 — layer index for PushQuads
+        int mbi = (int)mat->prop02();
+        if (mbi < 0) mbi = 0;
+        if (mbi > 6) mbi = 6;
+        // LeavesQuality==0: force leaves (ids 10, 0x14, 0x55) to opaque layer
+        if (leavesQ == 0 && (t == 10 || t == 0x14 || t == 0x55))
+            mbi = 0;
+
+        MeshBuffer& dst = layers[mbi];
+
+        uint8_t cls = mat->prop01();
+        if (cls == 1 || cls == 4) {
+            AddCross(dst, wx, wy, wz, *mat, lights);
+        } else if (cls == 2) {
+            AddTorch(dst, grid, wx, wy, wz, *mat, lights);
+        } else if (cls == 3) {
+            AddLadder(dst, grid, wx, wy, wz, *mat, lights);
         } else {
             for (int face = 0; face < 6; ++face) {
-                if (NeedFace(grid, wx, wy, wz, face) == 0) continue;
-                float u0=0,v0=0,u1=1.f/16.f,v1=1.f/16.f;
-                Texture::TileUV((int)t % 16, (int)t / 16, u0, v0, u1, v1);
-                EmitFace(solidOut, wx, wy, wz, face, u0, v0, u1, v1, FaceColor(lights, wx, wy, wz, face));
+                int nf = NeedFace(grid, wx, wy, wz, face);
+                if (nf == 0) continue;
+                // MBI 3–6: test override — render with full fluid UV 0..1 (texture
+                // bound at draw time is water/lava still/flow). Geometry stays
+                // block-shaped (AddBlockFace), UV rewritten to full sheet.
+                if (mbi >= 3 && mbi <= 6) {
+                    float u0=0,v0=0,u1=1,v1=1;
+                    uint32_t col = FaceColor(lights, wx, wy, wz, face);
+                    // Keep solid geometry; full UV for fluid texture
+                    if (mat->height() < 0x10 && mat->height() != 0)
+                        AddBlockFace(dst, grid, wx, wy, wz, *mat, face, nf, lights);
+                    else
+                        EmitFace(dst, wx, wy, wz, face, u0, v0, u1, v1, col);
+                } else {
+                    AddBlockFace(dst, grid, wx, wy, wz, *mat, face, nf, lights);
+                }
             }
         }
-
     }
 }
 

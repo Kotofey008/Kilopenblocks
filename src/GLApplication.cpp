@@ -231,9 +231,7 @@ void GLApplication::EnsureRegionMeshes() {
         auto it = index.find(k);
         if (it != index.end()) {
             slot = &regionMeshes_[it->second];
-            slot->buffer.Clear();
-            slot->waterBuffer.Clear();
-            slot->lavaBuffer.Clear();
+            for (int li = 0; li < 7; ++li) slot->layers[li].Clear();
         } else {
             regionMeshes_.push_back(RegionMesh{});
             size_t ni = regionMeshes_.size() - 1;
@@ -241,10 +239,10 @@ void GLApplication::EnsureRegionMeshes() {
             slot = &regionMeshes_[ni];
             slot->ox = ox; slot->oy = oy; slot->oz = oz;
         }
-        RegionMesher::Build(grid, ox, oy, oz, blockDefs_,
-                            slot->buffer, &slot->waterBuffer, &slot->lavaBuffer, &lightMap_);
-        slot->valid = slot->buffer.IndexCount() > 0 || slot->waterBuffer.IndexCount() > 0
-                   || slot->lavaBuffer.IndexCount() > 0;
+        RegionMesher::Build(grid, ox, oy, oz, blockDefs_, slot->layers, &lightMap_);
+        slot->valid = false;
+        for (int li = 0; li < 7; ++li)
+            if (slot->layers[li].IndexCount() > 0) { slot->valid = true; break; }
     };
 
     auto hasMesh = [&](int ox, int oy, int oz) -> bool {
@@ -460,33 +458,70 @@ void GLApplication::RenderWorld() {
         glEnable(GL_CULL_FACE);
     }
 
+    // Binary GridData::Draw → DrawMeshes(layer) with RenderState per MBI:
+    //   0 opaque:   no alpha test, no blend, blocks atlas
+    //   1 cutout:   AlphaFunc(GEQUAL, 0x80/255), no blend
+    //   2 translucent: depth-only (colorMask 0) then SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+    //   3–4 water:  water texture + UV scroll; blend
+    //   5–6 lava:   lava texture + UV scroll; blend
+    // Order matches binary: 0, (5), 1, 2, 3–4, (6) — we draw 0,1,2,3,4,5,6.
+    auto drawLayer = [&](int layer) {
+        for (auto& rm : regionMeshes_) {
+            if (!rm.valid || rm.layers[layer].IndexCount() <= 0) continue;
+            DrawPrimitive(GL_TRIANGLES,
+                          rm.layers[layer].Vertices().data(),
+                          rm.layers[layer].Indices().data(),
+                          rm.layers[layer].IndexCount(), 0);
+        }
+    };
+
     glEnable(GL_TEXTURE_2D);
-    blocksAtlas_.Bind();
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glColor4f(1.f, 1.f, 1.f, 1.f);
-    // Pass 1: opaque solids (depth write on)
-    for (auto& rm : regionMeshes_) {
-        if (!rm.valid || rm.buffer.IndexCount() <= 0) continue;
-        DrawPrimitive(GL_TRIANGLES,
-                      rm.buffer.Vertices().data(),
-                      rm.buffer.Indices().data(),
-                      rm.buffer.IndexCount(), 0);
-    }
-    // Pass 2: liquids — MUST re-bind blocks/water atlas. Previous sky/sun/cloud
-    // passes leave another GL texture bound; without this water samples clouds.png.
-    // Water UVs come from blocks atlas (same RegionMesher path as solids).
+#if defined(__ANDROID__)
+    glDisable(GL_BLEND);
+    glDisable(GL_ALPHA_TEST);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_CULL_FACE);
+#endif
+    blocksAtlas_.Bind();
+    // Layer 0 — MBI=0 fully opaque
+    drawLayer(0);
+
+#if defined(__ANDROID__)
+    // Layer 1 — MBI=1 cutout: AlphaFunc GEQUAL ref 0x80 (binary 0x206, 0x80)
+    glEnable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GEQUAL, 128.f / 255.f);
+    glDisable(GL_BLEND);
+#endif
+    blocksAtlas_.Bind();
+    drawLayer(1);
+#if defined(__ANDROID__)
+    glDisable(GL_ALPHA_TEST);
+#endif
+
+#if defined(__ANDROID__)
+    // Layer 2 — MBI=2 translucent ice/etc.
+    // Binary: optional depth-only pass (colorMask 0) then blend draw.
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    drawLayer(2);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+#endif
+    blocksAtlas_.Bind();
+    drawLayer(2);
+#if defined(__ANDROID__)
+    glDepthMask(GL_TRUE);
+#endif
+
+    // Layers 3–4 water (MBI 3 still / 4 flowing) + world water cells
 #if defined(__ANDROID__)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
-#endif
-    glEnable(GL_TEXTURE_2D);
-    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    glColor4f(1.f, 1.f, 1.f, 1.f);
-    // Water: start.scene WaterTextureFileName (textures/water.png) — full UV 0..1
-    // Animated scroll via texture matrix (WaterTextureEffect analogue).
-#if defined(__ANDROID__)
     glMatrixMode(GL_TEXTURE);
     glLoadIdentity();
     if (game_.fluidAnim.enabled)
@@ -495,14 +530,10 @@ void GLApplication::RenderWorld() {
 #endif
     if (waterTex_.GLId()) waterTex_.Bind();
     else blocksAtlas_.Bind();
-    for (auto& rm : regionMeshes_) {
-        if (!rm.valid || rm.waterBuffer.IndexCount() <= 0) continue;
-        DrawPrimitive(GL_TRIANGLES,
-                      rm.waterBuffer.Vertices().data(),
-                      rm.waterBuffer.Indices().data(),
-                      rm.waterBuffer.IndexCount(), 0);
-    }
-    // Lava: start.scene LavaTextureFileName (textures/lava.png)
+    drawLayer(3);
+    drawLayer(4);
+
+    // Layers 5–6 lava
 #if defined(__ANDROID__)
     glMatrixMode(GL_TEXTURE);
     glLoadIdentity();
@@ -512,13 +543,9 @@ void GLApplication::RenderWorld() {
 #endif
     if (lavaTex_.GLId()) lavaTex_.Bind();
     else blocksAtlas_.Bind();
-    for (auto& rm : regionMeshes_) {
-        if (!rm.valid || rm.lavaBuffer.IndexCount() <= 0) continue;
-        DrawPrimitive(GL_TRIANGLES,
-                      rm.lavaBuffer.Vertices().data(),
-                      rm.lavaBuffer.Indices().data(),
-                      rm.lavaBuffer.IndexCount(), 0);
-    }
+    drawLayer(5);
+    drawLayer(6);
+
 #if defined(__ANDROID__)
     glMatrixMode(GL_TEXTURE);
     glLoadIdentity();
@@ -526,6 +553,7 @@ void GLApplication::RenderWorld() {
     glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+    glDisable(GL_ALPHA_TEST);
 #endif
 
     // Clouds AFTER liquids: higher priority than water (closer cloud fragments

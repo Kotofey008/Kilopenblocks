@@ -47,15 +47,11 @@ private:
 // (mapped at call site).
 class RegionMesher {
 public:
+    // Binary: MeshBuffer 7 layers; PushQuads(..., MBI, ...) → layer[MBI].
+    // layers must point to MeshBuffer[7] (MBI 0..6).
     static void Build(GridData& grid, int originX, int originY, int originZ,
-                      const std::vector<BlockDef>& defs, MeshBuffer& out,
+                      const std::vector<BlockDef>& defs, MeshBuffer layers[7],
                       const LightMap* lights = nullptr);
-    static void Build(GridData& grid, int originX, int originY, int originZ,
-                      const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
-                      MeshBuffer* waterOut, const LightMap* lights);
-    static void Build(GridData& grid, int originX, int originY, int originZ,
-                      const std::vector<BlockDef>& defs, MeshBuffer& solidOut,
-                      MeshBuffer* waterOut, MeshBuffer* lavaOut, const LightMap* lights);
 
     // NeedFace* recovery (NeedFaceXP @ 0x833d0 template).
     // Returns: 0 = no face, 1 = emit face, 2 = special/partial.
