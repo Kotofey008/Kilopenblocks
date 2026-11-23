@@ -184,6 +184,9 @@ public:
                          const Vector* playerPos = nullptr, const Vector* playerSize = nullptr);
     // FullHeightBlockVariant @ 0x98f20 — BMT0 + height!=0x10 → find UV-matching height==0x10 type
     bool FullHeightBlockVariant(unsigned char partialType, unsigned char* outFullType) const;
+    // SAU (+0x05): ConfigureState support gate + falling-sand settle
+    bool ComputeSauPlaceFlag(unsigned char blockType, int cellIndex) const;
+    void ApplySauGravityAt(int worldX, int worldY, int worldZ);
     // Material S-Index (+0x20 short) → cell type; binary MtlSelIndexToCell @ 0x98ed0
     unsigned char MtlSelIndexToCell(int selIndex) const;
     int CellToMtlSelIndex(unsigned char cellType) const;
