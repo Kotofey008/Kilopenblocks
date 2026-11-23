@@ -98,15 +98,17 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
     if (isMutualOccluder(selfType, selfMat) && isMutualOccluder(nType, nMat))
         return 0;
 
-    // MBI=1 same-type adjacent face cull (glass / leaves):
-    // Binary: shared face between two cells of the same type with MBI==1 is
-    // dropped, except when All(+0x07)!=0 (leaves) and LeavesQuality(+0xec)!=0
-    // — then internal faces stay (fancy leaves). Quality==0 → cull like glass.
+    // MBI=1 same-type adjacent face cull (glass / leaves + All/LeavesQuality):
+    // Binary: MBI==1 + same type → drop shared face, except All(+0x07)!=0 with
+    // LeavesQuality Fancy (2): keep internal faces.
+    //   Off (0): cull same-id (and mesh layer forced to 0 in AddBlockFace/Build)
+    //   Fast (1): cull same-id (cutout layer, like glass)
+    //   Fancy (2): keep same-id faces for All=1
     if (nType == selfType && selfMat && selfMat->prop02() == 1) {
         if (selfMat->allFaces()) {
-            if (grid.GetLeavesQuality() == GridData::LeavesQuality::Low)
+            // All=1 leaves: only Fancy keeps inter-block faces
+            if (grid.GetLeavesQuality() != GridData::LeavesQuality::Fancy)
                 return 0;
-            // LeavesQuality >= Medium: keep face (return below)
         } else {
             return 0; // MBI=1 All=0 (e.g. glass): always cull same-id face
         }
@@ -725,7 +727,10 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
         int mbi = (int)mat->prop02();
         if (mbi < 0) mbi = 0;
         if (mbi > 6) mbi = 6;
-        if (leavesQ == 0 && (t == 10 || t == 0x14 || t == 0x55))
+        // Binary AddBlockFace: when LeavesQuality(+0xec)==0 (Off), force layer 0
+        // for leaf types 10 / 0x14 / 0x55 (All=1 MBI=1 in stock blocks.txt).
+        if (leavesQ == (int)GridData::LeavesQuality::Off &&
+            (t == 10 || t == 0x14 || t == 0x55))
             mbi = 0;
 
         MeshBuffer& dst = layers[mbi];

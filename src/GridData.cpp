@@ -622,7 +622,11 @@ GridData::LeavesQuality GridData::GetLeavesQuality() const {
     return leavesQuality_; // +0xec
 }
 void GridData::SetLeavesQuality(LeavesQuality q) {
+    if (leavesQuality_ == q) return;
     leavesQuality_ = q;
+    // LeavesQuality changes NeedFace/layer routing — rebuild region meshes.
+    MarkModifiedRegions();
+    meshesDirty_ = true;
 }
 
 // GridData::Resize @ 0x81fb0 — align bounds to 16, expand/rebind storage

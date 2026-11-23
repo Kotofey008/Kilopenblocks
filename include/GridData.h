@@ -126,7 +126,7 @@ static_assert(sizeof(Material) == 0x22, "Material must be 34 bytes");
 
 class GridData {
 public:
-    enum class LeavesQuality : int { Low = 0, Medium = 1, High = 2, Ultra = 3 };
+    enum class LeavesQuality : int { Off = 0, Fast = 1, Fancy = 2 }; // binary Game strings
 
     // Binary GridData::Region stride 0xa4 (164). Confirmed layout fragments:
     //   +0x00 / +0x04 = 0x7fffffff (Init)
@@ -294,7 +294,7 @@ public:
     void FlushLiquidQueue(int& stepsLeft);
 
     bool meshesDirty_ = true;
-    LeavesQuality leavesQuality_ = LeavesQuality::High; // +0xec default 2
+    LeavesQuality leavesQuality_ = LeavesQuality::Fancy; // +0xec default 2
     int viewDistanceCells_ = 64; // binary GridData +0x22c (from draw-distance table)
     // Store() snapshot for Resize/Restore (binary 0xa3770 / 0xa4d50)
     std::vector<unsigned char> storeTypes_;

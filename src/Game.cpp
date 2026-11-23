@@ -1145,11 +1145,11 @@ void Game::UpdateParameter(const char* name) {
     if (::strcasecmp(name, "UpdateLeavesQuality") == 0) {
         int cur = (int)leavesQualityPending_;
         if (cur == 0)
-            SelectLeavesQuality(GridData::LeavesQuality::Medium);
+            SelectLeavesQuality(GridData::LeavesQuality::Fast);
         else if (cur == 1)
-            SelectLeavesQuality(GridData::LeavesQuality::High);
+            SelectLeavesQuality(GridData::LeavesQuality::Fancy);
         else
-            SelectLeavesQuality(GridData::LeavesQuality::Low);
+            SelectLeavesQuality(GridData::LeavesQuality::Off);
         return;
     }
     if (::strcasecmp(name, "UpdateClouds") == 0) {

@@ -54,7 +54,7 @@ class Game {
 public:
     enum class TerrainType { Earth = 0, Flat = 1, Test = 2, Count };
     enum class DrawDistance { Tiny = 0, Short = 1, Normal = 2, Far = 3, Count }; // binary 0..3 labels Tiny/Short/Normal/Far
-    enum class LeavesQuality { Low = 0, Medium = 1, High = 2, Count }; // matches GridData default 2
+    // LeavesQuality values: Off=0 Fast=1 Fancy=2 (use GridData::LeavesQuality)
     enum class GameState { Menu = 0, Playing = 1, Loading = 2, Paused = 3 };
     enum class MessagePriority { Low = 0, Normal = 1, High = 2 };
 
@@ -233,12 +233,12 @@ private:
     int terrainSizeIndex_ = 3; // binary +0x238 — index into world-size table
     // Applied settings (binary +0x84 / +0x88 / +0x8c / +0x8d)
     DrawDistance drawDistance_ = DrawDistance::Normal;
-    GridData::LeavesQuality leavesQualityApplied_ = GridData::LeavesQuality::High;
+    GridData::LeavesQuality leavesQualityApplied_ = GridData::LeavesQuality::Fancy;
     bool cloudsEnabled_ = true;
     bool animatedWater_ = true;
     // Pending from Select* (binary +0xd30 / +0xd34 / +0xd38 / +0xd39)
     DrawDistance drawDistancePending_ = DrawDistance::Normal;
-    GridData::LeavesQuality leavesQualityPending_ = GridData::LeavesQuality::High;
+    GridData::LeavesQuality leavesQualityPending_ = GridData::LeavesQuality::Fancy;
     bool cloudsPending_ = true;
     bool animatedWaterPending_ = true;
     // Draw-distance world half-extents table @ VA 0x109e60 (GOT 0x12ce04)
