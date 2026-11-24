@@ -634,13 +634,27 @@ void Game::Update() {
             player_->UpdateRotation(ldx, ldy);
             input_.ConsumeLookDelta();
             player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
-            if (input_.ConsumeBreakAction()) TryBreakBlock();
-            if (input_.ConsumePlaceAction()) TryPlaceBlock(GetSelectedBlockType());
-            if (input_.ConsumeActivateAction()) TryActivateBlock();
+            // Binary EntityPlayerSet flags +0x262/+0x263/+0x264 then
+            // EntityPlayer::Update → TracePoint → AddOrDeleteBlock (queue only).
+            // SetCell happens in FixedUpdate (mode 1/3) / FixedPostUpdate (mode 2).
+            if (input_.ConsumeBreakAction()) {
+                playerSet_.SetBreakAction(true);
+                TryBreakBlock();
+            }
+            if (input_.ConsumePlaceAction()) {
+                playerSet_.SetPlaceAction(true);
+                TryPlaceBlock(GetSelectedBlockType());
+            }
+            if (input_.ConsumeActivateAction()) {
+                playerSet_.SetActivateAction(true);
+                TryActivateBlock();
+            }
             player_->FixedUpdate();
             player_->FixedPostUpdate();
-            // Crosshair ray for DrawCursor (EntityPlayer::TracePoint each frame)
-            {
+            playerSet_.ClearActionFlags();
+            // Crosshair: reuse player hitTrace_ after AddOrDeleteBlock TracePoint
+            crosshairHit_ = player_->GetHitTrace();
+            if (!crosshairHit_.hit) {
                 Vector eye = player_->GetEyePosition();
                 Vector dir = player_->GetLookDirection();
                 float reach = player_->GetOperationDistance();
@@ -2121,26 +2135,20 @@ void Game::SetAnimatedWater(bool on) {
 
 void Game::TryBreakBlock() {
     if (!player_) return;
-    player_->AddOrDeleteBlock(true, 0);
+    // Queues mode 1; SetCell in FixedUpdate
+    player_->AddOrDeleteBlock(true, 0, false);
 }
 
 void Game::TryPlaceBlock(unsigned char blockType) {
     if (!player_) return;
-    player_->AddOrDeleteBlock(false, blockType);
+    // Queues mode 1 or 2; SetCell in FixedUpdate / FixedPostUpdate
+    player_->AddOrDeleteBlock(false, blockType, false);
 }
 
-// Binary: EntityPlayerSet flag +0x264 (E / msg 6) → mode 3 → ActivateCell(hitIndex)
+// Binary: EntityPlayerSet flag +0x264 → mode 3 → ActivateCell in FixedUpdate
 void Game::TryActivateBlock() {
     if (!player_) return;
-    Vector eye = player_->GetEyePosition();
-    Vector dir = player_->GetLookDirection();
-    float reach = player_->GetOperationDistance();
-    Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
-    GridDataTraceResult tr;
-    grid_.TracePoint(eye, to, tr, player_);
-    if (!tr.hit || tr.cellIndex < 0) return;
-    if (!grid_.IsActiveCellType(tr.blockType)) return;
-    grid_.ActivateCell(tr.cellIndex);
+    player_->AddOrDeleteBlock(false, 0, true);
 }
 
 // Palette selection index is S-Index (blocks.txt column) stored in Material+0x20.

@@ -1577,6 +1577,20 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
     return true;
 }
 
+// ConfigureAirState @ 0x99af0
+void GridData::ConfigureAirState(int cellIndex, unsigned short& outState) {
+    outState = 0;
+    if (cellIndex < 0 || cellIndex >= (int)cellTypes.size()) {
+        outState = 0xC000;
+        return;
+    }
+    unsigned char srcType = cellTypes[cellIndex];
+    unsigned short srcState = (cellIndex < (int)cellStates.size()) ? cellStates[cellIndex] : 0;
+    // SetLiquidState(dstType=0, …) may OR fluid bits if air row FTW allows
+    SetLiquidStateMerge(*this, 0, outState, srcType, srcState);
+    outState = (unsigned short)(outState | 0xC000);
+}
+
 bool GridData::BreakBlock(const GridDataTraceResult& tr) {
     if (!tr.hit) return false;
     int idx = CoordToIndex(tr.cellX, tr.cellY, tr.cellZ);
@@ -1585,8 +1599,10 @@ bool GridData::BreakBlock(const GridDataTraceResult& tr) {
     if (idx >= 0 && idx < (int)cellStates.size() && HasLiquidState(cellStates[idx]) &&
         (idx >= (int)cellTypes.size() || cellTypes[idx] == 0))
         return false;
-    // ConfigureAirState (0x99af0) → air + state 0
-    SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, 0);
+    // Binary: ConfigureAirState → type 0 + state (liquid bits | 0xC000)
+    unsigned short airSt = 0;
+    ConfigureAirState(idx, airSt);
+    SetCell(tr.cellX, tr.cellY, tr.cellZ, 0, airSt);
     // SELF-MADE: block above may be SAU and lose support
     ScheduleSauCheck(tr.cellX, tr.cellY + 1, tr.cellZ);
     return true;

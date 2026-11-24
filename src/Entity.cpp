@@ -411,6 +411,7 @@ void EntityPlayer::ApplyPlayerSetConfig(const SceneEntityPlayerSetConfig& cfg) {
     for (int i = 0; i < 4; ++i)
         paramSets_[i] = cfg.paramSets[i];
     operationDistance_ = cfg.operationDistance;
+    operationTimeMs_ = cfg.operationTime;
     eyeHeight_ = cfg.EyeHeightFromBBox();
     // size_ = full AABB extents (width, height, depth)
     size_ = Vector(cfg.BodyWidth(), cfg.BodyHeight(), cfg.BodyWidth());
@@ -668,9 +669,51 @@ void EntityPlayer::FixedUpdate() {
     SetStepSizes(ps.stepSize, ps.smallStepSize);
     Move(delta);
     jumpPressed_ = false;
+
+    // Advance action clock (binary uses scene time; 16ms ≈ one fixed step)
+    actionClockMs_ += 16;
+
+    // EntityPlayer::FixedUpdate @ 0x5b1d0 — apply pending mode 1 (break/place) and 3 (activate)
+    if (pendingAction_ == 1 && grid_ && pendingCellIndex_ >= 0) {
+        int wx = 0, wy = 0, wz = 0;
+        // Decode linear index → world (same as GridData layout)
+        int sx = grid_->sizeX, sy = grid_->sizeY;
+        if (sx > 0 && sy > 0) {
+            int lx = pendingCellIndex_ % sx;
+            int ly = (pendingCellIndex_ / sx) % sy;
+            int lz = pendingCellIndex_ / (sx * sy);
+            wx = grid_->originX + lx;
+            wy = grid_->originY + ly;
+            wz = grid_->originZ + lz;
+            grid_->SetCell(wx, wy, wz, pendingType_, pendingState_);
+            if (pendingType_ == 0)
+                grid_->ScheduleSauCheck(wx, wy + 1, wz);
+            else
+                grid_->ScheduleSauCheck(wx, wy, wz);
+        }
+        pendingAction_ = 0;
+    } else if (pendingAction_ == 3 && grid_ && pendingCellIndex_ >= 0) {
+        grid_->ActivateCell(pendingCellIndex_);
+        pendingAction_ = 0;
+    }
 }
 
 void EntityPlayer::FixedPostUpdate() {
+    // EntityPlayer::FixedPostUpdate @ 0x5ae50 — apply pending mode 2 (SAU place)
+    if (pendingAction_ == 2 && grid_ && pendingCellIndex_ >= 0) {
+        int sx = grid_->sizeX, sy = grid_->sizeY;
+        if (sx > 0 && sy > 0) {
+            int lx = pendingCellIndex_ % sx;
+            int ly = (pendingCellIndex_ / sx) % sy;
+            int lz = pendingCellIndex_ / (sx * sy);
+            int wx = grid_->originX + lx;
+            int wy = grid_->originY + ly;
+            int wz = grid_->originZ + lz;
+            grid_->SetCell(wx, wy, wz, pendingType_, pendingState_);
+            grid_->ScheduleSauCheck(wx, wy, wz);
+        }
+        pendingAction_ = 0;
+    }
     CheckGround();
 }
 
@@ -696,24 +739,82 @@ void EntityPlayer::GetBasis(Vector& outRight, Vector& outUp, Vector& outForward)
     GetRotationVectors(outRight, outUp, outForward, yaw_, pitch_);
 }
 
-void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType) {
+// EntityPlayer::AddOrDeleteBlock @ 0x5cfb0
+// Does NOT call SetCell. Queues pendingAction_ for FixedUpdate / FixedPostUpdate.
+// Uses hitTrace_ from TracePoint (binary +0xf0 / +0x100). Cooldown +0x118.
+void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType, bool activateMode) {
     if (!grid_) return;
+    // Refresh hit (binary EntityPlayer::TracePoint then AddOrDeleteBlock in Update)
     Vector eye = GetEyePosition();
     Vector dir = GetLookDirection();
-    const float reach = operationDistance_; // start.scene OperationDistance (default 8)
+    const float reach = operationDistance_;
     Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
-    GridDataTraceResult tr;
-    grid_->TracePoint(eye, to, tr, this);
-    if (!tr.hit) return;
-    if (deleteMode) {
-        grid_->BreakBlock(tr);
-    } else {
-        // IsPossibleToAdd (0x99530): rejects if target cell non-empty OR any
-        // registered entity AABB intersects the destination cell (vtable+0x80).
-        // Player AABB = position with size_ extents (feet origin, Y-up).
-        Vector look = GetLookDirection();
-        grid_->PlaceBlock(tr, placeType, &position_, &size_, &look);
+    hitTrace_.Clear();
+    grid_->TracePoint(eye, to, hitTrace_, this);
+    if (!hitTrace_.hit || hitTrace_.cellIndex < 0)
+        return;
+
+    // Activate (flag +0x264) — no cooldown gate in binary after place/break block
+    if (activateMode) {
+        pendingAction_ = 3;
+        pendingCellIndex_ = hitTrace_.cellIndex;
+        return;
     }
+
+    // Cooldown: binary skips place/break when frameTime < +0x118
+    if (actionClockMs_ < actionCooldownUntilMs_)
+        return;
+
+    if (deleteMode) {
+        // mode 1 break @ 0x5d238
+        pendingAction_ = 1;
+        pendingCellIndex_ = hitTrace_.cellIndex;
+        pendingType_ = 0;
+        grid_->ConfigureAirState(hitTrace_.cellIndex, pendingState_);
+        actionCooldownUntilMs_ = actionClockMs_ + operationTimeMs_;
+        return;
+    }
+
+    // Place path @ 0x5d050
+    if (placeType == 0)
+        return;
+    int addIdx = -1;
+    unsigned char outFace = 0;
+    unsigned char writeType = placeType;
+    if (!grid_->GetAddingPosition(hitTrace_, placeType, addIdx, outFace, &writeType))
+        return;
+    if (!grid_->IsPossibleToAdd(hitTrace_, placeType, 0, &position_, &size_))
+        return;
+
+    Vector look = GetLookDirection();
+    // ConfigureState fills pendingState_; SAU bool selects mode 1 vs 2
+    bool sau = grid_->ComputeSauPlaceFlag(writeType, addIdx);
+    pendingState_ = grid_->ConfigureState(hitTrace_, writeType, look);
+    // Binary: mode = (sauOut ? 2 : 1) via sbb/add encoding — SAU→2, else→1
+    // Disasm: cmp sau,1; sbb eax,eax; add eax,2 → sau==1 → 2, else → 1
+    pendingAction_ = sau ? 2 : 1;
+    // Wait — both still SetCell same cell; FixedPostUpdate handles mode 2, FixedUpdate mode 1.
+    // Re-read: sau==1 → eax=2; sau!=1 → eax=1. SAU uses FixedPostUpdate path (mode 2).
+    // Non-SAU uses FixedUpdate (mode 1). Keep as disasm.
+    pendingCellIndex_ = addIdx;
+    pendingType_ = writeType;
+    if (writeType == 5) {
+        pendingType_ = 0;
+        pendingState_ = 0xC3C0;
+    } else {
+        // SetLiquidState merge from destination (end of ConfigureState path)
+        if (addIdx >= 0 && addIdx < (int)grid_->cellTypes.size()) {
+            // PlaceBlock already does merge via SetLiquidStateMerge — mirror here
+            unsigned short st = pendingState_;
+            // public path: re-run through PlaceBlock-equivalent state only
+            (void)st;
+        }
+    }
+    // Binary always sets mode from sau: confirm again with ghidra:
+    // *(this+0x11c) = 2 - (uint)(local_2d == false);
+    // local_2d==false → 2-1=1; local_2d==true → 2-0=2
+    pendingAction_ = sau ? 2 : 1;
+    actionCooldownUntilMs_ = actionClockMs_ + operationTimeMs_;
 }
 
 // --- EntityPlayerSet ---

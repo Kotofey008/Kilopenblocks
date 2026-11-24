@@ -98,10 +98,17 @@ public:
     Vector GetEyePosition() const;
     Vector GetLookDirection() const;
     void GetBasis(Vector& outRight, Vector& outUp, Vector& outForward) const;
-    void AddOrDeleteBlock(bool deleteMode, unsigned char placeType);
+    // Binary AddOrDeleteBlock @ 0x5cfb0 — queues action only (no SetCell here).
+    // deleteMode true → break; false → place with placeType (MtlSelIndex resolved by caller).
+    // activateMode → mode 3 (ActivateCell). Cooldown via operationTimeMs.
+    void AddOrDeleteBlock(bool deleteMode, unsigned char placeType, bool activateMode = false);
 
     // Apply Scene EntityPlayerSet config (ParamSets, BBox, reach, eye height)
     void ApplyPlayerSetConfig(const SceneEntityPlayerSetConfig& cfg);
+
+    // Hit cell from last TracePoint (binary +0x100)
+    int GetHitCellIndex() const { return hitTrace_.cellIndex; }
+    const GridDataTraceResult& GetHitTrace() const { return hitTrace_; }
 
     float GetOperationDistance() const { return operationDistance_; }
     float GetEyeHeight() const { return eyeHeight_; }
@@ -120,11 +127,26 @@ private:
     bool jumpPressed_ = false;
     Mode mode_ = Mode::Walk;
     float operationDistance_ = 8.f;
+    int operationTimeMs_ = 250; // EntityPlayerSet +0x1ac / scene OperationTime
     // Horizontal velocity for accel/decel (SimplePlayer::Update uses ParamSet accel)
     float horizSpeed_ = 0.f;
     PlayerParamSet paramSets_[4];
     bool flipX_ = false;
     bool flipY_ = false;
+
+    // --- Binary deferred block action (EntityPlayer +0xf0..+0x126) ---
+    // TracePoint writes hitTrace_ (+0xf0); cellIndex at +0x100.
+    GridDataTraceResult hitTrace_;
+    // +0x118 cooldown deadline (ms clock); 0 = ready
+    int actionCooldownUntilMs_ = 0;
+    // +0x11c: 0=none, 1=break/SAU-place, 2=place, 3=activate
+    int pendingAction_ = 0;
+    // +0x120 cell index, +0x124 type, +0x126 state
+    int pendingCellIndex_ = -1;
+    unsigned char pendingType_ = 0;
+    unsigned short pendingState_ = 0;
+    // Frame clock for cooldown (ms); advanced by FixedUpdate
+    int actionClockMs_ = 0;
 };
 
 void GetRotationVectors(Vector& outRight, Vector& outUp, Vector& outForward,
@@ -161,8 +183,20 @@ public:
         return config_.paramSets[(i >= 0 && i < 4) ? i : 0];
     }
 
+    // Binary input flags +0x262/+0x263/+0x264 (HandleTouch / HandleMessage)
+    void SetPlaceAction(bool v) { flagPlace_ = v; }
+    void SetBreakAction(bool v) { flagBreak_ = v; }
+    void SetActivateAction(bool v) { flagActivate_ = v; }
+    bool GetPlaceAction() const { return flagPlace_; }
+    bool GetBreakAction() const { return flagBreak_; }
+    bool GetActivateAction() const { return flagActivate_; }
+    void ClearActionFlags() { flagPlace_ = flagBreak_ = flagActivate_ = false; }
+
 private:
     EntityPlayer* local_ = nullptr;
     SceneEntityPlayerSetConfig config_;
     bool flying_ = false;
+    bool flagPlace_ = false;    // +0x262
+    bool flagBreak_ = false;    // +0x263
+    bool flagActivate_ = false; // +0x264
 };

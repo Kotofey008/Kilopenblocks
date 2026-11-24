@@ -218,6 +218,8 @@ public:
                     const Vector* playerPos = nullptr, const Vector* playerSize = nullptr,
                     const Vector* playerLook = nullptr);
     bool BreakBlock(const GridDataTraceResult& tr);
+    // ConfigureAirState @ 0x99af0 — state for breaking: SetLiquidState merge then |0xC000
+    void ConfigureAirState(int cellIndex, unsigned short& outState);
     void GetCellSelectionBox(int cellIndex, Vector& outMin, Vector& outMax);
     // GetCellCollisionBoxArray @ 0x8xx — up to 4 world-space AABBs for physics.
     // Returns count written to outMins/outMaxs (arrays of size >= 4).
