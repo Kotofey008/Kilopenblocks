@@ -104,10 +104,19 @@ void InputMgr::TouchReleaseEvent(unsigned int id, int x, int y) {
 }
 
 void InputMgr::MousePressEvent(MouseButton btn) {
-    if (btn == MouseButton::Left) breakPending_ = true;
-    if (btn == MouseButton::Right) placePending_ = true;
+    if (btn == MouseButton::Left) {
+        breakPending_ = true;
+        mouseBreakHeld_ = true;
+    }
+    if (btn == MouseButton::Right) {
+        placePending_ = true;
+        mousePlaceHeld_ = true;
+    }
 }
-void InputMgr::MouseReleaseEvent(MouseButton) {}
+void InputMgr::MouseReleaseEvent(MouseButton btn) {
+    if (btn == MouseButton::Left) mouseBreakHeld_ = false;
+    if (btn == MouseButton::Right) mousePlaceHeld_ = false;
+}
 
 bool InputMgr::ConsumeBreakAction() {
     bool v = breakPending_; breakPending_ = false; return v;
@@ -117,6 +126,15 @@ bool InputMgr::ConsumePlaceAction() {
 }
 bool InputMgr::ConsumeActivateAction() {
     bool v = activatePending_; activatePending_ = false; return v;
+}
+
+bool InputMgr::IsBreakHeld() const {
+    if (mouseBreakHeld_) return true;
+    return IsHudButtonHeld("hud_delete");
+}
+bool InputMgr::IsPlaceHeld() const {
+    if (mousePlaceHeld_) return true;
+    return IsHudButtonHeld("hud_add");
 }
 
 bool InputMgr::IsHudButtonHeld(const char* name) const {

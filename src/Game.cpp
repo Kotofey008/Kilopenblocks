@@ -634,14 +634,15 @@ void Game::Update() {
             player_->UpdateRotation(ldx, ldy);
             input_.ConsumeLookDelta();
             player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
-            // Binary EntityPlayerSet flags +0x262/+0x263/+0x264 then
-            // EntityPlayer::Update → TracePoint → AddOrDeleteBlock (queue only).
-            // SetCell happens in FixedUpdate (mode 1/3) / FixedPostUpdate (mode 2).
-            if (input_.ConsumeBreakAction()) {
+            // Binary EntityPlayer::Update @ 0x5d290 each frame:
+            //   TracePoint → AddOrDeleteBlock while EPS flags +0x262/+0x263 held.
+            // Flags stay set for the duration of the hold; cooldown +0x118 gates rate.
+            // Edge Consume* still used for activate (tap).
+            if (input_.IsBreakHeld()) {
                 playerSet_.SetBreakAction(true);
                 TryBreakBlock();
             }
-            if (input_.ConsumePlaceAction()) {
+            if (input_.IsPlaceHeld()) {
                 playerSet_.SetPlaceAction(true);
                 TryPlaceBlock(GetSelectedBlockType());
             }
@@ -649,6 +650,9 @@ void Game::Update() {
                 playerSet_.SetActivateAction(true);
                 TryActivateBlock();
             }
+            // Drain edge flags so a same-frame press without hold path still works
+            (void)input_.ConsumeBreakAction();
+            (void)input_.ConsumePlaceAction();
             player_->FixedUpdate();
             player_->FixedPostUpdate();
             playerSet_.ClearActionFlags();

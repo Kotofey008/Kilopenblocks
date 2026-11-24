@@ -411,7 +411,14 @@ void EntityPlayer::ApplyPlayerSetConfig(const SceneEntityPlayerSetConfig& cfg) {
     for (int i = 0; i < 4; ++i)
         paramSets_[i] = cfg.paramSets[i];
     operationDistance_ = cfg.operationDistance;
+    // INTENTIONAL DEVIATION (like SAU=1 gravity): binary OperationTime from
+    // start.scene is 300 ms. Single-tap place/break felt sluggish vs Minecraft-
+    // style creative (~150–200 ms). Keep scene value for reference but apply
+    // a slightly shorter effective cooldown so tap and hold-repeat feel snappier.
+    // Hold-to-repeat itself matches binary (flags stay true while held).
     operationTimeMs_ = cfg.operationTime;
+    if (operationTimeMs_ > 180)
+        operationTimeMs_ = 180; // was 300 in start.scene — deliberate trim
     eyeHeight_ = cfg.EyeHeightFromBBox();
     // size_ = full AABB extents (width, height, depth)
     size_ = Vector(cfg.BodyWidth(), cfg.BodyHeight(), cfg.BodyWidth());

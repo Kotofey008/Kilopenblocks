@@ -38,6 +38,11 @@ public:
     bool ConsumeActivateAction();
     bool ConsumeMenuAction();
 
+    // Binary: place/break flags stay true while HUD/mouse button held
+    // (EntityPlayerSet +0x262/+0x263). Edge Consume* is for activate/menu only.
+    bool IsBreakHeld() const;
+    bool IsPlaceHeld() const;
+
     void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
     void EndFrame();
 
@@ -80,6 +85,8 @@ private:
     bool placePending_ = false;
     bool activatePending_ = false;
     bool menuPending_ = false;
+    bool mouseBreakHeld_ = false; // LMB held
+    bool mousePlaceHeld_ = false; // RMB held
     bool menuMode_ = false;
     HudRects hudRects_;
 
