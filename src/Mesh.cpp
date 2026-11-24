@@ -281,9 +281,16 @@ void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0
         if (uvr & 1) {
             int facing = UvrTableFacing((int)(orientState & 3), uvr);
             matBin = kUvrFaceTable[facing][binFace];
+            // UVR bit1 (value 2, set in UVR=3): after table, ZP/ZN material indices
+            // are opposite the player-facing convention used for UVR=1 sides.
+            // Binary table @ 0x10a1a0 maps world face→mat face; with (state+2)&3
+            // X sides match, but ZP(2)/ZN(5) read inverted for bit1 blocks (bed).
+            // Swap mat ZP↔ZN when bit1 set so near face gets the intended front tile.
+            if ((uvr & 2) != 0) {
+                if (matBin == 2) matBin = 5;
+                else if (matBin == 5) matBin = 2;
+            }
         }
-        // UVR==7 without only bit0 is still covered by &1 (7 includes bit0).
-        // Axis-only paths without bit0 fall through to identity matBin.
     }
     Texture::TileUV((int)mat.uFace(matBin), (int)mat.vFace(matBin), u0, v0, u1, v1);
 }
