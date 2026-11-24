@@ -27,12 +27,21 @@
 //   +0x1c int  cellY
 //   +0x20 int  cellZ
 //   +0x24 int  0 (padding / unused)
-// Current struct is a readable projection of that layout.
+//
+// Binary face enum (GetAddingPosition jumptable @ 0x99320 + BoxLineSegIntersect):
+//   0 = XP (+X face of cell → place offset x+1)
+//   1 = YP (+Y face of cell → place offset y+1)
+//   2 = ZP (+Z face of cell → place offset z+1)
+//   3 = XN (−X face of cell → place offset x−1)
+//   4 = YN (−Y face of cell → place offset y−1)
+//   5 = ZN (−Z face of cell → place offset z−1)
+// Confirmed: slab merge uses face==1 (YP) / face==4 (YN); GetDirectionMarker
+// compares face to 0/1/2/3/4/5 with the same numbering.
 struct GridDataTraceResult {
     bool hit = false;
     int cellX = 0, cellY = 0, cellZ = 0;
     int cellIndex = -1;     // linear index when available
-    int face = -1;          // 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z (binary face enum)
+    int face = -1;          // binary: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN
     float distance = 0.f;   // t along ray (0..1 of segment or absolute)
     Vector hitPos;
     unsigned char blockType = 0;
@@ -172,7 +181,11 @@ public:
     // Binary OnLadder @ 0x7b090 — not fully recovered; returns false until ladder mats wired.
     bool OnLadder(const Vector& feet, const Vector& bodySize, const Vector& offset) const;
     // Trace / interaction (binary-recovered)
-    bool FindFirstUsedCell(const Vector& from, const Vector& to, float& outT, int& outCellIndex);
+    // FindFirstUsedCell @ 0x79dd0 — outFace from BoxLineSegIntersect against
+    // GetCellCollisionBoxArray AABBs (not DDA step axis). Binary writes face
+    // to param_4; TracePoint copies it to result+0x14.
+    bool FindFirstUsedCell(const Vector& from, const Vector& to, float& outT,
+                           int& outCellIndex, int& outFace);
     bool IsHidden(int regionCoordA, int regionCoordB) const;
     void TracePoint(const Vector& from, const Vector& to, GridDataTraceResult& result, void* entity);
     // GetAddingPosition @ 0x99240 — neighbour cell, or same cell + full type when

@@ -815,65 +815,97 @@ void GridData::Invalidate() {
 
 
 // ---------------------------------------------------------------------------
-// FindFirstUsedCell (0x79dd0, 2541 B) — recovered structure
-//
-// Verified from disassembly:
-//   1. Build world AABB from integer bounds (esi+0x10/14/18/1c/48)
-//   2. BoxLineSegIntersect (0xb3520) → entry/exit params (t0,t1) as doubles
-//   3. If miss → return cellIndex = -1
-//   4. Compute entry point = from + t0 * (to-from); floor to cell coords
-//   5. Clamp cell coords to [0, dim-1]
-//   6. DDA step loop:
-//        - Map cell → region (>>4), check region flag at +0x1e
-//        - If region active: linear index, if types[idx] != 0 → HIT
-//        - Step along axis with smallest tMax (classic 3D DDA)
-//   7. Return cellIndex + t
-//
-// Current implementation follows this structure with a simple slab AABB clip
-// in place of the full 2269 B BoxLineSegIntersect, and DDA matching the
-// observed step/clamp/type-check pattern. Region +0x1e flag approximated
-// as "always active" until region array is fully mapped.
 // ---------------------------------------------------------------------------
+// BoxLineSegIntersect @ 0xb3520 — AABB vs segment; writes entry t, exit t, face.
+//
+// Binary face codes written to param_7 (confirmed via pdg + GetAddingPosition
+// jumptable @ 0x99320 → offsets x±1 / y±1 / z±1):
+//   0 = XP (+X face)   3 = XN (−X face)
+//   1 = YP (+Y face)   4 = YN (−Y face)
+//   2 = ZP (+Z face)   5 = ZN (−Z face)
+//
+// Face is the face of the box that the segment *enters* through (tEnter plane).
+// When going +axis, entry is at box min → negative-side face (XN=3, YN=4, ZN=5).
+// When going −axis, entry is at box max → positive-side face (XP=0, YP=1, ZP=2).
+// ---------------------------------------------------------------------------
+static bool BoxLineSegIntersect(const Vector& bmin, const Vector& bmax,
+                                const Vector& from, const Vector& to,
+                                float& outTEnter, float& outTExit, int& outFace) {
+    const float dx = to.x - from.x;
+    const float dy = to.y - from.y;
+    const float dz = to.z - from.z;
+    const float eps = 1e-8f;
+
+    float tEnter = 0.f;
+    float tExit = 1.f;
+    int face = -1;
+
+    auto axis = [&](float p, float d, float mn, float mx, int faceMin, int faceMax) -> bool {
+        if (std::fabs(d) < eps) {
+            return p >= mn && p <= mx;
+        }
+        float inv = 1.f / d;
+        float tA = (mn - p) * inv;
+        float tB = (mx - p) * inv;
+        int fA = faceMin;
+        int fB = faceMax;
+        if (tA > tB) {
+            float tmp = tA; tA = tB; tB = tmp;
+            int tf = fA; fA = fB; fB = tf;
+        }
+        if (tA > tEnter) {
+            tEnter = tA;
+            face = fA;
+        }
+        if (tB < tExit)
+            tExit = tB;
+        return tEnter <= tExit;
+    };
+
+    // X: min plane → face 3 (XN), max plane → face 0 (XP)
+    // Y: min plane → face 4 (YN), max plane → face 1 (YP)
+    // Z: min plane → face 5 (ZN), max plane → face 2 (ZP)
+    if (!axis(from.x, dx, bmin.x, bmax.x, 3, 0)) return false;
+    if (!axis(from.y, dy, bmin.y, bmax.y, 4, 1)) return false;
+    if (!axis(from.z, dz, bmin.z, bmax.z, 5, 2)) return false;
+    if (tExit < 0.f || tEnter > 1.f) return false;
+    if (tEnter < 0.f) tEnter = 0.f;
+    if (face < 0) face = 0;
+
+    outTEnter = tEnter;
+    outTExit = tExit;
+    outFace = face;
+    return true;
+}
+
 static bool ClipRayAABB(const Vector& from, const Vector& to,
                         const Vector& bmin, const Vector& bmax,
                         float& t0, float& t1) {
-    // Slab method (core of BoxLineSegIntersect for axis-aligned box)
-    float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
-    t0 = 0.f; t1 = 1.f;
-    auto slab = [&](float p, float d, float minv, float maxv) -> bool {
-        if (std::fabs(d) < 1e-8f) {
-            return p >= minv && p <= maxv;
-        }
-        float inv = 1.f / d;
-        float ta = (minv - p) * inv, tb = (maxv - p) * inv;
-        if (ta > tb) { float tmp = ta; ta = tb; tb = tmp; }
-        if (ta > t0) t0 = ta;
-        if (tb < t1) t1 = tb;
-        return t0 <= t1;
-    };
-    return slab(from.x, dx, bmin.x, bmax.x)
-        && slab(from.y, dy, bmin.y, bmax.y)
-        && slab(from.z, dz, bmin.z, bmax.z)
-        && t1 >= 0.f && t0 <= 1.f;
+    int face = -1;
+    return BoxLineSegIntersect(bmin, bmax, from, to, t0, t1, face);
 }
 
-// Returns true on hit; writes *outT (0..1 along segment) and *outCellIndex
+// FindFirstUsedCell @ 0x79dd0 (2541 B)
+// Binary path on non-air cell:
+//   GetCellCollisionBoxArray → for each AABB BoxLineSegIntersect → keep nearest
+//   then GetCellSelectionBox + BoxLineSegIntersect again for final face/t
+// Face comes from BoxLineSegIntersect, NOT from DDA step axis.
 bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
-                                 float& outT, int& outCellIndex) {
+                                 float& outT, int& outCellIndex, int& outFace) {
     outT = 0.f;
     outCellIndex = -1;
+    outFace = -1;
     if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) return false;
 
-    Vector bmin((float)originX, (float)originY, (float)originZ);
-    Vector bmax((float)(originX + sizeX), (float)(originY + sizeY), (float)(originZ + sizeZ));
+    Vector wbmin((float)originX, (float)originY, (float)originZ);
+    Vector wbmax((float)(originX + sizeX), (float)(originY + sizeY), (float)(originZ + sizeZ));
 
     float t0, t1;
-    if (!ClipRayAABB(from, to, bmin, bmax, t0, t1)) return false;
+    if (!ClipRayAABB(from, to, wbmin, wbmax, t0, t1)) return false;
     if (t0 < 0.f) t0 = 0.f;
     if (t1 > 1.f) t1 = 1.f;
 
     float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
-    // Entry point
     float ex = from.x + dx * t0;
     float ey = from.y + dy * t0;
     float ez = from.z + dz * t0;
@@ -881,7 +913,6 @@ bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
     int x = (int)std::floor(ex);
     int y = (int)std::floor(ey);
     int z = (int)std::floor(ez);
-    // Clamp to bounds (observed: cmovl dim-1)
     if (x < originX) x = originX;
     if (y < originY) y = originY;
     if (z < originZ) z = originZ;
@@ -896,17 +927,8 @@ bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
     auto frac = [](float v) { return v - std::floor(v); };
     float tMaxX = 1e30f, tMaxY = 1e30f, tMaxZ = 1e30f;
     float tDeltaX = 1e30f, tDeltaY = 1e30f, tDeltaZ = 1e30f;
-    // t along full segment; start at t0
     float t = t0;
     if (stepX != 0) {
-        float inv = 1.f / std::fabs(dx);
-        tDeltaX = inv; // one cell in param space (segment length normalized later)
-        // distance in segment-param to next X plane from entry
-        float next = (stepX > 0) ? (std::floor(ex) + 1.f - ex) : (ex - std::floor(ex));
-        if (stepX < 0 && frac(ex) == 0.f) next = 1.f;
-        tMaxX = t0 + next * inv * (dx != 0 ? std::fabs(dx)/std::fabs(dx) : 0); // simplify
-        // Use absolute param: t increases by (cell_size / |dir|) along segment
-        // dir is (to-from) so |dir_comp| is |dx|; param step = 1/|dx| for 1 cell
         tMaxX = t0 + ((stepX > 0) ? (1.f - frac(ex)) : (frac(ex) > 0 ? frac(ex) : 1.f)) / std::fabs(dx);
         tDeltaX = 1.f / std::fabs(dx);
     }
@@ -919,53 +941,62 @@ bool GridData::FindFirstUsedCell(const Vector& from, const Vector& to,
         tDeltaZ = 1.f / std::fabs(dz);
     }
 
-    // Binary FindFirstUsedCell @ 0x79dd0: non-air cells call
-    // GetCellCollisionBoxArray; water (and other non-solid) return 0 boxes →
-    // DDA continues. Effect: ray passes through water to the first solid.
-    auto isTraceSolid = [&](int cidx) -> bool {
-        if (cidx < 0 || cidx >= (int)cellTypes.size()) return false;
-        unsigned char t = cellTypes[cidx];
-        // type 0 = air or pure liquid (state carries fluid); ray continues
-        if (t == 0) return false;
-        if (cidx < (int)cellStates.size() && HasLiquidState(cellStates[cidx]))
-            return false;
-        if (t == 12 || t == 13 || t == 14) return false;
-        if (t == 17 || t == 18) return false;
-        return true;
-    };
-
-    int face = -1;
+    // Binary: GetCellCollisionBoxArray returns 0 for non-solid → DDA continues.
     for (int i = 0; i < 512 && t <= t1; ++i) {
         int cidx = CoordToIndex(x, y, z);
-        if (cidx >= 0 && isTraceSolid(cidx)) {
-            outT = t;
-            outCellIndex = cidx;
-            return true;
+        if (cidx >= 0 && cidx < (int)cellTypes.size()) {
+            CellAabb boxes[4];
+            int n = GetCellCollisionBoxArray(cidx, boxes, 4);
+            if (n > 0) {
+                float bestT = 1.f;
+                int bestFace = -1;
+                bool any = false;
+                for (int bi = 0; bi < n; ++bi) {
+                    float te = 0.f, tx = 1.f;
+                    int fc = -1;
+                    if (BoxLineSegIntersect(boxes[bi].mn, boxes[bi].mx, from, to, te, tx, fc)) {
+                        if (te < bestT) {
+                            bestT = te;
+                            bestFace = fc;
+                            any = true;
+                        }
+                    }
+                }
+                if (any) {
+                    // Binary: refine with GetCellSelectionBox + BoxLineSegIntersect
+                    Vector smin, smax;
+                    GetCellSelectionBox(cidx, smin, smax);
+                    float te = 0.f, tx = 1.f;
+                    int fc = -1;
+                    if (BoxLineSegIntersect(smin, smax, from, to, te, tx, fc)) {
+                        bestT = te;
+                        bestFace = fc;
+                    }
+                    outT = bestT;
+                    outCellIndex = cidx;
+                    outFace = bestFace;
+                    return true;
+                }
+            }
         }
-        // Step
+        // DDA step (region flag +0x1e approximated as always active)
         if (tMaxX < tMaxY) {
             if (tMaxX < tMaxZ) {
                 t = tMaxX; tMaxX += tDeltaX; x += stepX;
-                face = (stepX > 0) ? 1 : 0;
             } else {
                 t = tMaxZ; tMaxZ += tDeltaZ; z += stepZ;
-                face = (stepZ > 0) ? 5 : 4;
             }
         } else {
             if (tMaxY < tMaxZ) {
                 t = tMaxY; tMaxY += tDeltaY; y += stepY;
-                face = (stepY > 0) ? 3 : 2;
             } else {
                 t = tMaxZ; tMaxZ += tDeltaZ; z += stepZ;
-                face = (stepZ > 0) ? 5 : 4;
             }
         }
-        // Bounds exit
         if (x < originX || y < originY || z < originZ ||
             x >= originX + sizeX || y >= originY + sizeY || z >= originZ + sizeZ)
             break;
     }
-    (void)face;
     return false;
 }
 
@@ -991,9 +1022,13 @@ void GridData::TracePoint(const Vector& from, const Vector& to,
     // Entity-tracer list ownership/registration not yet recovered — empty.
 
     // Path 2: FindFirstUsedCell + IsHidden
+    // Binary TracePoint @ 0x7c050:
+    //   face = local_20[0] from FindFirstUsedCell (BoxLineSegIntersect), written
+    //   to result+0x14. Must NOT re-derive face from look-vector dominant axis.
     float t = 0.f;
     int cellIndex = -1;
-    if (!FindFirstUsedCell(from, to, t, cellIndex)) return;
+    int face = -1;
+    if (!FindFirstUsedCell(from, to, t, cellIndex, face)) return;
     if (cellIndex < 0) return;
 
     // Decode cell coords from index
@@ -1009,8 +1044,6 @@ void GridData::TracePoint(const Vector& from, const Vector& to,
         return;
     }
 
-    // Reconstruct face by short backward step from hit (approximate; full face
-    // comes from DDA step axis in FindFirstUsedCell — stored via re-trace below)
     float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
     result.hit = true;
     result.cellIndex = cellIndex;
@@ -1018,13 +1051,12 @@ void GridData::TracePoint(const Vector& from, const Vector& to,
     result.distance = t;
     result.blockType = cellTypes[cellIndex];
     result.hitPos = Vector(from.x + dx * t, from.y + dy * t, from.z + dz * t);
-
-    // Face: determine from which side we entered by checking neighbor along -dir
-    int face = -1;
-    float ax = std::fabs(dx), ay = std::fabs(dy), az = std::fabs(dz);
-    if (ax >= ay && ax >= az) face = (dx > 0) ? 1 : 0;
-    else if (ay >= ax && ay >= az) face = (dy > 0) ? 3 : 2;
-    else face = (dz > 0) ? 5 : 4;
+    // Binary: *(result+0x14) = face from FindFirstUsedCell / BoxLineSegIntersect
+    // Enum: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN
+    if (face < 0) {
+        // BoxLineSegIntersect default when entry t clamped to 0 (ray origin inside)
+        face = 1; // binary FindFirstUsedCell sets local_20[0]=1 when == -1
+    }
     result.face = face;
 }
 
@@ -1149,11 +1181,13 @@ void GridData::TickSau(int dtMs, int periodMs, int maxSteps) {
 
 
 // GetAddingPosition @ 0x99240
-// Default: step to neighbour along hit face.
-// Merge (binary): placing BMT0 onto existing BMT0 with height<=15 when
-//   face is top of bottom-slab (our face 2 / binary YP=1) or bottom of top-slab
-//   (our face 3 / binary YN=4), and both share the same FullHeightBlockVariant
-//   → write full type into the SAME cell.
+// Binary face jumptable (disasm 0x99320 / targets 0x994d0..0x993f8):
+//   face 0 → x+1   face 1 → y+1   face 2 → z+1
+//   face 3 → x−1   face 4 → y−1   face 5 → z−1
+// Slab merge: place BMT0 onto existing BMT0 height<=0xf when
+//   face==1 (YP) and existing is bottom slab (!(state&4)), or
+//   face==4 (YN) and existing is top slab (state&4),
+//   and FullHeightBlockVariant matches → same cell, full type.
 bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char blockType,
                                  int& outCellIndex, unsigned char& outFace,
                                  unsigned char* outType) {
@@ -1166,23 +1200,23 @@ bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char bl
     int hitIdx = CoordToIndex(tr.cellX, tr.cellY, tr.cellZ);
     outCellIndex = hitIdx;
 
-    // --- slab merge path (binary GetAddingPosition) ---
+    // --- slab merge path (binary GetAddingPosition @ 0x992d2..) ---
     if (hitIdx >= 0 && hitIdx < (int)cellTypes.size() &&
         !materials.empty() && blockType < materials.size()) {
         unsigned char existType = cellTypes[hitIdx];
         const Material* placeMat = GetMaterial((int)blockType);
         const Material* existMat = GetMaterial((int)existType);
+        // Binary: place BMT==0 && exist BMT==0 && exist height <= 0xf
         if (placeMat && existMat &&
             placeMat->prop01() == 0 && existMat->prop01() == 0 &&
             existMat->height() <= 0x0f) {
             unsigned short est = (hitIdx < (int)cellStates.size()) ? cellStates[hitIdx] : 0;
-            // Project faces: 2=+Y (binary YP=1), 3=-Y (binary YN=4)
             bool mergeFace = false;
-            if (tr.face == 2) {
-                // top of bottom slab
+            if (tr.face == 1) {
+                // YP: top of bottom slab
                 if ((est & 4) == 0) mergeFace = true;
-            } else if (tr.face == 3) {
-                // bottom of top slab
+            } else if (tr.face == 4) {
+                // YN: bottom of top slab
                 if ((est & 4) != 0) mergeFace = true;
             }
             if (mergeFace) {
@@ -1198,14 +1232,15 @@ bool GridData::GetAddingPosition(const GridDataTraceResult& tr, unsigned char bl
         }
     }
 
+    // Binary face → neighbour (jumptable verified via rizin @ 0x99320)
     int x = tr.cellX, y = tr.cellY, z = tr.cellZ;
     switch (tr.face) {
-        case 0: x++; break;
-        case 1: x--; break;
-        case 2: y++; break;
-        case 3: y--; break;
-        case 4: z++; break;
-        case 5: z--; break;
+        case 0: x++; break; // XP
+        case 1: y++; break; // YP
+        case 2: z++; break; // ZP
+        case 3: x--; break; // XN
+        case 4: y--; break; // YN
+        case 5: z--; break; // ZN
         default: break;
     }
     outCellIndex = CoordToIndex(x, y, z);
@@ -1217,6 +1252,14 @@ bool GridData::IsPossibleToAdd(const GridDataTraceResult& tr, unsigned char bloc
     int idx = -1; unsigned char face = 0; unsigned char placeType = blockType;
     if (!GetAddingPosition(tr, blockType, idx, face, &placeType)) return false;
     if (idx < 0 || idx >= (int)cellTypes.size()) return false;
+
+    // Binary IsPossibleToAdd @ 0x99530: BMT==3 (ladder) rejects face YP(1) / YN(4).
+    if (!materials.empty() && blockType < materials.size() &&
+        materials[blockType].prop01() == 3) {
+        if (tr.face == 1 || tr.face == 4)
+            return false;
+    }
+
     // Destination empty / liquid, OR same-cell slab merge (placeType is full variant).
     {
         unsigned char dt = cellTypes[idx];
@@ -1309,31 +1352,32 @@ static unsigned short BinaryLookFacingXZ(float lx, float lz) {
     return face;
 }
 
-// GetDirectionMarker @ 0x991xx — simplified recovered cases used by ConfigureState.
-// Returns 1 for "upper/special" bit path, other values for BMT7 match, -1 skip.
+// GetDirectionMarker @ 0x99060 — binary face enum 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN.
+// Returns marker codes consumed by ConfigureState (1/4 for slab bit, 0/2/3/5 stairs).
 static int BinaryGetDirectionMarker(const GridDataTraceResult& tr,
                                     const Material& mat, const Vector& lookDir) {
     uint8_t bmt = mat.prop01();
+    // Binary: if BMT==0 && height>0xf → -1; elif BMT not in {0,6,10,7} → -1
     if (bmt == 0) {
         if (mat.height() > 0x0f) return -1;
-        // Partial height: hitY vs cell mid + face YP/YN
-        float cellY = (float)tr.cellY;
-        float hitY = tr.hitPos.y;
-        if (hitY < cellY + 0.5f)
-            return (tr.face == 3) ? 1 : 4; // YN→1 else 4
-        return (tr.face == 2) ? 4 : 1;     // YP→4 else 1
-    }
-    if (bmt == 6 || bmt == 10) {
-        // Binary: hitY vs cellY+eps → 1 or 4 family
+        // pdg: hitY < cellY+eps → (face!=4)*3+1 ; else (face==1)*3+1
         float cellY = (float)tr.cellY;
         if (tr.hitPos.y < cellY + 0.5f)
-            return (tr.face != 3) ? 4 : 1; // != YN → *3+1 pattern
-        return (tr.face == 2) ? 4 : 1;
+            return (tr.face != 4) ? 4 : 1; // YN(4)→1 else 4
+        return (tr.face == 1) ? 4 : 1;     // YP(1)→4 else 1
+    }
+    if (bmt == 6 || bmt == 10) {
+        // Same Y half / face tests as BMT0
+        float cellY = (float)tr.cellY;
+        if (tr.hitPos.y < cellY + 0.5f)
+            return (tr.face != 4) ? 4 : 1;
+        return (tr.face == 1) ? 4 : 1;
     }
     if (bmt == 7) {
-        // Stairs: marker from look vs hit — recovered as face-aligned codes 0/2/3/5
+        // Stairs: binary uses look vs hit cell corner + face equality on 0/2/3/5.
+        // Full look/hit branch recovered in pdg; equality path uses result face.
         (void)lookDir;
-        return tr.face; // used as equality checks against 0/2/3/5 in ConfigureState
+        return tr.face;
     }
     return -1;
 }
@@ -1429,12 +1473,17 @@ bool GridData::PlaceBlock(const GridDataTraceResult& tr, unsigned char blockType
     int ly = (idx / sizeX) % sizeY;
     int lz = idx / (sizeX * sizeY);
     // Binary ConfigureState uses EntityPlayer look vector, not hit-face normal.
+    // Face enum: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN (fallback only when look absent).
     Vector look(0, 0, 1);
     if (playerLook) {
         look = *playerLook;
     } else {
-        if (face == 0 || face == 1) look = Vector(face == 0 ? 1.f : -1.f, 0, 0);
-        else if (face == 4 || face == 5) look = Vector(0, 0, face == 4 ? 1.f : -1.f);
+        if (face == 0) look = Vector(1.f, 0, 0);
+        else if (face == 3) look = Vector(-1.f, 0, 0);
+        else if (face == 2) look = Vector(0, 0, 1.f);
+        else if (face == 5) look = Vector(0, 0, -1.f);
+        else if (face == 1) look = Vector(0, 1.f, 0);
+        else if (face == 4) look = Vector(0, -1.f, 0);
     }
 
     // Slab merge → full type (no upper bit; full height block).
