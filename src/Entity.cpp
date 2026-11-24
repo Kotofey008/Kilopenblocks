@@ -620,23 +620,44 @@ void EntityPlayer::FixedUpdate() {
     //    mode 2 Ladder: jump held → vy = Jump, else 0 (binary)
     //    mode 3 Fly: separate path (accel along look; kept as prior RE)
     if (mode_ == Mode::Fly) {
-        // EntityPlayer::UpdateMovement mode==3 @ 0x5ca88
-        // Axis helper 0x5ad70 on +0xa8 (forward), +0xb0 (strafe), +0xac (vertical).
-        // Inputs: moveForward_/moveStrafe_/jumpPressed_ (EPS move flags in binary).
-        // ParamSet = ParamSets[3] from start.scene (MaxSpeed 6, Accel/Decel 18).
-        const bool fwdPos = moveForward_ >  1e-4f;
-        const bool fwdNeg = moveForward_ < -1e-4f;
-        const bool strPos = moveStrafe_  >  1e-4f;
-        const bool strNeg = moveStrafe_  < -1e-4f;
-        const bool upPos  = jumpPressed_;
-        const bool upNeg  = false; // no dedicated descend flag in EPS touch path
-        ApplyAxisVel(flyVelForward_, fwdPos, fwdNeg,
+        // EntityPlayer::UpdateMovement mode==3 @ 0x5ca88 — recovered from raw bytes:
+        //   EPS flags (EntityPlayerSet::Update @ 0x5e4b0):
+        //     +0x25c = W/Up (forward), +0x25d = S/Down (back),
+        //     +0x25e = A/Left,         +0x25f = D/Right,
+        //     +0x260 = Space (jump)
+        //   Axes on player:
+        //     +0xa8 strafe:  pos=+0x25f (D), neg=+0x25e (A)   always
+        //     +0xb0 long:    pos=+0x25d (S), neg=+0x25c (W)   when !jump
+        //     +0xac vertical:pos=+0x25c (W), neg=+0x25d (S)   when  jump
+        //   When jump held: long axis only decelerates; W/S drive vertical
+        //   (jump+W = up, jump+S = down). Helper @ 0x5ad70.
+        // ParamSet = ParamSets[3] from start.scene.
+        const bool keyW = moveForward_ >  1e-4f;
+        const bool keyS = moveForward_ < -1e-4f;
+        const bool keyD = moveStrafe_  >  1e-4f; // right
+        const bool keyA = moveStrafe_  < -1e-4f; // left
+        const bool keyJump = jumpPressed_;
+
+        // +0xa8 strafe always: pos=D, neg=A
+        ApplyAxisVel(flyVelStrafe_, keyD, keyA,
                      ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
-        ApplyAxisVel(flyVelStrafe_,  strPos, strNeg,
-                     ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
-        ApplyAxisVel(flyVelUp_,      upPos,  upNeg,
-                     ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
-        // Vertical component mirrors binary +0xac; also feed velocity_.y for Move
+
+        if (!keyJump) {
+            // +0xb0 longitudinal: binary pos=S, neg=W → store as forward with
+            // opposite input so integration uses +forward * flyVelForward_
+            ApplyAxisVel(flyVelForward_, keyW, keyS,
+                         ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+            // +0xac vertical: pure decelerate (pos=0, neg=0)
+            ApplyAxisVel(flyVelUp_, false, false,
+                         ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+        } else {
+            // +0xac vertical: pos=W, neg=S  (jump + forward/back)
+            ApplyAxisVel(flyVelUp_, keyW, keyS,
+                         ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+            // +0xb0 longitudinal: pure decelerate
+            ApplyAxisVel(flyVelForward_, false, false,
+                         ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+        }
         velocity_.y = flyVelUp_;
     } else if (mode_ == Mode::Ladder) {
         // SimplePlayer mode==2: bVar13 (jump/move-up) → vy = Jump, else 0
