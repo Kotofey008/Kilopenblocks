@@ -130,8 +130,13 @@ private:
     Mode mode_ = Mode::Walk;
     float operationDistance_ = 8.f;
     int operationTimeMs_ = 250; // EntityPlayerSet +0x1ac / scene OperationTime
-    // Horizontal velocity for accel/decel (SimplePlayer::Update uses ParamSet accel)
+    // Horizontal velocity for walk/swim/ladder (binary-style scalar along intent)
     float horizSpeed_ = 0.f;
+    // EntityPlayer +0xa8 / +0xac / +0xb0 — fly-mode axis speeds (UpdateMovement mode 3)
+    // Integrated as: delta = (right*strafe + up*vertical + forward*forward) * dt
+    float flyVelForward_ = 0.f; // +0xa8
+    float flyVelUp_ = 0.f;      // +0xac
+    float flyVelStrafe_ = 0.f;  // +0xb0
     PlayerParamSet paramSets_[4];
     bool flipX_ = false;
     bool flipY_ = false;

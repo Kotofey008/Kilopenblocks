@@ -569,6 +569,35 @@ void EntityPlayer::UpdateCamera() {
     // Legacy no-arg stub; real work is UpdateCameraTransform(Camera&).
 }
 
+
+// Binary helper @ 0x5ad70 — accelerate/decelerate one float axis toward ±MaximumSpeed.
+// pos/neg are exclusive direction flags; both or neither → decelerate to 0.
+// ParamSet: +0 MaximumSpeed, +4 Acceleration, +8 Deceleration.
+static void ApplyAxisVel(float& v, bool pos, bool neg,
+                         float maxSpeed, float accel, float decel, float dt) {
+    if (pos && !neg) {
+        v += accel * dt;
+        if (v > maxSpeed) v = maxSpeed;
+        if (v < 0.f) {
+            v += decel * dt;
+            if (v > 0.f) v = 0.f;
+        }
+        return;
+    }
+    // Not pure-positive: decelerate positive component first
+    if (v > 0.f) {
+        v -= decel * dt;
+        if (v < 0.f) v = 0.f;
+    }
+    if (neg && !pos) {
+        v -= accel * dt;
+        if (v < -maxSpeed) v = -maxSpeed;
+    } else if (v < 0.f) {
+        v += decel * dt;
+        if (v > 0.f) v = 0.f;
+    }
+}
+
 void EntityPlayer::FixedUpdate() {
     // 1) Resolve mode → selects ParamSets[mode] (binary UpdateMode then physics)
     UpdateMode();
@@ -591,7 +620,24 @@ void EntityPlayer::FixedUpdate() {
     //    mode 2 Ladder: jump held → vy = Jump, else 0 (binary)
     //    mode 3 Fly: separate path (accel along look; kept as prior RE)
     if (mode_ == Mode::Fly) {
-        velocity_.y = moveForward_ * std::sin(pitch_ * 3.14159265f / 180.f) * ps.maximumSpeed;
+        // EntityPlayer::UpdateMovement mode==3 @ 0x5ca88
+        // Axis helper 0x5ad70 on +0xa8 (forward), +0xb0 (strafe), +0xac (vertical).
+        // Inputs: moveForward_/moveStrafe_/jumpPressed_ (EPS move flags in binary).
+        // ParamSet = ParamSets[3] from start.scene (MaxSpeed 6, Accel/Decel 18).
+        const bool fwdPos = moveForward_ >  1e-4f;
+        const bool fwdNeg = moveForward_ < -1e-4f;
+        const bool strPos = moveStrafe_  >  1e-4f;
+        const bool strNeg = moveStrafe_  < -1e-4f;
+        const bool upPos  = jumpPressed_;
+        const bool upNeg  = false; // no dedicated descend flag in EPS touch path
+        ApplyAxisVel(flyVelForward_, fwdPos, fwdNeg,
+                     ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+        ApplyAxisVel(flyVelStrafe_,  strPos, strNeg,
+                     ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+        ApplyAxisVel(flyVelUp_,      upPos,  upNeg,
+                     ps.maximumSpeed, ps.acceleration, ps.deceleration, dt);
+        // Vertical component mirrors binary +0xac; also feed velocity_.y for Move
+        velocity_.y = flyVelUp_;
     } else if (mode_ == Mode::Ladder) {
         // SimplePlayer mode==2: bVar13 (jump/move-up) → vy = Jump, else 0
         velocity_.y = jumpPressed_ ? ps.jump : 0.f;
@@ -638,38 +684,50 @@ void EntityPlayer::FixedUpdate() {
         }
     }
 
-    // 3) Horizontal — MaximumSpeed + Acceleration / Deceleration
-    //    Confirmed in SimplePlayer::Update @ 0xdc9b0:
-    //      +0x1f0 multiplies GetRotationVectors *right*
-    //      +0x1f8 multiplies GetRotationVectors *forward*
-    //    MoveRight accelerates +0x1f0 (positive along right).
-    //    GetRotationVectors (0xb7190): at yaw=0, right=(-1,0,0), forward=(0,0,+1).
-    //    Therefore +strafe must follow right, not -right:
-    //      intent = forward * moveForward + right * moveStrafe
-    //      ix = (-sinY)*fwd + (-cosY)*strafe
-    //      iz = ( cosY)*fwd + (-sinY)*strafe
-    float yawRad = yaw_ * 3.14159265f / 180.f;
-    float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
-    float ix = (-sinY) * moveForward_ + (-cosY) * moveStrafe_;
-    float iz = ( cosY) * moveForward_ + (-sinY) * moveStrafe_;
-    float ilen = std::sqrt(ix * ix + iz * iz);
-    float inputMag = ilen;
-    if (ilen > 1.f) { ix /= ilen; iz /= ilen; inputMag = 1.f; }
-    else if (ilen > 1e-6f) { ix /= ilen; iz /= ilen; }
-
-    if (inputMag > 1e-4f) {
-        horizSpeed_ += ps.acceleration * dt;
-        if (horizSpeed_ > ps.maximumSpeed)
-            horizSpeed_ = ps.maximumSpeed;
+    // 3) Integrate position delta
+    Vector delta(0.f, 0.f, 0.f);
+    if (mode_ == Mode::Fly) {
+        // Binary UpdateMovement @ 0x5cb38 → 0x5c5e6 → 0x5c431:
+        // delta = (right * velStrafe + up * velUp + forward * velForward) * dt
+        // using GetRotationVectors (full look basis, pitch included).
+        Vector right, up, forward;
+        GetRotationVectors(right, up, forward, yaw_, pitch_);
+        delta.x = (right.x * flyVelStrafe_ + up.x * flyVelUp_ + forward.x * flyVelForward_) * dt;
+        delta.y = (right.y * flyVelStrafe_ + up.y * flyVelUp_ + forward.y * flyVelForward_) * dt;
+        delta.z = (right.z * flyVelStrafe_ + up.z * flyVelUp_ + forward.z * flyVelForward_) * dt;
+        // Keep velocity_ in sync for any code reading it
+        velocity_.x = right.x * flyVelStrafe_ + up.x * flyVelUp_ + forward.x * flyVelForward_;
+        velocity_.y = right.y * flyVelStrafe_ + up.y * flyVelUp_ + forward.y * flyVelForward_;
+        velocity_.z = right.z * flyVelStrafe_ + up.z * flyVelUp_ + forward.z * flyVelForward_;
+        horizSpeed_ = 0.f;
     } else {
-        horizSpeed_ -= ps.deceleration * dt;
-        if (horizSpeed_ < 0.f) horizSpeed_ = 0.f;
-    }
+        // Clear fly axes when not flying (binary leaves them but mode gate ignores)
+        flyVelForward_ = flyVelStrafe_ = flyVelUp_ = 0.f;
 
-    Vector delta;
-    delta.x = ix * horizSpeed_ * dt;
-    delta.z = iz * horizSpeed_ * dt;
-    delta.y = velocity_.y * dt;
+        // Walk/swim/ladder horizontal — MaximumSpeed + Acceleration / Deceleration
+        // SimplePlayer::Update @ 0xdc9b0: +0x1f0 along right, +0x1f8 along forward.
+        float yawRad = yaw_ * 3.14159265f / 180.f;
+        float sinY = std::sin(yawRad), cosY = std::cos(yawRad);
+        float ix = (-sinY) * moveForward_ + (-cosY) * moveStrafe_;
+        float iz = ( cosY) * moveForward_ + (-sinY) * moveStrafe_;
+        float ilen = std::sqrt(ix * ix + iz * iz);
+        float inputMag = ilen;
+        if (ilen > 1.f) { ix /= ilen; iz /= ilen; inputMag = 1.f; }
+        else if (ilen > 1e-6f) { ix /= ilen; iz /= ilen; }
+
+        if (inputMag > 1e-4f) {
+            horizSpeed_ += ps.acceleration * dt;
+            if (horizSpeed_ > ps.maximumSpeed)
+                horizSpeed_ = ps.maximumSpeed;
+        } else {
+            horizSpeed_ -= ps.deceleration * dt;
+            if (horizSpeed_ < 0.f) horizSpeed_ = 0.f;
+        }
+
+        delta.x = ix * horizSpeed_ * dt;
+        delta.z = iz * horizSpeed_ * dt;
+        delta.y = velocity_.y * dt;
+    }
 
     // Entity::Move / StepSlideMove reads step from EntitySet +0x138/+0x13c;
     // ParamSet +0xc/+0x10 (binary defaults ≈0.501 / 0.0626). Push current set.
