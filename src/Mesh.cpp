@@ -247,60 +247,45 @@ int RegionMesher::BinToOurFace(int binFace) {
     return (binFace >= 0 && binFace < 6) ? m[binFace] : 0;
 }
 
-// Map world face → material face for UVR-oriented blocks (ConfigureState facing).
-// Binary state&3 = argmin{look.x, look.z, -look.x, -look.z} from ConfigureState.
-// Observed: that encoding points *along* look; block front must face the player
-// (opposite look), so UVR=1/3 use facing^2 when mapping material front (+Z).
-// Material identity: front texture on +Z (Uzp/Vzp).
-static int OrientedMaterialFace(int ourFace, int facing, uint8_t uvr) {
-    if (uvr == 0) return ourFace;
-    // UVR 7 kept for save compatibility (axis remap); lying-log gameplay separate.
-    if (uvr == 7) {
-        int axis = facing & 3;
-        if (axis == 1) {
-            if (ourFace == 2 || ourFace == 3) return (ourFace == 2) ? 4 : 5;
-            if (ourFace == 4 || ourFace == 5) return (ourFace == 4) ? 2 : 3;
-            return ourFace;
-        }
-        if (axis == 2) {
-            if (ourFace == 2 || ourFace == 3) return (ourFace == 2) ? 0 : 1;
-            if (ourFace == 0 || ourFace == 1) return (ourFace == 0) ? 2 : 3;
-            return ourFace;
-        }
-        return ourFace;
-    }
-    // UVR 1 / 3: horizontal facing — front toward player ⇒ opposite look direction
-    int faceDir = (facing + 2) & 3;
-    if (ourFace == 2 || ourFace == 3) {
-        // Top/bottom: still use mat Y faces (UVR=3 rotates UVs in Emit, not face index)
-        return ourFace;
-    }
-    auto toRing = [](int f) -> int {
-        if (f == 0) return 0; // +X
-        if (f == 4) return 1; // +Z
-        if (f == 1) return 2; // -X
-        return 3;             // -Z
-    };
-    auto fromRing = [](int r) -> int {
-        static const int m[4] = {0, 4, 1, 5};
-        return m[r & 3];
-    };
-    int wr = toRing(ourFace);
-    int lr = (wr - faceDir + 4) & 3;
-    return fromRing(lr);
-}
+// UVR face remap table from libExplorationLite.so @ 0x10a1a0 (24 dwords).
+// Index = binaryFace + facing*6; values are material face indices in binary
+// order: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN. Used when (UVR & 1) != 0.
+// AddBlockFace @ ghidra: iVar18 = table[param_5 + (state&3)*6].
+static const int kUvrFaceTable[4][6] = {
+    { 0, 1, 2, 3, 4, 5 }, // facing 0
+    { 5, 1, 0, 2, 4, 3 }, // facing 1
+    { 3, 1, 5, 0, 4, 2 }, // facing 2
+    { 2, 1, 3, 5, 4, 0 }, // facing 3
+};
 
+// ConfigureState stores state&3 = argmin{lx,lz,-lx,-lz}. World face toward the
+// player is opposite look; table facing 0 keeps mat ZP on world ZP, so player
+// looking +Z would see ZN. Index the table with (state+2)&3 so front faces the
+// player (validated for UVR=1).
+static int UvrTableFacing(int stateFacing, uint8_t uvr) {
+    int f = stateFacing & 3;
+    // UVR bit2 (value 4): binary remaps facing 1→3, 2→0 before table index
+    if (uvr & 4) {
+        if (f == 1) f = 3;
+        else if (f == 2) f = 0;
+    }
+    return (f + 2) & 3;
+}
 
 void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0, float& u1, float& v1,
                           unsigned short orientState) {
-    int srcFace = ourFace;
     uint8_t uvr = mat.uvr();
-    int facing = (int)(orientState & 3);
-    if (uvr != 0)
-        srcFace = OrientedMaterialFace(ourFace, facing, uvr);
-    int mi = OurToBinFace(srcFace);
-    Texture::TileUV((int)mat.uFace(mi), (int)mat.vFace(mi), u0, v0, u1, v1);
-    (void)facing;
+    int binFace = OurToBinFace(ourFace); // 0=XP .. 5=ZN
+    int matBin = binFace;
+    if (uvr != 0) {
+        if (uvr & 1) {
+            int facing = UvrTableFacing((int)(orientState & 3), uvr);
+            matBin = kUvrFaceTable[facing][binFace];
+        }
+        // UVR==7 without only bit0 is still covered by &1 (7 includes bit0).
+        // Axis-only paths without bit0 fall through to identity matBin.
+    }
+    Texture::TileUV((int)mat.uFace(matBin), (int)mat.vFace(matBin), u0, v0, u1, v1);
 }
 
 uint32_t RegionMesher::FaceColor(const LightMap* lights, int x, int y, int z, int face) {
@@ -329,18 +314,24 @@ void RegionMesher::EmitAxisFace(MeshBuffer& out, float x0, float y0, float z0,
         v[i].x = px; v[i].y = py; v[i].z = pz;
         v[i].color = color; v[i].u = u; v[i].v = vv;
     };
-    // Corner UVs in Emit order; uvRot cycles for UVR=3 top/bottom.
+    // Default UV corners in Emit order.
     float cu[4] = { u0, u0, u1, u1 };
     float cv[4] = { v1, v0, v0, v1 };
-    uvRot &= 3;
-    if (uvRot != 0 && (ourFace == 2 || ourFace == 3)) {
-        float nu[4], nv[4];
+    // UVR&2 Y-face path: uvRot bit2 set marks binary local_28 layouts; low 2 bits = facing.
+    if ((uvRot & 4) != 0 && (ourFace == 2 || ourFace == 3)) {
+        static const int kYuv[4][8] = {
+            { 0, 0,  0,16,  16,16,  16, 0 },
+            { 0,16, 16,16,  16, 0,   0, 0 },
+            {16,16, 16, 0,   0, 0,   0,16 },
+            {16, 0,  0, 0,   0,16,  16,16 },
+        };
+        int f = uvRot & 3;
         for (int i = 0; i < 4; ++i) {
-            int j = (i - uvRot + 4) & 3;
-            nu[i] = cu[j];
-            nv[i] = cv[j];
+            int bu = kYuv[f][i * 2];
+            int bv = kYuv[f][i * 2 + 1];
+            cu[i] = (bu == 0) ? u0 : u1;
+            cv[i] = (bv == 0) ? v0 : v1;
         }
-        for (int i = 0; i < 4; ++i) { cu[i] = nu[i]; cv[i] = nv[i]; }
     }
     switch (ourFace) {
         case 0: // +X at x1
@@ -482,9 +473,11 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
     FaceUV(mat, ourFace, u0, v0, u1, v1, st);
     uint32_t col = FaceColor(lights, x, y, z, ourFace);
     float fx = (float)x, fy = (float)y, fz = (float)z;
+    // UVR bit1 (value 2): special Y-face UV corner layout (AddBlockFace local_28).
+    // UVR=3 sets bits 0+1. Index with same facing as kUvrFaceTable.
     int uvRot = 0;
-    if (mat.uvr() == 3 && (ourFace == 2 || ourFace == 3))
-        uvRot = (((int)st & 3) + 2) & 3;
+    if ((mat.uvr() & 2) != 0 && (ourFace == 2 || ourFace == 3))
+        uvRot = UvrTableFacing((int)st & 3, mat.uvr()) | 4;
 
     if (cls == 0) {
         // Solid / slab from Material+0x00 height (1..16 after LoadMaterials BH gate).
