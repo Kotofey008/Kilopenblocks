@@ -462,15 +462,51 @@ static void IndexToWorld(const GridData& g, int cellIndex, int& x, int& y, int& 
 }
 
 void GridData::GetCellSelectionBox(int cellIndex, Vector& outMin, Vector& outMax) {
-    CellAabb boxes[4];
-    int n = GetCellCollisionBoxArray(cellIndex, boxes, 4);
-    if (n <= 0) {
-        int x = 0, y = 0, z = 0;
-        IndexToWorld(*this, cellIndex, x, y, z);
-        outMin = Vector((float)x, (float)y, (float)z);
-        outMax = Vector((float)x + 1.f, (float)y + 1.f, (float)z + 1.f);
+    // Binary GridData::GetCellSelectionBox @ ghidra (local cell units then + world).
+    // BMT 1 / 4 (cross / cane):
+    //   f15=1/16, f16=1, f18=8 (cell center in 1/16 units)
+    //   minXZ = (8 - W) / 16, maxXZ = (W + 8) / 16, minY=0, maxY = H/16
+    //   W=+0x18, H=+0x19 (LoadMaterials). Hitbox from cell bottom, centered XZ.
+    int x = 0, y = 0, z = 0;
+    IndexToWorld(*this, cellIndex, x, y, z);
+    float ox = (float)x, oy = (float)y, oz = (float)z;
+    outMin = Vector(ox, oy, oz);
+    outMax = Vector(ox + 1.f, oy + 1.f, oz + 1.f);
+    if (cellIndex < 0 || cellIndex >= (int)cellTypes.size())
+        return;
+    unsigned char t = cellTypes[cellIndex];
+    if (t == 0) return;
+    const Material* m = GetMaterial((int)t);
+    if (!m) return;
+    uint8_t cls = m->prop01();
+    unsigned short st = (cellIndex < (int)cellStates.size()) ? cellStates[cellIndex] : 0;
+
+    if (cls == 1 || cls == 4) {
+        const float inv16 = 1.f / 16.f;
+        const float center = 8.f;
+        float w = (float)m->sizeW();
+        float h = (float)m->sizeH();
+        float minXZ = (center - w) * inv16;
+        float maxXZ = (w + center) * inv16;
+        float maxY = h * inv16;
+        outMin = Vector(ox + minXZ, oy, oz + minXZ);
+        outMax = Vector(ox + maxXZ, oy + maxY, oz + maxXZ);
         return;
     }
+    if (cls == 0) {
+        int ht = (int)m->height();
+        if (ht <= 0 || ht > 16) ht = 16;
+        float hh = (float)ht * (1.f / 16.f);
+        float y0 = oy, y1 = oy + hh;
+        if (st & 4) { y1 = oy + 1.f; y0 = y1 - hh; }
+        outMin = Vector(ox, y0, oz);
+        outMax = Vector(ox + 1.f, y1, oz + 1.f);
+        return;
+    }
+    // Other classes: union of collision AABBs (stairs/fence/door/…)
+    CellAabb boxes[4];
+    int n = GetCellCollisionBoxArray(cellIndex, boxes, 4);
+    if (n <= 0) return;
     outMin = boxes[0].mn;
     outMax = boxes[0].mx;
     for (int i = 1; i < n; ++i) {
@@ -493,7 +529,11 @@ bool GridData::CellHasCollision(int cellIndex) const {
                t != 12 && t != 13 && t != 14 && t != 17 && t != 18;
     }
     uint8_t cls = m->prop01();
-    if (cls == 1 || cls == 2 || cls == 4) return false;
+    // Torch (2): no stand-alone solid in CellHasCollision path.
+    if (cls == 2) return false;
+    // BMT 1/4: selection/collision AABB from W/H exists even when Col==0
+    // (flowers are breakable; GetCellCollisionBoxArray returns the W/H box).
+    if (cls == 1 || cls == 4) return true;
     if (!m->col()) return false;
     return true;
 }
@@ -514,7 +554,21 @@ int GridData::GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut)
         return 1;
     }
     uint8_t cls = m->prop01();
-    if (cls == 1 || cls == 2 || cls == 4) return 0;
+    // BMT 1/4: binary GetCellCollisionBoxArray falls through to GetCellSelectionBox.
+    // Torch (2): no full-cell collision in project (binary has dedicated small AABB).
+    if (cls == 2) return 0;
+    if (cls == 1 || cls == 4) {
+        const float inv16 = 1.f / 16.f;
+        const float center = 8.f;
+        float w = (float)m->sizeW();
+        float h = (float)m->sizeH();
+        float minXZ = (center - w) * inv16;
+        float maxXZ = (w + center) * inv16;
+        float maxY = h * inv16;
+        out[0].mn = Vector(ox + minXZ, oy, oz + minXZ);
+        out[0].mx = Vector(ox + maxXZ, oy + maxY, oz + maxXZ);
+        return 1;
+    }
     if (!m->col()) return 0;
 
     unsigned short st = (cellIndex < (int)cellStates.size()) ? cellStates[cellIndex] : 0;
