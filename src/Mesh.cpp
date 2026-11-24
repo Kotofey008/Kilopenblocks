@@ -855,3 +855,50 @@ void DrawPrimitive(unsigned int mode, const PCT1Vertex* verts, const uint16_t* i
 #else
 void DrawPrimitive(unsigned int, const PCT1Vertex*, const uint16_t*, int, int) {}
 #endif
+
+// DrawCursor @ 0x59a70
+// GetCellSelectionBox → expand by eps=0.01 → line-list AABB → DrawPrimitive(GL_LINES).
+// face 0..5 reserved for binary face-emphasis jumptable (optional); full box always drawn.
+void DrawCursor(GridData& grid, int cellIndex, int /*unusedHitFlags*/, int /*face*/, uint32_t color) {
+    if (cellIndex < 0) return;
+    Vector mn, mx;
+    grid.GetCellSelectionBox(cellIndex, mn, mx);
+    const float eps = 0.01f; // binary float @ 0x107e30
+    mn.x -= eps; mn.y -= eps; mn.z -= eps;
+    mx.x += eps; mx.y += eps; mx.z += eps;
+
+    // 8 corners
+    PCT1Vertex v[8];
+    auto set = [&](int i, float x, float y, float z) {
+        v[i].x = x; v[i].y = y; v[i].z = z;
+        v[i].color = color;
+        v[i].u = 0.f; v[i].v = 0.f;
+    };
+    set(0, mn.x, mn.y, mn.z);
+    set(1, mx.x, mn.y, mn.z);
+    set(2, mx.x, mx.y, mn.z);
+    set(3, mn.x, mx.y, mn.z);
+    set(4, mn.x, mn.y, mx.z);
+    set(5, mx.x, mn.y, mx.z);
+    set(6, mx.x, mx.y, mx.z);
+    set(7, mn.x, mx.y, mx.z);
+
+    // 12 edges as line list (binary AddBBox topology)
+    static const uint16_t idx[24] = {
+        0,1, 1,2, 2,3, 3,0, // bottom
+        4,5, 5,6, 6,7, 7,4, // top
+        0,4, 1,5, 2,6, 3,7  // verticals
+    };
+#if defined(__ANDROID__)
+#ifndef GL_LINES
+#define GL_LINES 0x0001
+#endif
+    // Binary: disable texture for untextured cursor lines (RenderState path)
+    glDisable(GL_TEXTURE_2D);
+    DrawPrimitive(GL_LINES, v, idx, 24, 0);
+    glEnable(GL_TEXTURE_2D);
+#else
+    (void)v; (void)idx;
+#endif
+}
+

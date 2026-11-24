@@ -226,7 +226,9 @@ public:
     int GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut) const;
     // True if material has collision (Col flag) and is not a pure decoration class.
     bool CellHasCollision(int cellIndex) const;
-    void ActivateCell(int, const Vector&);
+    // ActivateCell @ 0xa1a60 — cellIndex linear. Type-swap pairs (torch/furnace/…)
+    // or open-bit toggle (door/trapdoor/gate BMT 7/9/10). Returns true if modified.
+    bool ActivateCell(int cellIndex);
     // GridData::IsActiveCell @ 0xa1a20 — jump table type-0x11 .. type-0x52.
     // True only for 18 types recovered from the table:
     // 17,18,34,35,39,40,44,45,67..71,78..82.

@@ -636,9 +636,18 @@ void Game::Update() {
             player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
             if (input_.ConsumeBreakAction()) TryBreakBlock();
             if (input_.ConsumePlaceAction()) TryPlaceBlock(GetSelectedBlockType());
-            if (input_.ConsumeActivateAction()) { /* EPS UpdateElement — TBD */ }
+            if (input_.ConsumeActivateAction()) TryActivateBlock();
             player_->FixedUpdate();
             player_->FixedPostUpdate();
+            // Crosshair ray for DrawCursor (EntityPlayer::TracePoint each frame)
+            {
+                Vector eye = player_->GetEyePosition();
+                Vector dir = player_->GetLookDirection();
+                float reach = player_->GetOperationDistance();
+                Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
+                crosshairHit_.Clear();
+                grid_.TracePoint(eye, to, crosshairHit_, player_);
+            }
         } else {
             input_.ConsumeLookDelta();
             player_->SetMoveInput(0.f, 0.f, false);
@@ -2118,6 +2127,20 @@ void Game::TryBreakBlock() {
 void Game::TryPlaceBlock(unsigned char blockType) {
     if (!player_) return;
     player_->AddOrDeleteBlock(false, blockType);
+}
+
+// Binary: EntityPlayerSet flag +0x264 (E / msg 6) → mode 3 → ActivateCell(hitIndex)
+void Game::TryActivateBlock() {
+    if (!player_) return;
+    Vector eye = player_->GetEyePosition();
+    Vector dir = player_->GetLookDirection();
+    float reach = player_->GetOperationDistance();
+    Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
+    GridDataTraceResult tr;
+    grid_.TracePoint(eye, to, tr, player_);
+    if (!tr.hit || tr.cellIndex < 0) return;
+    if (!grid_.IsActiveCellType(tr.blockType)) return;
+    grid_.ActivateCell(tr.cellIndex);
 }
 
 // Palette selection index is S-Index (blocks.txt column) stored in Material+0x20.

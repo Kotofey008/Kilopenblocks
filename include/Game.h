@@ -69,6 +69,11 @@ public:
     void Update();
     void TryBreakBlock();
     void TryPlaceBlock(unsigned char blockType);
+    // Binary EntityPlayer mode 3 → ActivateCell (E / hud_activate)
+    void TryActivateBlock();
+    // Crosshair hit refreshed each Update() for DrawCursor
+    const GridDataTraceResult& GetCrosshairHit() const { return crosshairHit_; }
+    bool HasCrosshairHit() const { return crosshairHit_.hit; }
     void SetAnimatedWater(bool on);
     FluidAnim fluidAnim;
     void SpawnPlayer();
@@ -268,6 +273,7 @@ private:
     bool useProceduralTextures_ = true;
     EntityPlayerSet playerSet_;
     EntityPlayer* player_ = nullptr;
+    GridDataTraceResult crosshairHit_;
     Camera camera_;
     InputMgr input_;
     UIDocument hud_;

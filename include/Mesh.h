@@ -107,3 +107,8 @@ private:
 
 void DrawPrimitive(unsigned int mode, const PCT1Vertex* verts, const uint16_t* indices,
                    int indexCount, int /*unused*/);
+
+// DrawCursor @ 0x59a70 — wire AABB of hit cell (GetCellSelectionBox ± eps),
+// then DrawPrimitive lines. face arg: binary 0..5 draws optional face emphasis
+// (jumptable); >=6 or -1 draws full box only. color is AABBGGRR packed (GLES).
+void DrawCursor(GridData& grid, int cellIndex, int unusedHitFlags, int face, uint32_t color);

@@ -604,7 +604,66 @@ int GridData::GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut)
     return n;
 }
 
-void GridData::ActivateCell(int, const Vector&) {}
+// ActivateCell @ 0xa1a60
+// Gate: type in [0x11, 0x11+0x41]; jumptable type-0x11.
+// Type-swap pairs (state |= 0xC000):
+//   17↔18 torch, 34↔35, 39↔40 furnace, 44↔45
+// Open-bit toggle (state bit 0x08, |= 0xC000) for door/trapdoor/gate paths
+// (types 63,67,75,78… and BMT 7 vertical pair walk).
+bool GridData::ActivateCell(int cellIndex) {
+    if (cellIndex < 0 || cellIndex >= (int)cellTypes.size())
+        return false;
+    unsigned char type = cellTypes[cellIndex];
+    if (!IsActiveCellType(type))
+        return false;
+
+    unsigned short st = (cellIndex < (int)cellStates.size()) ? cellStates[cellIndex] : 0;
+    int wx = 0, wy = 0, wz = 0;
+    IndexToWorld(*this, cellIndex, wx, wy, wz);
+
+    auto swapType = [&](unsigned char toType) {
+        unsigned short ns = (unsigned short)(st | 0xC000);
+        SetCell(wx, wy, wz, toType, ns);
+        return true;
+    };
+    switch (type) {
+        case 17: return swapType(18); // Torch → Active Torch
+        case 18: return swapType(17);
+        case 34: return swapType(35);
+        case 35: return swapType(34);
+        case 39: return swapType(40); // Furnace ↔ Active Furnace
+        case 40: return swapType(39);
+        case 44: return swapType(45);
+        case 45: return swapType(44);
+        default: break;
+    }
+
+    // Open-bit toggle (door / trapdoor / gate) @ 0xa1bc0
+    unsigned short newSt = (unsigned short)((st & 0x08) ? (st & ~0x08) : (st | 0x08));
+    newSt = (unsigned short)(newSt | 0xC000);
+    SetCell(wx, wy, wz, type, newSt);
+
+    // Vertical door pair (BMT==7): Y±1 halves with matching facing low bits
+    const Material* mat = GetMaterial((int)type);
+    if (mat && mat->prop01() == 7) {
+        auto togglePair = [&](int dy) {
+            int ny = wy + dy;
+            int nidx = CoordToIndex(wx, ny, wz);
+            if (nidx < 0 || nidx >= (int)cellTypes.size()) return;
+            unsigned char nt = cellTypes[nidx];
+            const Material* nm = GetMaterial((int)nt);
+            if (!nm || nm->prop01() != 7) return;
+            unsigned short ns = (nidx < (int)cellStates.size()) ? cellStates[nidx] : 0;
+            if ((ns & 7) != (st & 7)) return;
+            unsigned short nn = (unsigned short)((ns & 0x08) ? (ns & ~0x08) : (ns | 0x08));
+            nn = (unsigned short)(nn | 0xC000);
+            SetCell(wx, ny, wz, nt, nn);
+        };
+        togglePair(+1);
+        togglePair(-1);
+    }
+    return true;
+}
 
 bool GridData::IsActiveCellType(unsigned char blockType) const {
     // Binary IsActiveCell @ 0xa1a20: b = type-0x11; if (b > 0x41) return 0;
