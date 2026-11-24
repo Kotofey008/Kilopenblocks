@@ -22,6 +22,17 @@ Matrix4 Entity::GetTransform(int) {
 
 // ---------------------------------------------------------------------------
 // Collision solid test — shared by CheckGround / Move / StepSlideMove.
+// Binary entity paths test material[+0x06] Col before GetCellCollisionBoxArray.
+// FindFirstUsedCell (ray) does not — plants Col=0 remain breakable via array AABBs.
+static bool CellIsSolidForEntity(const GridData& grid, int idx) {
+    if (idx < 0 || idx >= (int)grid.cellTypes.size()) return false;
+    unsigned char t = grid.cellTypes[idx];
+    if (t == 0) return false;
+    const Material* m = grid.GetMaterial((int)t);
+    if (!m) return true;
+    return m->col();
+}
+
 // Water, air, decorative plants and leaves do not block or support.
 // ---------------------------------------------------------------------------
 bool Entity::IsCollisionSolid(unsigned char t) {
@@ -78,6 +89,7 @@ bool Entity::CheckGround() {
     for (int bz = iz0; bz <= iz1 && !onGround_; ++bz) {
         int idx = grid_->CoordToIndex(bx, by, bz);
         if (idx < 0) continue;
+        if (!CellIsSolidForEntity(*grid_, idx)) continue;
         int n = grid_->GetCellCollisionBoxArray(idx, boxes, 4);
         for (int i = 0; i < n; ++i) {
             if (AabbOverlap(px0, py0, pz0, px1, py1, pz1,
@@ -111,6 +123,7 @@ bool Entity::CollidesAt(const Vector& pos) const {
     for (int bz = z0; bz <= z1; ++bz) {
         int idx = grid_->CoordToIndex(bx, by, bz);
         if (idx < 0) continue;
+        if (!CellIsSolidForEntity(*grid_, idx)) continue;
         int n = grid_->GetCellCollisionBoxArray(idx, boxes, 4);
         for (int i = 0; i < n; ++i) {
             if (AabbOverlap(px0, py0, pz0, px1, py1, pz1,
@@ -146,6 +159,7 @@ bool Entity::FindSupportY(const Vector& pos, float maxDrop, float& outY) const {
             for (int bz = iz0; bz <= iz1; ++bz) {
                 int idx = grid_->CoordToIndex(bx, by, bz);
                 if (idx < 0) continue;
+                if (!CellIsSolidForEntity(*grid_, idx)) continue;
                 int n = grid_->GetCellCollisionBoxArray(idx, boxes, 4);
                 for (int i = 0; i < n; ++i) {
                     if (px1 <= boxes[i].mn.x || px0 >= boxes[i].mx.x) continue;

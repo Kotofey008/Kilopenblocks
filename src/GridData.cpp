@@ -482,13 +482,19 @@ void GridData::GetCellSelectionBox(int cellIndex, Vector& outMin, Vector& outMax
     unsigned short st = (cellIndex < (int)cellStates.size()) ? cellStates[cellIndex] : 0;
 
     if (cls == 1 || cls == 4) {
-        const float inv16 = 1.f / 16.f;
-        const float center = 8.f;
+        // Binary @ 0x8f080 (objdump):
+        //   f16=0.5, f18=8.0, f15=0.0625 (1/16)
+        //   minXZ = (8 - W*0.5) * (1/16)
+        //   maxXZ = (W*0.5 + 8) * (1/16)
+        //   maxY  = H * (1/16); minY = 0
+        const float kHalf = 0.5f;
+        const float kCenter = 8.f;
+        const float kInv16 = 0.0625f;
         float w = (float)m->sizeW();
         float h = (float)m->sizeH();
-        float minXZ = (center - w) * inv16;
-        float maxXZ = (w + center) * inv16;
-        float maxY = h * inv16;
+        float minXZ = (kCenter - w * kHalf) * kInv16;
+        float maxXZ = (w * kHalf + kCenter) * kInv16;
+        float maxY = h * kInv16;
         outMin = Vector(ox + minXZ, oy, oz + minXZ);
         outMax = Vector(ox + maxXZ, oy + maxY, oz + maxXZ);
         return;
@@ -529,11 +535,9 @@ bool GridData::CellHasCollision(int cellIndex) const {
                t != 12 && t != 13 && t != 14 && t != 17 && t != 18;
     }
     uint8_t cls = m->prop01();
-    // Torch (2): no stand-alone solid in CellHasCollision path.
+    // Binary: material[+0x06] Col gates solid physics. Col==0 → not solid
+    // (plants still have GetCellCollisionBoxArray AABBs for ray/break).
     if (cls == 2) return false;
-    // BMT 1/4: selection/collision AABB from W/H exists even when Col==0
-    // (flowers are breakable; GetCellCollisionBoxArray returns the W/H box).
-    if (cls == 1 || cls == 4) return true;
     if (!m->col()) return false;
     return true;
 }
@@ -558,13 +562,17 @@ int GridData::GetCellCollisionBoxArray(int cellIndex, CellAabb* out, int maxOut)
     // Torch (2): no full-cell collision in project (binary has dedicated small AABB).
     if (cls == 2) return 0;
     if (cls == 1 || cls == 4) {
-        const float inv16 = 1.f / 16.f;
-        const float center = 8.f;
+        // Same as GetCellSelectionBox BMT1/4 (binary 0x8f080).
+        // Returned even when Col==0 so FindFirstUsedCell can break plants;
+        // Entity physics must gate on Col separately (binary does).
+        const float kHalf = 0.5f;
+        const float kCenter = 8.f;
+        const float kInv16 = 0.0625f;
         float w = (float)m->sizeW();
         float h = (float)m->sizeH();
-        float minXZ = (center - w) * inv16;
-        float maxXZ = (w + center) * inv16;
-        float maxY = h * inv16;
+        float minXZ = (kCenter - w * kHalf) * kInv16;
+        float maxXZ = (w * kHalf + kCenter) * kInv16;
+        float maxY = h * kInv16;
         out[0].mn = Vector(ox + minXZ, oy, oz + minXZ);
         out[0].mx = Vector(ox + maxXZ, oy + maxY, oz + maxXZ);
         return 1;
