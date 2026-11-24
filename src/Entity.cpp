@@ -708,18 +708,29 @@ void EntityPlayer::FixedUpdate() {
     // 3) Integrate position delta
     Vector delta(0.f, 0.f, 0.f);
     if (mode_ == Mode::Fly) {
-        // Binary UpdateMovement @ 0x5cb38 → 0x5c5e6 → 0x5c431:
-        // delta = (right * velStrafe + up * velUp + forward * velForward) * dt
-        // using GetRotationVectors (full look basis, pitch included).
-        Vector right, up, forward;
-        GetRotationVectors(right, up, forward, yaw_, pitch_);
-        delta.x = (right.x * flyVelStrafe_ + up.x * flyVelUp_ + forward.x * flyVelForward_) * dt;
-        delta.y = (right.y * flyVelStrafe_ + up.y * flyVelUp_ + forward.y * flyVelForward_) * dt;
-        delta.z = (right.z * flyVelStrafe_ + up.z * flyVelUp_ + forward.z * flyVelForward_) * dt;
-        // Keep velocity_ in sync for any code reading it
-        velocity_.x = right.x * flyVelStrafe_ + up.x * flyVelUp_ + forward.x * flyVelForward_;
-        velocity_.y = right.y * flyVelStrafe_ + up.y * flyVelUp_ + forward.y * flyVelForward_;
-        velocity_.z = right.z * flyVelStrafe_ + up.z * flyVelUp_ + forward.z * flyVelForward_;
+        // Binary LAB_0006c431 integration with axes from mode-3 block @ 0x5ca88:
+        //   +0xa8 = strafe (A/D), +0xb0 = longitudinal (W/S when !jump),
+        //   +0xac = vertical   (W/S when  jump) — pure world Y, NOT look-pitch.
+        // Horizontal basis uses yaw only (pitch forced 0): camera pitch must not
+        // tilt XZ motion or inject Y from forward. Matches player report + binary
+        // separation of +0xac from look direction.
+        Vector right, upIgnored, forward;
+        GetRotationVectors(right, upIgnored, forward, yaw_, /*pitch=*/0.f);
+        // zero Y on horizontal basis (numerical safety)
+        right.y = 0.f;
+        forward.y = 0.f;
+        float rlen = std::sqrt(right.x * right.x + right.z * right.z);
+        if (rlen > 1e-6f) { right.x /= rlen; right.z /= rlen; }
+        float flen = std::sqrt(forward.x * forward.x + forward.z * forward.z);
+        if (flen > 1e-6f) { forward.x /= flen; forward.z /= flen; }
+
+        delta.x = (right.x * flyVelStrafe_ + forward.x * flyVelForward_) * dt;
+        delta.z = (right.z * flyVelStrafe_ + forward.z * flyVelForward_) * dt;
+        delta.y = flyVelUp_ * dt; // +0xac only — jump+W up, jump+S down
+
+        velocity_.x = right.x * flyVelStrafe_ + forward.x * flyVelForward_;
+        velocity_.y = flyVelUp_;
+        velocity_.z = right.z * flyVelStrafe_ + forward.z * flyVelForward_;
         horizSpeed_ = 0.f;
     } else {
         // Clear fly axes when not flying (binary leaves them but mode gate ignores)
