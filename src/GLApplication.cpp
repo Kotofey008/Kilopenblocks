@@ -554,13 +554,15 @@ void GLApplication::RenderWorld() {
     drawLayer(5);
     drawLayer(6);
 
-    // EntityPlayerSet::Render → DrawCursor @ 0x59a70
-    // Wire selection AABB of crosshair hit cell (binary color from +0x1a4).
+    // EntityPlayerSet::Render @ 0x5de40 → DrawCursor @ 0x59a70
+    // Gate: local player hit cellIndex >= 0 (binary this+0x26c → +0x100).
+    // Color: EntityPlayerSet +0x1a4 = 0xFFFFFFFF (ctor).
     if (game_.HasCrosshairHit()) {
         const GridDataTraceResult& hit = game_.GetCrosshairHit();
-        // Binary: only when game phase allows 3D cursor (not menu-only).
-        // Color 0xFF000000 black lines (common default; +0x1a4 often opaque black).
-        DrawCursor(game_.GetGrid(), hit.cellIndex, 0, hit.face, 0xFF000000u);
+        if (hit.cellIndex >= 0) {
+            uint32_t col = game_.GetPlayerSet().GetCursorColor();
+            DrawCursor(game_.GetGrid(), hit.cellIndex, 0, hit.face, col);
+        }
     }
 
 #if defined(__ANDROID__)

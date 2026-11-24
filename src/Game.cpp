@@ -635,9 +635,9 @@ void Game::Update() {
             input_.ConsumeLookDelta();
             player_->SetMoveInput(input_.GetMoveForward(), input_.GetMoveStrafe(), input_.GetJump());
             // Binary EntityPlayer::Update @ 0x5d290 each frame:
-            //   TracePoint → AddOrDeleteBlock while EPS flags +0x262/+0x263 held.
-            // Flags stay set for the duration of the hold; cooldown +0x118 gates rate.
-            // Edge Consume* still used for activate (tap).
+            //   TracePoint (always) → AddOrDeleteBlock (while flags held).
+            // TracePoint clears +0xf0 then re-rays — cursor never sticks on old cell.
+            player_->TracePoint();
             if (input_.IsBreakHeld()) {
                 playerSet_.SetBreakAction(true);
                 TryBreakBlock();
@@ -650,25 +650,18 @@ void Game::Update() {
                 playerSet_.SetActivateAction(true);
                 TryActivateBlock();
             }
-            // Drain edge flags so a same-frame press without hold path still works
             (void)input_.ConsumeBreakAction();
             (void)input_.ConsumePlaceAction();
             player_->FixedUpdate();
             player_->FixedPostUpdate();
             playerSet_.ClearActionFlags();
-            // Crosshair: reuse player hitTrace_ after AddOrDeleteBlock TracePoint
+            // DrawCursor uses this frame's hit only (cellIndex < 0 → no cursor)
             crosshairHit_ = player_->GetHitTrace();
-            if (!crosshairHit_.hit) {
-                Vector eye = player_->GetEyePosition();
-                Vector dir = player_->GetLookDirection();
-                float reach = player_->GetOperationDistance();
-                Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
-                crosshairHit_.Clear();
-                grid_.TracePoint(eye, to, crosshairHit_, player_);
-            }
         } else {
             input_.ConsumeLookDelta();
             player_->SetMoveInput(0.f, 0.f, false);
+            // Binary EntityPlayerSet::Render gates on game phase; no cursor in menu
+            crosshairHit_.Clear();
         }
         fluidAnim.Update(1.f / 60.f);
         input_.EndFrame();

@@ -106,6 +106,8 @@ public:
     // Apply Scene EntityPlayerSet config (ParamSets, BBox, reach, eye height)
     void ApplyPlayerSetConfig(const SceneEntityPlayerSetConfig& cfg);
 
+    // EntityPlayer::TracePoint @ 0x5cdd0 — Clear(+0xf0) then ray every frame
+    void TracePoint();
     // Hit cell from last TracePoint (binary +0x100)
     int GetHitCellIndex() const { return hitTrace_.cellIndex; }
     const GridDataTraceResult& GetHitTrace() const { return hitTrace_; }
@@ -176,6 +178,9 @@ public:
 
     float GetTouchSensitivity() const { return config_.touchSensitivity; }
     float GetOperationDistance() const { return config_.operationDistance; }
+    // EntityPlayerSet +0x1a4 — DrawCursor color (ctor: 0xFFFFFFFF white)
+    uint32_t GetCursorColor() const { return cursorColor_; }
+    void SetCursorColor(uint32_t c) { cursorColor_ = c; }
     int GetOperationTimeMs() const { return config_.operationTime; }
     int GetDxThreshold() const { return config_.dxThreshold; }
     int GetDyThreshold() const { return config_.dyThreshold; }
@@ -199,4 +204,6 @@ private:
     bool flagPlace_ = false;    // +0x262
     bool flagBreak_ = false;    // +0x263
     bool flagActivate_ = false; // +0x264
+    // Binary EntityPlayerSet ctor: *(this+0x1a4) = 0xffffffff
+    uint32_t cursorColor_ = 0xFFFFFFFFu;
 };

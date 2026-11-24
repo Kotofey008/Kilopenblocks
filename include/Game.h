@@ -172,6 +172,8 @@ public:
     // Accessors
     GridData& GetGrid() { return grid_; }
     EntityPlayer* GetLocalPlayer() { return playerSet_.GetLocalPlayer(); }
+    EntityPlayerSet& GetPlayerSet() { return playerSet_; }
+    const EntityPlayerSet& GetPlayerSet() const { return playerSet_; }
     Camera& GetCamera() { return camera_; }
     InputMgr& GetInput() { return input_; }
     UIDocument& GetHud() {

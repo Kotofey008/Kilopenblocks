@@ -746,18 +746,25 @@ void EntityPlayer::GetBasis(Vector& outRight, Vector& outUp, Vector& outForward)
     GetRotationVectors(outRight, outUp, outForward, yaw_, pitch_);
 }
 
+// EntityPlayer::TracePoint @ 0x5cdd0
+// Binary: GridDataTraceResult::Clear(this+0xf0) then ray from eye along look
+// for OperationDistance. Called every EntityPlayer::Update before AddOrDeleteBlock.
+void EntityPlayer::TracePoint() {
+    hitTrace_.Clear();
+    if (!grid_) return;
+    Vector eye = GetEyePosition();
+    Vector dir = GetLookDirection();
+    const float reach = operationDistance_;
+    Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
+    grid_->TracePoint(eye, to, hitTrace_, this);
+}
+
 // EntityPlayer::AddOrDeleteBlock @ 0x5cfb0
 // Does NOT call SetCell. Queues pendingAction_ for FixedUpdate / FixedPostUpdate.
 // Uses hitTrace_ from TracePoint (binary +0xf0 / +0x100). Cooldown +0x118.
 void EntityPlayer::AddOrDeleteBlock(bool deleteMode, unsigned char placeType, bool activateMode) {
     if (!grid_) return;
-    // Refresh hit (binary EntityPlayer::TracePoint then AddOrDeleteBlock in Update)
-    Vector eye = GetEyePosition();
-    Vector dir = GetLookDirection();
-    const float reach = operationDistance_;
-    Vector to(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
-    hitTrace_.Clear();
-    grid_->TracePoint(eye, to, hitTrace_, this);
+    // Binary: TracePoint already ran this frame (Update). Use hit at +0xf0/+0x100.
     if (!hitTrace_.hit || hitTrace_.cellIndex < 0)
         return;
 
