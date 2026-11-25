@@ -1,13 +1,11 @@
 #include "Lighting.h"
 // Light storage (AddLight @ 0x95b90 / AddLightUpdate @ 0x94b60):
-//   per-cell value: low nibble 0x0f + high nibble 0xf0 (sky/block hypothesis)
-//   hierarchy maps at +0x280.. use value | 0x8000 as dirty/valid flag
-// Mode bits applied in GetLight @ 0x94480 by face arg (4th param):
-//   face 5: or ah,0x28 → mode 0x2800; face 4: returns 0x200e (mode 0x2000)
-// GetLightColor @ 0x947e0 only consumes the ushort from GetLight (AddBlockFace callers)
-// consumption (RGB scale). No OR of these constants found in AddLight/SetAddLights
-// bodies examined so far — assignment site still open (may be external context:
-// time-of-day / biome applied at color lookup, not stored per cell).
+//   per-cell value: low nibble sky + high nibble block; hierarchy |0x8000 dirty
+// Mode bits applied in GetLight @ 0x94480 by binary face (0=XP..5=ZN):
+//   0→0, 1→0x800, 2→0x1000, 3→0x1800, 4→0x2000, 5→0x2800
+// Mesh ourFace 0=+X..5=-Z maps via GetFaceLight to those modes.
+// AddLightUpdate applies signed material L (+0x1a): L>0 emit, L<0 attenuate
+// both sky and block by |L|. PropagateBlockLights mirrors block-channel half.
 
 #include "TreeBuilder.h"
 #include <algorithm>
@@ -184,8 +182,12 @@ void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
 }
 
 void LightMap::PropagateBlockLights(GridData& grid) {
-    // BFS outward from emitters; level decreases by 1 per step through air.
-    // Clear block channel first so removed torches stop glowing.
+    // BFS outward from emitters; level decreases by 1 per step through non-opaque.
+    // Binary AddLightUpdate (0x94b60): after neighbor-max and -1 step, apply cell L:
+    //   L > 0 → emit (block nibble = L)
+    //   L < 0 → attenuate BOTH sky and block by |L| (saturating)
+    // We keep sky from UpdateSunRays and only maintain the block channel here,
+    // but still apply negative-L attenuation to block when light enters the cell.
     for (size_t i = 0; i < data_.size(); ++i) {
         int sky = LightPack::Sky(data_[i]);
         data_[i] = LightPack::Make(sky, 0);
@@ -197,7 +199,6 @@ void LightMap::PropagateBlockLights(GridData& grid) {
         if (t == 0) continue;
         int emit = LightPack::Clamp15(EmissionLevel(grid, t));
         if (emit <= 0) continue;
-        // Decode linear index → lightmap local
         int lx = (int)(ci % (size_t)grid.sizeX);
         int t1 = (int)(ci / (size_t)grid.sizeX);
         int ly = t1 % grid.sizeY;
@@ -209,14 +210,15 @@ void LightMap::PropagateBlockLights(GridData& grid) {
         data_[idx] = LightPack::Make(sky, emit);
         q.push(idx);
     }
-    if (q.empty()) return; // common case: no torches at world gen
+    if (q.empty()) return;
 
-    const int dx[6] = {1,-1,0,0,0,0};
-    const int dy[6] = {0,0,1,-1,0,0};
-    const int dz[6] = {0,0,0,0,1,-1};
+    const int dx[6] = {1, -1, 0, 0, 0, 0};
+    const int dy[6] = {0, 0, 1, -1, 0, 0};
+    const int dz[6] = {0, 0, 0, 0, 1, -1};
 
     while (!q.empty()) {
-        int idx = q.front(); q.pop();
+        int idx = q.front();
+        q.pop();
         int level = LightPack::Block(data_[idx]);
         if (level <= 1) continue;
         int lx = idx % sizeX_;
@@ -231,7 +233,20 @@ void LightMap::PropagateBlockLights(GridData& grid) {
             int cidx = grid.CoordToIndex(wx, wy, wz);
             unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
             if (IsOpaque(grid, t)) continue;
+
+            // Incoming = neighbor_level - 1, then apply destination cell L (binary).
             int newLevel = LightPack::Clamp15(level - 1);
+            int sL = 0;
+            if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+                (grid.cellStates[cidx] & 0x3fc0) != 0) {
+                sL = -2; // fluid in air cell
+            } else if (t != 0) {
+                const Material* mm = grid.GetMaterial((int)t);
+                sL = SignedL(mm);
+            }
+            if (sL < 0)
+                newLevel = LightPack::Clamp15(newLevel + sL); // |L| attenuation
+
             int cur = LightPack::Block(data_[nidx]);
             if (newLevel > cur) {
                 int sky = LightPack::Clamp15(LightPack::Sky(data_[nidx]));
@@ -253,19 +268,20 @@ uint16_t LightMap::GetLight(int x, int y, int z) const {
 }
 
 uint16_t LightMap::GetFaceLight(int x, int y, int z, int face) const {
-    // Sample neighbor cell (binary GetLight face arg selects adjacent cell + mode).
+    // Mesh ourFace: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
+    // Binary GetLight face: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN
+    // our→bin modes: +X→0, -X→0x1800, +Y→0x800, -Y→0x2000, +Z→0x1000, -Z→0x2800
+    // Sample the cell outside the face (same as binary neighbor select).
     int nx = x, ny = y, nz = z;
-    // ourFace: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
-    // binary face: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN — mode OR on face:
-    //   bin face 5 (ZN): mode 0x2800; bin face 4 (YN): mode 0x2000
-    uint16_t mode = 0;
+    uint16_t mode = LightPack::MODE_DEFAULT;
     switch (face) {
-        case 0: nx++; break;
-        case 1: nx--; break;
-        case 2: ny++; break;
-        case 3: ny--; mode = LightPack::MODE_2000; break; // ~YN
-        case 4: nz++; break;
-        case 5: nz--; mode = LightPack::MODE_2800; break; // ~ZN
+        case 0: nx++; mode = LightPack::MODE_DEFAULT; break; // XP
+        case 1: nx--; mode = LightPack::MODE_1800;    break; // XN
+        case 2: ny++; mode = LightPack::MODE_0800;    break; // YP
+        case 3: ny--; mode = LightPack::MODE_2000;    break; // YN
+        case 4: nz++; mode = LightPack::MODE_1000;    break; // ZP
+        case 5: nz--; mode = LightPack::MODE_2800;    break; // ZN
+        default: break;
     }
     uint16_t v = GetLight(nx, ny, nz);
     return (uint16_t)((v & ~LightPack::MODE_MASK) | mode);

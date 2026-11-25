@@ -10,20 +10,26 @@
 // Packing (GetLightColor @ 0x947e0):
 //   bits[0:3]  sky nibble
 //   bits[4:7]  block nibble
-//   bits[11:13] mode (0 / 0x1000 / 0x1800 / 0x2000 / 0x2800)
+//   bits[11:13] mode (0 / 0x800 / 0x1000 / 0x1800 / 0x2000 / 0x2800)
 // Color = lightTable[(sky<<4)|block] then per-channel scale by mode:
 //   0 / 0x1800 → *0xA4/256,  0x1000/0x2800 → *0xD2/256,  0x2000 → *0x94/256
+//   0x800 (YP): decomp falls through unscaled (kept as-is)
 //
 // UpdateLightMap @ 0x94920 rebuilds 16×16 ARGB table from GridData+0x1f4 brightness
 // when it differs from +0x1f8. Face-mode OR applied in GetLight by face index.
 
 namespace LightPack {
+    // Binary GetLight face modes (binary face 0=XP..5=ZN):
+    //   0 XP: 0,  1 YP: 0x800,  2 ZP: 0x1000,
+    //   3 XN: 0x1800,  4 YN: 0x2000,  5 ZN: 0x2800
     static constexpr uint16_t MODE_MASK = 0x3800;
     static constexpr uint16_t MODE_DEFAULT = 0x0000;
-    static constexpr uint16_t MODE_1800 = 0x1800;
-    static constexpr uint16_t MODE_1000 = 0x1000;
-    static constexpr uint16_t MODE_2000 = 0x2000;
-    static constexpr uint16_t MODE_2800 = 0x2800;
+    static constexpr uint16_t MODE_0800 = 0x0800; // YP
+    static constexpr uint16_t MODE_1000 = 0x1000; // ZP
+    static constexpr uint16_t MODE_1800 = 0x1800; // XN
+    static constexpr uint16_t MODE_2000 = 0x2000; // YN
+    static constexpr uint16_t MODE_2800 = 0x2800; // ZN
+
 
     // Saturate to 0..15 — no wrap. Unsigned underflow (e.g. 0-2 → 254) must
     // NOT become 15: callers pass signed arithmetic already clamped, but Make
