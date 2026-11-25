@@ -118,11 +118,33 @@ void TerrainGeneratorEarth::AddGrassAndWater(GridData& grid, int x0, int z0, int
 }
 
 void TerrainGeneratorEarth::AddTree(GridData& grid, int x, int z) {
+    // TerrainGeneratorEarth::AddTree @ 0xec030
+    // GetGroundLevel via vtable; 0xff sentinel → skip (RE: invalid y)
     int y = GetGroundLevel(x, z);
-    int h = 5 + (int)(NextRand() % 7);
-    unsigned char wood = (NextRand() & 1) ? BlockId::BirchWood : BlockId::OakWood;
-    if (CheckTreePosition(grid, x, y, z, h))
-        BuildTree(grid, x, y, z, h, wood, false);
+    if (y <= (int)grid.worldMin.y || y >= (int)grid.worldMax.y)
+        return;
+
+    // LCG step matching binary dual-state form reduced onto rng_state_:
+    //   u = f(state); height = (u >> 16 & 3) + 5
+    rng_state_ = (rng_state_ * kLcgMul + kLcgAdd);
+    int height = static_cast<int>((rng_state_ >> 16) & 3) + 5;
+
+    if (!CheckTreePosition(grid, x, y, z, height))
+        return;
+
+    // Further LCG steps for variant + seedBits (binary mixes this+4 / this+8).
+    uint32_t u8 = (rng_state_ * kLcgMul + kLcgAdd);
+    rng_state_ = u8;
+    bool variant = (u8 & 0x30000u) != 0;
+
+    uint32_t t = (rng_state_ * kLcgMul + kLcgAdd);
+    uint32_t u3 = t;
+    rng_state_ = (t * kLcgMul + kLcgAdd);
+    uint32_t u6 = rng_state_;
+    // seedBits = (u6 >> 1 & 0x3fff8000) | (u3 >> 16 & 0x7fff)
+    int seedBits = static_cast<int>(((u6 >> 1) & 0x3fff8000u) | ((u3 >> 16) & 0x7fffu));
+
+    BuildTree(grid, x, y, z, height, seedBits, variant);
 }
 
 void TerrainGeneratorEarth::AddFlowers(GridData& grid, int x, int z, unsigned char) {
