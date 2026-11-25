@@ -830,7 +830,20 @@ void GLApplication::Frame() {
     glClearColor(lr, lg, lb, 1.f);
 #endif
     // Game::UpdateSkyBox: Clouds::SetSkyLightScale = 0.2 + 0.8 * dayFactor
-    clouds_.SetSkyLightScale(0.2f + 0.8f * skyBox_.GetDayFactor());
+    float dayF = skyBox_.GetDayFactor();
+    clouds_.SetSkyLightScale(0.2f + 0.8f * dayF);
+    // Binary: GridData+0x1f4 brightness feeds UpdateLightMap (16×16 LUT).
+    // Day factor → brightness (night dim, noon full). Remesh when LUT changes
+    // so baked vertex colors track the cycle (GetLightColor table path).
+    if (!lightMap_.Empty()) {
+        lightMap_.SetBrightness(0.15f + 0.85f * dayF);
+        lightMap_.UpdateLightMap();
+        if (lightMap_.ConsumeTableDirty()) {
+            // Mark all loaded region meshes dirty via grid region flags
+            GridData& grid = game_.GetGrid();
+            grid.InvalidateLighting();
+        }
+    }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.
     // TickWater advances clock by frame dt (~16ms) and runs body only when due.
     // maxSteps mirrors binary budget path (default +0x2d4-related 200 cells).

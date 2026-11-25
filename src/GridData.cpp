@@ -875,8 +875,16 @@ void GridData::Restore(const Vector& /*playerPos*/) {
 
 // GridData::InvalidateLighting @ 0x798f0 — zero light map (+0x7c count +0x88) and hierarchy
 void GridData::InvalidateLighting() {
-    // Binary: for i in [0, count): light[i]=0; then clear 4 hierarchy bands at +0x280 / +0x2a8
-    // Host model has no separate light[] yet; mark meshes dirty so mesher rebuilds vertex colors.
+    // Binary InvalidateLighting: zero light[] + hierarchy, UpdateSunRays, UpdateLightMap.
+    // Host: mark every region dirty so EnsureRegionMeshes rebuilds vertex colors from LUT.
+    for (size_t i = 0; i < regions_.size(); ++i) {
+        Region& r = regions_[i];
+        if (r.dirty() == 0) {
+            r.dirty() = 1;
+            r.active() = 1;
+            dirtyRegionIndices_.push_back((int)i);
+        }
+    }
     meshesDirty_ = true;
 }
 

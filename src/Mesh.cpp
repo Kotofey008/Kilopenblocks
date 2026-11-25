@@ -297,7 +297,7 @@ void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0
 
 uint32_t RegionMesher::FaceColor(const LightMap* lights, int x, int y, int z, int face) {
     if (!lights) return 0xFFFFFFFFu;
-    uint32_t col = LightMap::GetLightColor(lights->GetFaceLight(x, y, z, face));
+    uint32_t col = lights->GetLightColor(lights->GetFaceLight(x, y, z, face));
     if ((col & 0xFFu) < 32 && ((col >> 8) & 0xFFu) < 32)
         col = 0xFFC0C0C0u;
     return col;
@@ -781,7 +781,7 @@ void RegionMesher::Build(GridData& grid, int ox, int oy, int oz,
                     float u0 = 0.f, v0 = 0.f, u1 = 1.f, v1 = 1.f;
                     uint32_t col = (liquidType == 0) ? 0xA0FFFFFF : 0xE0FF6030;
                     if (lights) {
-                        uint32_t lc = LightMap::GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
+                        uint32_t lc = lights->GetLightColor(lights->GetFaceLight(wx, wy, wz, face));
                         col = (lc & 0x00FFFFFFu) | ((liquidType == 0) ? 0xA0000000u : 0xE0000000u);
                     }
                     EmitWaterFace(grid, dst, wx, wy, wz, face, u0, v0, u1, v1, col);

@@ -31,6 +31,9 @@ void LightMap::Init(GridData& grid) {
     if (sizeZ_ <= 0) { oz_ = (int)grid.worldMin.z; sizeZ_ = (int)(grid.worldMax.z - grid.worldMin.z); }
     data_.assign((size_t)sizeX_ * sizeY_ * sizeZ_, 0);
     dirty_ = true;
+    InitDefaultCurves();
+    brightnessApplied_ = -1.f;
+    UpdateLightMap();
     UpdateSunRays(grid);
     PropagateBlockLights(grid);
 }
@@ -193,31 +196,108 @@ uint16_t LightMap::GetLight(int x, int y, int z) const {
 }
 
 uint16_t LightMap::GetFaceLight(int x, int y, int z, int face) const {
+    // Sample neighbor cell (binary GetLight face arg selects adjacent cell + mode).
     int nx = x, ny = y, nz = z;
+    // ourFace: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
+    // binary face: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN — mode OR on face:
+    //   bin face 5 (ZN): mode 0x2800; bin face 4 (YN): mode 0x2000
+    uint16_t mode = 0;
     switch (face) {
-        case 0: nx++; break; case 1: nx--; break;
-        case 2: ny++; break; case 3: ny--; break;
-        case 4: nz++; break; case 5: nz--; break;
+        case 0: nx++; break;
+        case 1: nx--; break;
+        case 2: ny++; break;
+        case 3: ny--; mode = LightPack::MODE_2000; break; // ~YN
+        case 4: nz++; break;
+        case 5: nz--; mode = LightPack::MODE_2800; break; // ~ZN
     }
-    return GetLight(nx, ny, nz);
+    uint16_t v = GetLight(nx, ny, nz);
+    return (uint16_t)((v & ~LightPack::MODE_MASK) | mode);
 }
 
-uint32_t LightMap::GetLightColor(uint16_t packed) {
+void LightMap::InitDefaultCurves() {
+    // Binary stores 16 floats at +0xf4 / +0x134 / +0x174 / +0x1b4.
+    // Ctor does not fill them; linear 0..1 ramps produce a valid UpdateLightMap table.
+    for (int i = 0; i < 16; ++i) {
+        float t = (float)i / 15.f;
+        curveR_[i] = t;
+        curveG_[i] = t;
+        curveB_[i] = t;
+        curveRow_[i] = t;
+    }
+}
+
+void LightMap::SetBrightness(float b) {
+    if (b < 0.f) b = 0.f;
+    if (b > 1.f) b = 1.f;
+    brightness_ = b;
+}
+
+void LightMap::UpdateLightMap() {
+    // Binary GridData::UpdateLightMap @ 0x94920 (objdump-verified constants):
+    //   skip if brightness (+0x1f4) == applied (+0x1f8)
+    //   mul1=0.53 add1=0.47  mul2=0.35 add2=0.65  f3=1.5  scale=239  bias=16  clamp=255
+    //   for row j, col i:
+    //     rowF = brightness * curveRow[j]
+    //     R = (curveR[i]*1.5 + (brightness*0.53+0.47)*rowF) * 239 + 16
+    //     G = (curveG[i]*1.5 + (brightness*0.35+0.65)*rowF) * 239 + 16
+    //     B = (curveB[i]*1.5 + rowF) * 239 + 16
+    //   index in table = j*16+i  matching GetLightColor (sky<<4)|block with sky=j block=i
+    //   wait: index = (sky)*16 + block → outer sky (row), inner block (col)
+    if (brightness_ == brightnessApplied_) return;
+    brightnessApplied_ = brightness_;
+    const float kMul1 = 0.53f, kAdd1 = 0.47f;
+    const float kMul2 = 0.35f, kAdd2 = 0.65f;
+    const float kF3 = 1.5f;
+    const float kScale = 239.f, kBias = 16.f, kClamp = 255.f;
+    float b = brightness_;
+    float termR = b * kMul1 + kAdd1; // xmm after mul/add for R path
+    float termG = b * kMul2 + kAdd2;
+    for (int sky = 0; sky < 16; ++sky) {
+        float rowF = b * curveRow_[sky];
+        float rBase = termR * rowF;
+        float gBase = termG * rowF;
+        float bBase = rowF;
+        for (int block = 0; block < 16; ++block) {
+            float rf = (curveR_[block] * kF3 + rBase) * kScale + kBias;
+            float gf = (curveG_[block] * kF3 + gBase) * kScale + kBias;
+            float bf = (curveB_[block] * kF3 + bBase) * kScale + kBias;
+            auto ch = [&](float v) -> uint32_t {
+                if (v < 0.f) return 0;
+                if (v > kClamp) return 255u;
+                return (uint32_t)v;
+            };
+            uint32_t R = ch(rf), G = ch(gf), B = ch(bf);
+            // ARGB as packed in binary OR path: A fixed 0xFF, R in low? GetLightColor
+            // returns (uVar1 & 0xff) as blue-ish channel with *scale — Windows-style
+            // 0xAARRGGBB with R in bits 16-23. Binary scales:
+            //   (uVar1 & 0xff) , (uVar1 & 0xff00), (uVar1 & 0xff0000)
+            // Store 0xFFBBGGRR is wrong; use 0xAARRGGBB: R<<16|G<<8|B
+            colorTable_[sky * 16 + block] = 0xFF000000u | (R << 16) | (G << 8) | B;
+        }
+    }
+    tableDirty_ = true;
+}
+
+uint32_t LightMap::GetLightColor(uint16_t packed) const {
+    // Binary GetLightColor @ 0x947e0:
+    //   uVar1 = table[(sky*16)+block]
+    //   mode = packed & 0x3800
+    //   0 / 0x1800 → *0xA4 ; 0x1000/0x2800 → *0xD2 ; 0x2000 → *0x94
     int sky = LightPack::Sky(packed);
     int block = LightPack::Block(packed);
-    int level = sky > block ? sky : block;
-    float t = level / 15.f;
-    t = t * t;
-    int c = (int)(t * 255.f);
-    if (c < 48) c = 48; // playable visibility floor
-    int r = c, g = c, b = c;
-    if (sky >= block) {
-        b = std::min(255, c + 10);
-    } else {
-        // torch-ish warm tint when block light dominates
-        r = std::min(255, c + 20);
-        g = std::min(255, c + 10);
-        b = std::max(16, c - 5);
-    }
-    return (uint32_t)(0xFF000000u | (r) | (g << 8) | (b << 16));
+    uint32_t uVar1 = colorTable_[(sky << 4) | block];
+    uint32_t mode = (uint32_t)(packed & LightPack::MODE_MASK);
+    int scale;
+    if (mode == 0x2000)
+        scale = 0x94;
+    else if (mode == 0x2800 || mode == 0x1000)
+        scale = 0xd2;
+    else if (mode == 0x1800 || mode == 0)
+        scale = 0xa4;
+    else
+        return uVar1;
+    uint32_t r = ((uVar1 >> 16) & 0xff) * scale >> 8;
+    uint32_t g = ((uVar1 >> 8) & 0xff) * scale >> 8;
+    uint32_t b = (uVar1 & 0xff) * scale >> 8;
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
 }
