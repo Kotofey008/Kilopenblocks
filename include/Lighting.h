@@ -25,9 +25,17 @@ namespace LightPack {
     static constexpr uint16_t MODE_2000 = 0x2000;
     static constexpr uint16_t MODE_2800 = 0x2800;
 
+    // Saturate to 0..15 — no wrap. Unsigned underflow (e.g. 0-2 → 254) must
+    // NOT become 15: callers pass signed arithmetic already clamped, but Make
+    // still rejects anything outside the nibble range.
+    inline int Clamp15(int v) {
+        if (v < 0) return 0;
+        if (v > 15) return 15;
+        return v;
+    }
     inline uint16_t Make(int sky, int block, uint16_t mode = MODE_DEFAULT) {
-        sky = sky < 0 ? 0 : (sky > 15 ? 15 : sky);
-        block = block < 0 ? 0 : (block > 15 ? 15 : block);
+        sky = Clamp15(sky);
+        block = Clamp15(block);
         return (uint16_t)((sky & 0xf) | ((block & 0xf) << 4) | (mode & MODE_MASK));
     }
     inline int Sky(uint16_t v) { return v & 0xf; }

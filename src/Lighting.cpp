@@ -38,11 +38,15 @@ void LightMap::Init(GridData& grid) {
     PropagateBlockLights(grid);
 }
 
-// Binary sky occlusion: solid if Col!=0 and not a non-occluding class.
-// L (mat+0x1a) signed: L>0 emission, L<0 sky attenuation per layer (leaves -1, water/ice -2).
+// L at mat[+0x1a] is stored as uint8_t; signed values -1/-2 encode as 0xFF/0xFE.
+// Always interpret via int8_t. Light channels are 0..15 with saturating arithmetic
+// (binary nibbles & 0x0f / & 0xf0 — no wrap on underflow).
 static int SignedL(const Material* m) {
     if (!m) return 0;
-    return (int)(int8_t)m->sizeL();
+    int v = (int)(int8_t)m->sizeL();
+    if (v < -15) v = -15;
+    if (v > 15) v = 15;
+    return v;
 }
 
 static bool IsOpaque(const GridData& grid, unsigned char t) {
@@ -50,37 +54,43 @@ static bool IsOpaque(const GridData& grid, unsigned char t) {
     const Material* m = grid.GetMaterial((int)t);
     if (!m) return t != 0;
     uint8_t cls = m->prop01();
-    // Cross/torch/plant never fully occlude sky column
     if (cls == 1 || cls == 2 || cls == 4) return false;
-    // Col==0 non-solids (flowers, etc.)
     if (!m->col()) return false;
-    // Leaves/glass-like All+MBI still attenuate via L, not full occlude
-    int L = SignedL(m);
-    if (L < 0) return false;
+    // L<0 (leaves/water): attenuate sky, do not fully occlude
+    if (SignedL(m) < 0) return false;
     return true;
 }
 
+// Emission only for L in 1..15 (torch 14, lamp 15, …). L<=0 never emits.
 static int EmissionLevel(const GridData& grid, unsigned char t) {
     if (t == 0) return 0;
     const Material* m = grid.GetMaterial((int)t);
     if (!m) return 0;
     int L = SignedL(m);
-    return L > 0 ? L : 0;
+    if (L < 1) return 0;
+    return LightPack::Clamp15(L);
 }
 
+// How much to subtract from sky when the ray enters this cell (L=-1 → 1, L=-2 → 2).
 static int SkyAtten(const GridData& grid, unsigned char t, int cidx) {
     if (t == 0) {
-        // Liquid is type0 + state bits
         if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
             (grid.cellStates[cidx] & 0x3fc0) != 0)
-            return 2; // water-like (blocks.txt L=-2 for water/ice)
+            return 2; // water/ice L=-2
         return 0;
     }
     const Material* m = grid.GetMaterial((int)t);
     if (!m) return 0;
     int L = SignedL(m);
-    if (L < 0) return -L;
-    return 0;
+    if (L >= 0) return 0;
+    return -L; // 1 or 2
+}
+
+// Apply signed L to a 0..15 sky sample: saturate, never wrap.
+//   level=0, L=-2 → 0;  level=2, L=-2 → 0;  level=3, L=-2 → 1
+static int ApplySkyL(int skyLevel, int signedL) {
+    if (signedL >= 0) return LightPack::Clamp15(skyLevel);
+    return LightPack::Clamp15(skyLevel + signedL);
 }
 
 void LightMap::UpdateSunRays(GridData& grid) {
@@ -105,13 +115,18 @@ void LightMap::UpdateSunRays(GridData& grid) {
                 if (IsOpaque(grid, t)) {
                     sky = 0;
                 } else {
-                    int att = SkyAtten(grid, t, cidx);
-                    if (att > 0) {
-                        sky -= att;
-                        if (sky < 0) sky = 0;
-                    }
+                    // Saturating add of signed L into sky (L=-2 at 0 stays 0, not 14/15).
+                    const Material* mm = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
+                    int sL = 0;
+                    if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+                        (grid.cellStates[cidx] & 0x3fc0) != 0)
+                        sL = -2;
+                    else if (mm)
+                        sL = SignedL(mm);
+                    sky = ApplySkyL(sky, sL);
                 }
-                int block = LightPack::Block(data_[idx]);
+                sky = LightPack::Clamp15(sky);
+                int block = LightPack::Clamp15(LightPack::Block(data_[idx]));
                 data_[idx] = LightPack::Make(sky, block);
             }
         }
@@ -139,13 +154,18 @@ void LightMap::UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, 
                 if (IsOpaque(grid, t)) {
                     sky = 0;
                 } else {
-                    int att = SkyAtten(grid, t, cidx);
-                    if (att > 0) {
-                        sky -= att;
-                        if (sky < 0) sky = 0;
-                    }
+                    // Saturating add of signed L into sky (L=-2 at 0 stays 0, not 14/15).
+                    const Material* mm = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
+                    int sL = 0;
+                    if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+                        (grid.cellStates[cidx] & 0x3fc0) != 0)
+                        sL = -2;
+                    else if (mm)
+                        sL = SignedL(mm);
+                    sky = ApplySkyL(sky, sL);
                 }
-                int block = LightPack::Block(data_[idx]);
+                sky = LightPack::Clamp15(sky);
+                int block = LightPack::Clamp15(LightPack::Block(data_[idx]));
                 data_[idx] = LightPack::Make(sky, block);
             }
         }
@@ -175,7 +195,7 @@ void LightMap::PropagateBlockLights(GridData& grid) {
     for (size_t ci = 0; ci < n; ++ci) {
         unsigned char t = grid.cellTypes[ci];
         if (t == 0) continue;
-        int emit = EmissionLevel(grid, t);
+        int emit = LightPack::Clamp15(EmissionLevel(grid, t));
         if (emit <= 0) continue;
         // Decode linear index → lightmap local
         int lx = (int)(ci % (size_t)grid.sizeX);
@@ -211,10 +231,10 @@ void LightMap::PropagateBlockLights(GridData& grid) {
             int cidx = grid.CoordToIndex(wx, wy, wz);
             unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
             if (IsOpaque(grid, t)) continue;
-            int newLevel = level - 1;
+            int newLevel = LightPack::Clamp15(level - 1);
             int cur = LightPack::Block(data_[nidx]);
             if (newLevel > cur) {
-                int sky = LightPack::Sky(data_[nidx]);
+                int sky = LightPack::Clamp15(LightPack::Sky(data_[nidx]));
                 data_[nidx] = LightPack::Make(sky, newLevel);
                 q.push(nidx);
             }
