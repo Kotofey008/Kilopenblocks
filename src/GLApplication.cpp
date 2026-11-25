@@ -310,6 +310,9 @@ void GLApplication::EnsureRegionMeshes() {
                 if (dirtyOz[i] + 16 > maxZ) maxZ = dirtyOz[i] + 16;
             }
             lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
+            // Block light (L>0 emitters): binary AddLight/Update after SetCell.
+            // Full BFS — required so torches work without context recreate.
+            lightMap_.PropagateBlockLights(grid);
         }
 
         for (int i = 0; i < nRebuild; ++i) {
@@ -836,7 +839,8 @@ void GLApplication::Frame() {
     // Day factor → brightness (night dim, noon full). Remesh when LUT changes
     // so baked vertex colors track the cycle (GetLightColor table path).
     if (!lightMap_.Empty()) {
-        lightMap_.SetBrightness(0.15f + 0.85f * dayF);
+        // Match Clouds::SetSkyLightScale path: 0.2 + 0.8 * dayFactor (night not pure black)
+        lightMap_.SetBrightness(0.2f + 0.8f * dayF);
         lightMap_.UpdateLightMap();
         if (lightMap_.ConsumeTableDirty()) {
             // Mark all loaded region meshes dirty via grid region flags

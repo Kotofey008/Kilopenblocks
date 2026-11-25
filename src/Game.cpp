@@ -594,6 +594,10 @@ void Game::Play(int slot) {
     // PutCell wrote 0xE000/0xC3C0 with bit 0x4000 but skipped hierarchy; sync so
     // UpdateWaterState walks gen-time liquid sources (binary post-gen path).
     grid_.SyncHierarchyFromStates();
+    // New world clock: UI 08:00. Day length 0x127500=1209600 ms; hour = 0xC4E0=50304 ms.
+    // 8 * 50304 = 402432 → displays 08:00 (not 00:00).
+    worldTimeMs_ = 8LL * 50304LL;
+    timeOfDay_ = (float)worldTimeMs_ / 1209600.f;
     SpawnPlayer();
     state_ = GameState::Playing;
     // Create/play paths in start.scene often omit "hud_* SetVisible 1"; binary shows HUD

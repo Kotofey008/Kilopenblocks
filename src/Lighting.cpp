@@ -38,21 +38,48 @@ void LightMap::Init(GridData& grid) {
     PropagateBlockLights(grid);
 }
 
-static bool IsOpaque(unsigned char t) {
-    // Liquid is type 0 + state — not a solid type id.
-    if (t == BlockId::Air) return false;
-    if (t == BlockId::Leaves1 || t == BlockId::Leaves2) return false;
-    if (t == BlockId::Flower1 || t == BlockId::Mushroom1 || t == BlockId::Mushroom2) return false;
-    if (t == 11) return false; // Glass
-    if (t == 17 || t == 18) return false; // Torch / Active Torch
+// Binary sky occlusion: solid if Col!=0 and not a non-occluding class.
+// L (mat+0x1a) signed: L>0 emission, L<0 sky attenuation per layer (leaves -1, water/ice -2).
+static int SignedL(const Material* m) {
+    if (!m) return 0;
+    return (int)(int8_t)m->sizeL();
+}
+
+static bool IsOpaque(const GridData& grid, unsigned char t) {
+    if (t == 0) return false;
+    const Material* m = grid.GetMaterial((int)t);
+    if (!m) return t != 0;
+    uint8_t cls = m->prop01();
+    // Cross/torch/plant never fully occlude sky column
+    if (cls == 1 || cls == 2 || cls == 4) return false;
+    // Col==0 non-solids (flowers, etc.)
+    if (!m->col()) return false;
+    // Leaves/glass-like All+MBI still attenuate via L, not full occlude
+    int L = SignedL(m);
+    if (L < 0) return false;
     return true;
 }
 
-// Emission level for light sources (from BMT/block type evidence)
-static int EmissionLevel(unsigned char t) {
-    if (t == 18) return 14; // Active Torch (observed AddTorch)
-    if (t == 17) return 14; // Torch
-    // Lava if present as fluid type with emission — check later
+static int EmissionLevel(const GridData& grid, unsigned char t) {
+    if (t == 0) return 0;
+    const Material* m = grid.GetMaterial((int)t);
+    if (!m) return 0;
+    int L = SignedL(m);
+    return L > 0 ? L : 0;
+}
+
+static int SkyAtten(const GridData& grid, unsigned char t, int cidx) {
+    if (t == 0) {
+        // Liquid is type0 + state bits
+        if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+            (grid.cellStates[cidx] & 0x3fc0) != 0)
+            return 2; // water-like (blocks.txt L=-2 for water/ice)
+        return 0;
+    }
+    const Material* m = grid.GetMaterial((int)t);
+    if (!m) return 0;
+    int L = SignedL(m);
+    if (L < 0) return -L;
     return 0;
 }
 
@@ -75,13 +102,14 @@ void LightMap::UpdateSunRays(GridData& grid) {
                     cidx = grid.CoordToIndex(x + ox_, y + oy_, z + oz_);
                     t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
                 }
-                if (IsOpaque(t)) {
+                if (IsOpaque(grid, t)) {
                     sky = 0;
-                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2) {
-                    if (sky > 0) sky -= 1;
-                } else if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
-                           (grid.cellStates[cidx] & 0x3fc0) != 0) {
-                    if (sky > 0) sky -= 1;
+                } else {
+                    int att = SkyAtten(grid, t, cidx);
+                    if (att > 0) {
+                        sky -= att;
+                        if (sky < 0) sky = 0;
+                    }
                 }
                 int block = LightPack::Block(data_[idx]);
                 data_[idx] = LightPack::Make(sky, block);
@@ -108,13 +136,14 @@ void LightMap::UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, 
                 int wx = x + ox_, wy = y + oy_, wz = z + oz_;
                 int cidx = grid.CoordToIndex(wx, wy, wz);
                 unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
-                if (IsOpaque(t)) {
+                if (IsOpaque(grid, t)) {
                     sky = 0;
-                } else if (t == BlockId::Leaves1 || t == BlockId::Leaves2) {
-                    if (sky > 0) sky -= 1;
-                } else if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
-                           (grid.cellStates[cidx] & 0x3fc0) != 0) {
-                    if (sky > 0) sky -= 1;
+                } else {
+                    int att = SkyAtten(grid, t, cidx);
+                    if (att > 0) {
+                        sky -= att;
+                        if (sky < 0) sky = 0;
+                    }
                 }
                 int block = LightPack::Block(data_[idx]);
                 data_[idx] = LightPack::Make(sky, block);
@@ -136,13 +165,17 @@ void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
 
 void LightMap::PropagateBlockLights(GridData& grid) {
     // BFS outward from emitters; level decreases by 1 per step through air.
-    // Only scan cellTypes for non-zero types that can emit — skip pure air.
+    // Clear block channel first so removed torches stop glowing.
+    for (size_t i = 0; i < data_.size(); ++i) {
+        int sky = LightPack::Sky(data_[i]);
+        data_[i] = LightPack::Make(sky, 0);
+    }
     std::queue<int> q;
     const size_t n = grid.cellTypes.size();
     for (size_t ci = 0; ci < n; ++ci) {
         unsigned char t = grid.cellTypes[ci];
         if (t == 0) continue;
-        int emit = EmissionLevel(t);
+        int emit = EmissionLevel(grid, t);
         if (emit <= 0) continue;
         // Decode linear index → lightmap local
         int lx = (int)(ci % (size_t)grid.sizeX);
@@ -177,7 +210,7 @@ void LightMap::PropagateBlockLights(GridData& grid) {
             int wx = nx + ox_, wy = ny + oy_, wz = nz + oz_;
             int cidx = grid.CoordToIndex(wx, wy, wz);
             unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
-            if (IsOpaque(t)) continue;
+            if (IsOpaque(grid, t)) continue;
             int newLevel = level - 1;
             int cur = LightPack::Block(data_[nidx]);
             if (newLevel > cur) {
@@ -191,7 +224,11 @@ void LightMap::PropagateBlockLights(GridData& grid) {
 
 uint16_t LightMap::GetLight(int x, int y, int z) const {
     int i = Index(x, y, z);
-    if (i < 0) return LightPack::Make(15, 0);
+    if (i < 0) {
+        // Open sky only above lightmap; below/side → no sky (caves at edges).
+        if (y >= oy_ + sizeY_) return LightPack::Make(15, 0);
+        return LightPack::Make(0, 0);
+    }
     return data_[i];
 }
 
