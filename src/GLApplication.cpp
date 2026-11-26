@@ -309,10 +309,15 @@ void GLApplication::EnsureRegionMeshes() {
                 if (dirtyOz[i] < minZ) minZ = dirtyOz[i];
                 if (dirtyOz[i] + 16 > maxZ) maxZ = dirtyOz[i] + 16;
             }
-            lightMap_.UpdateSunRaysLocal(grid, minX - 1, maxX + 1, minZ - 1, maxZ + 1);
-            // Block light (L>0 emitters): binary AddLight/Update after SetCell.
-            // Full BFS — required so torches work without context recreate.
-            lightMap_.PropagateBlockLights(grid);
+            // Local sky columns + block BFS (margin 15 inside PropagateBlockLightsLocal).
+            // Full-world Propagate was the place/break lag source.
+            int minY = (int)grid.worldMin.y;
+            int maxY = (int)grid.worldMax.y;
+            if (grid.sizeY > 0) {
+                minY = grid.originY;
+                maxY = grid.originY + grid.sizeY;
+            }
+            lightMap_.PropagateBlockLightsLocal(grid, minX, maxX, minY, maxY, minZ, maxZ);
         }
 
         for (int i = 0; i < nRebuild; ++i) {

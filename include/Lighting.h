@@ -54,7 +54,12 @@ public:
     void Init(GridData& grid);
     void UpdateSunRays(GridData& grid);
     void UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, int maxZ);
+    // Full-world block+sky dual channel (init / rare full invalidation only).
     void PropagateBlockLights(GridData& grid);
+    // Binary-style local update: recompute sky columns + block BFS in AABB expanded
+    // by max light distance (15). Use after SetCell / place / break.
+    void PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
+                                   int minZ, int maxZ);
     void AddLight(int x, int y, int z, uint16_t packed);
     void Invalidate() { dirty_ = true; }
     bool Empty() const { return data_.empty(); }
@@ -63,6 +68,7 @@ public:
     void SetBrightness(float b);
     float GetBrightness() const { return brightness_; }
     // Binary UpdateLightMap @ 0x94920 — rebuild 16×16 table if brightness changed.
+    // Uses epsilon so continuous time-of-day does not thrash every frame.
     void UpdateLightMap();
 
     uint16_t GetLight(int x, int y, int z) const;
@@ -70,7 +76,8 @@ public:
     // Binary GetLightColor — table lookup + mode scale (needs UpdateLightMap first).
     uint32_t GetLightColor(uint16_t packed) const;
 
-    // True after brightness/table change — caller should remesh visible geometry.
+    // True after brightness/table change — caller should remesh vertex colors only
+    // (sky/block nibbles unchanged — do NOT re-run PropagateBlockLights).
     bool ConsumeTableDirty() {
         bool d = tableDirty_;
         tableDirty_ = false;
