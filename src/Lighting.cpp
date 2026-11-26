@@ -292,13 +292,14 @@ void LightMap::PropagateBlockLights(GridData& grid) {
 
 void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                          int minZ, int maxZ) {
-    const int R = 15; // max light travel
-    int lx0 = (minX - R) - ox_;
-    int lx1 = (maxX + R) - ox_;
-    int ly0 = (minY - R) - oy_;
-    int ly1 = (maxY + R) - oy_;
-    int lz0 = (minZ - R) - oz_;
-    int lz1 = (maxZ + R) - oz_;
+    // Caller supplies world AABB already expanded by light radius (SetCell NoteLightDirty).
+    // Do not expand again — double ±15 was a major FPS cost on large worlds.
+    int lx0 = minX - ox_;
+    int lx1 = maxX - ox_;
+    int ly0 = minY - oy_;
+    int ly1 = maxY - oy_;
+    int lz0 = minZ - oz_;
+    int lz1 = maxZ - oz_;
     RebuildRegion(grid, lx0, lx1, ly0, ly1, lz0, lz1);
 }
 
@@ -364,7 +365,7 @@ void LightMap::UpdateLightMap() {
     if (brightnessApplied_ >= 0.f) {
         float d = brightness_ - brightnessApplied_;
         if (d < 0.f) d = -d;
-        if (d < 0.004f) return;
+        if (d < 0.02f) return;
     }
     brightnessApplied_ = brightness_;
     const float kMul1 = 0.53f, kAdd1 = 0.47f;

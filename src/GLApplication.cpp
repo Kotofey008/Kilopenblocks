@@ -300,7 +300,10 @@ void GLApplication::EnsureRegionMeshes() {
         int kMaxDirtyCols = (nDirty > 8) ? 16 : 2;
         int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
 
-        if (nRebuild > 0 && !lightMap_.Empty()) {
+        // Light propagation is NOT done every dirty frame (that destroyed FPS:
+        // ±15 expand + full-Y BFS every frame while draining). Light runs once
+        // when grid.ConsumeLightDirty() is set by SetCell; mesh drain stays cheap.
+        if (nRebuild > 0 && !lightMap_.Empty() && grid.ConsumeLightDirty()) {
             int minX = dirtyOx[0], maxX = dirtyOx[0] + 16;
             int minZ = dirtyOz[0], maxZ = dirtyOz[0] + 16;
             for (int i = 0; i < nRebuild; ++i) {
@@ -309,32 +312,17 @@ void GLApplication::EnsureRegionMeshes() {
                 if (dirtyOz[i] < minZ) minZ = dirtyOz[i];
                 if (dirtyOz[i] + 16 > maxZ) maxZ = dirtyOz[i] + 16;
             }
-            // Light travels up to 15 blocks — mark neighbouring region columns dirty
-            // so their meshes pick up new sky/block light (fixes torch stopping at
-            // chunk border until full re-Init).
-            const int kLightR = 15;
-            const int lightMinX = minX - kLightR;
-            const int lightMaxX = maxX + kLightR;
-            const int lightMinZ = minZ - kLightR;
-            const int lightMaxZ = maxZ + kLightR;
-            for (int z = lightMinZ & ~15; z < lightMaxZ; z += 16)
-                for (int x = lightMinX & ~15; x < lightMaxX; x += 16)
-                    grid.MarkRegionDirty(x, 0, z);
-
-            // Re-collect after expansion (cap 16 cols this frame).
-            nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
-            kMaxDirtyCols = (nDirty > 8) ? 16 : 8;
-            nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
-
-            int minY = grid.originY;
-            int maxY = grid.originY + grid.sizeY;
-            if (grid.sizeY <= 0) {
-                minY = (int)grid.worldMin.y;
-                maxY = (int)grid.worldMax.y;
+            // Use light dirty AABB recorded at SetCell (includes ±15), fallback to cols.
+            int lx0, lx1, ly0, ly1, lz0, lz1;
+            if (grid.GetLightDirtyAABB(lx0, ly0, lz0, lx1, ly1, lz1)) {
+                lightMap_.PropagateBlockLightsLocal(grid, lx0, lx1, ly0, ly1, lz0, lz1);
+            } else {
+                const int R = 15;
+                int minY = grid.originY;
+                int maxY = grid.originY + (grid.sizeY > 0 ? grid.sizeY : 64);
+                lightMap_.PropagateBlockLightsLocal(
+                    grid, minX - R, maxX + R, minY, maxY, minZ - R, maxZ + R);
             }
-            // Propagate over full light-radius AABB (not only columns remeshed this frame).
-            lightMap_.PropagateBlockLightsLocal(
-                grid, lightMinX, lightMaxX, minY, maxY, lightMinZ, lightMaxZ);
         }
 
         for (int i = 0; i < nRebuild; ++i) {
@@ -865,9 +853,12 @@ void GLApplication::Frame() {
         lightMap_.SetBrightness(0.2f + 0.8f * dayF);
         lightMap_.UpdateLightMap();
         if (lightMap_.ConsumeTableDirty()) {
-            // Mark all loaded region meshes dirty via grid region flags
+            // Day/night only changes the color LUT — do NOT InvalidateLighting()
+            // (that marks every region dirty → multi-second remesh storms).
+            // Only remesh columns that already have loaded meshes.
             GridData& grid = game_.GetGrid();
-            grid.InvalidateLighting();
+            for (size_t i = 0; i < regionMeshes_.size(); ++i)
+                grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
         }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.

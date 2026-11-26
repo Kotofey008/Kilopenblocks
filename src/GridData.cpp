@@ -149,6 +149,15 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
             if (lz == 0)  MarkRegionDirty(x, y, z - 1);
             if (lz == 15) MarkRegionDirty(x, y, z + 1);
         }
+
+        // Light can travel 15 blocks — mark mesh columns in radius once (not every frame).
+        if (typeChanged || bit2000Changed) {
+            // Mesh columns within light radius (16-aligned), once at edit time.
+            for (int dz = -16; dz <= 16; dz += 16)
+                for (int dx = -16; dx <= 16; dx += 16)
+                    MarkRegionDirty(x + dx, y, z + dz);
+            NoteLightDirty(x, y, z);
+        }
     }
 
     // Neighbour SetState | 0xC000 — gated by this+0xf0 (batchFlag_).
@@ -266,6 +275,39 @@ int GridData::CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const {
         ++n;
     }
     return n;
+}
+
+void GridData::NoteLightDirty(int x, int y, int z) {
+    const int R = 15;
+    int x0 = x - R, y0 = y - R, z0 = z - R;
+    int x1 = x + R + 1, y1 = y + R + 1, z1 = z + R + 1;
+    if (!lightDirty_) {
+        lightDirty_ = true;
+        lightDirtyMinX_ = x0; lightDirtyMinY_ = y0; lightDirtyMinZ_ = z0;
+        lightDirtyMaxX_ = x1; lightDirtyMaxY_ = y1; lightDirtyMaxZ_ = z1;
+    } else {
+        if (x0 < lightDirtyMinX_) lightDirtyMinX_ = x0;
+        if (y0 < lightDirtyMinY_) lightDirtyMinY_ = y0;
+        if (z0 < lightDirtyMinZ_) lightDirtyMinZ_ = z0;
+        if (x1 > lightDirtyMaxX_) lightDirtyMaxX_ = x1;
+        if (y1 > lightDirtyMaxY_) lightDirtyMaxY_ = y1;
+        if (z1 > lightDirtyMaxZ_) lightDirtyMaxZ_ = z1;
+    }
+}
+
+bool GridData::ConsumeLightDirty() {
+    bool d = lightDirty_;
+    lightDirty_ = false;
+    return d;
+}
+
+bool GridData::GetLightDirtyAABB(int& minX, int& minY, int& minZ,
+                                 int& maxX, int& maxY, int& maxZ) const {
+    // Valid after ConsumeLightDirty only if we snapshot first — caller should
+    // read AABB before Consume, or we keep last AABB. Keep last bounds always.
+    minX = lightDirtyMinX_; minY = lightDirtyMinY_; minZ = lightDirtyMinZ_;
+    maxX = lightDirtyMaxX_; maxY = lightDirtyMaxY_; maxZ = lightDirtyMaxZ_;
+    return maxX > minX && maxY > minY && maxZ > minZ;
 }
 
 void GridData::ClearRegionDirtyAt(int worldOx, int worldOz) {

@@ -312,6 +312,11 @@ public:
     void FlushLiquidQueue(int& stepsLeft);
 
     bool meshesDirty_ = true;
+    // Light dirty one-shot (MCPE path)
+    bool lightDirty_ = false;
+    int lightDirtyMinX_ = 0, lightDirtyMinY_ = 0, lightDirtyMinZ_ = 0;
+    int lightDirtyMaxX_ = 0, lightDirtyMaxY_ = 0, lightDirtyMaxZ_ = 0;
+
     LeavesQuality leavesQuality_ = LeavesQuality::Fancy; // +0xec default 2
     int viewDistanceCells_ = 64; // binary GridData +0x22c (from draw-distance table)
     // Store() snapshot for Resize/Restore (binary 0xa3770 / 0xa4d50)
@@ -355,6 +360,13 @@ public:
     int CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const;
     void ClearRegionDirtyAt(int worldOx, int worldOz);
     void ClearAllRegionDirty();
+
+    // One-shot light rebuild (SetCell). EnsureRegionMeshes consumes once — never
+    // re-run full light BFS every dirty-mesh frame (that destroyed FPS).
+    void NoteLightDirty(int x, int y, int z);
+    bool ConsumeLightDirty();
+    bool GetLightDirtyAABB(int& minX, int& minY, int& minZ,
+                           int& maxX, int& maxY, int& maxZ) const;
     // Rebuild hierarchical 0x4000 maps from cellStates (post-gen / after bulk PutCell).
     void SyncHierarchyFromStates();
     void SetBatchFlag(uint8_t v) { batchFlag_ = v; }
