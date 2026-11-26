@@ -309,15 +309,32 @@ void GLApplication::EnsureRegionMeshes() {
                 if (dirtyOz[i] < minZ) minZ = dirtyOz[i];
                 if (dirtyOz[i] + 16 > maxZ) maxZ = dirtyOz[i] + 16;
             }
-            // Local sky columns + block BFS (margin 15 inside PropagateBlockLightsLocal).
-            // Full-world Propagate was the place/break lag source.
-            int minY = (int)grid.worldMin.y;
-            int maxY = (int)grid.worldMax.y;
-            if (grid.sizeY > 0) {
-                minY = grid.originY;
-                maxY = grid.originY + grid.sizeY;
+            // Light travels up to 15 blocks — mark neighbouring region columns dirty
+            // so their meshes pick up new sky/block light (fixes torch stopping at
+            // chunk border until full re-Init).
+            const int kLightR = 15;
+            const int lightMinX = minX - kLightR;
+            const int lightMaxX = maxX + kLightR;
+            const int lightMinZ = minZ - kLightR;
+            const int lightMaxZ = maxZ + kLightR;
+            for (int z = lightMinZ & ~15; z < lightMaxZ; z += 16)
+                for (int x = lightMinX & ~15; x < lightMaxX; x += 16)
+                    grid.MarkRegionDirty(x, 0, z);
+
+            // Re-collect after expansion (cap 16 cols this frame).
+            nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
+            kMaxDirtyCols = (nDirty > 8) ? 16 : 8;
+            nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
+
+            int minY = grid.originY;
+            int maxY = grid.originY + grid.sizeY;
+            if (grid.sizeY <= 0) {
+                minY = (int)grid.worldMin.y;
+                maxY = (int)grid.worldMax.y;
             }
-            lightMap_.PropagateBlockLightsLocal(grid, minX, maxX, minY, maxY, minZ, maxZ);
+            // Propagate over full light-radius AABB (not only columns remeshed this frame).
+            lightMap_.PropagateBlockLightsLocal(
+                grid, lightMinX, lightMaxX, minY, maxY, lightMinZ, lightMaxZ);
         }
 
         for (int i = 0; i < nRebuild; ++i) {

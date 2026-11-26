@@ -47,13 +47,12 @@ static int CellAtten(const GridData& grid, int cidx, unsigned char t) {
         if (L < 0) return -L;
         return 0;
     }
-    // Air with fluid bits (host water stored as type0 + state) — slight atten
+    // Air with fluid bits (host water stored as type0 + state).
+    // Stronger atten so underwater closed volumes go dark (esp. at night).
     if (cidx >= 0 && cidx < (int)grid.cellStates.size()) {
         unsigned short st = grid.cellStates[cidx];
-        if ((st & GridData::STATE_BIT_2000) != 0) {
-            // Binary water atten 1 or 2; MCPE water often −1. Use 1 for mild look.
-            return 1;
-        }
+        if ((st & GridData::STATE_BIT_2000) != 0)
+            return 2;
     }
     return 0;
 }
@@ -212,12 +211,40 @@ void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1
         }
     }
 
-    // Also seed from lights just outside region (so local update blends)
-    auto seedBorder = [&](int x, int y, int z) {
+    // Seed from block light just outside the cleared AABB so local updates
+    // blend with the rest of the world (torch near region edge).
+    auto pullOutside = [&](int x, int y, int z, int ox2, int oy2, int oz2) {
         if (!inR(x, y, z)) return;
-        // pull from outside neighbor if higher
+        if (ox2 >= lx0 && ox2 < lx1 && oy2 >= ly0 && oy2 < ly1 && oz2 >= lz0 && oz2 < lz1)
+            return;
+        if (ox2 < 0 || oy2 < 0 || oz2 < 0 || ox2 >= sizeX_ || oy2 >= sizeY_ || oz2 >= sizeZ_)
+            return;
+        int oiLocal = ox2 + sizeX_ * (oy2 + sizeY_ * oz2);
+        int b = LightPack::Block(data_[(size_t)oiLocal]);
+        if (b <= 1) return;
+        int wx = x + ox_, wy = y + oy_, wz = z + oz_;
+        int cidx = grid.CoordToIndex(wx, wy, wz);
+        unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
+        if (IsOpaque(grid, t)) return;
+        int atten = CellAtten(grid, cidx, t);
+        int nl = b - 1 - atten;
+        if (nl > 0) setBlk(x, y, z, nl);
     };
-    (void)seedBorder;
+    for (int z = lz0; z < lz1; ++z)
+        for (int y = ly0; y < ly1; ++y) {
+            pullOutside(lx0, y, z, lx0 - 1, y, z);
+            pullOutside(lx1 - 1, y, z, lx1, y, z);
+        }
+    for (int x = lx0; x < lx1; ++x)
+        for (int y = ly0; y < ly1; ++y) {
+            pullOutside(x, y, lz0, x, y, lz0 - 1);
+            pullOutside(x, y, lz1 - 1, x, y, lz1);
+        }
+    for (int x = lx0; x < lx1; ++x)
+        for (int z = lz0; z < lz1; ++z) {
+            pullOutside(x, ly0, z, x, ly0 - 1, z);
+            pullOutside(x, ly1 - 1, z, x, ly1, z);
+        }
 
     static const int dx[6] = {1,-1,0,0,0,0};
     static const int dy[6] = {0,0,1,-1,0,0};
@@ -368,6 +395,10 @@ uint32_t LightMap::GetLightColor(uint16_t packed) const {
     // Binary GetLightColor mode scales (verified earlier from .so).
     int sky = LightPack::Sky(packed);
     int block = LightPack::Block(packed);
+    // INTENTIONAL: LUT has +16 bias even for (0,0) → grey residual on cave/water
+    // faces at night. True unlit cells must be black.
+    if (sky == 0 && block == 0)
+        return 0xFF000000u;
     uint32_t uVar1 = colorTable_[(sky << 4) | block];
     uint32_t mode = (uint32_t)(packed & LightPack::MODE_MASK);
     int scale;
