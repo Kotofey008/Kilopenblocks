@@ -1,18 +1,15 @@
 #include "Lighting.h"
-// Light storage (AddLight @ 0x95b90 / AddLightUpdate @ 0x94b60):
-//   per-cell value: low nibble sky + high nibble block; hierarchy |0x8000 dirty
-// Mode bits applied in GetLight @ 0x94480 by binary face (0=XP..5=ZN):
-//   0→0, 1→0x800, 2→0x1000, 3→0x1800, 4→0x2000, 5→0x2800
-// Mesh ourFace 0=+X..5=-Z maps via GetFaceLight to those modes.
-//
-// Sky: UpdateSunRays column top-down + L atten. Block: BFS with L + state 0x2000/0x3c0
-// (AddLightUpdate packing). Local path expands AABB by 15 (max nibble travel).
+// Binary-aligned lighting (P2):
+//   UpdateSunRays builds skyHeight_ (+0x68) and sky nibble
+//   InvalidateSunRays marks sunRayDirty_ (+0x84)
+//   SetAddLights seeds lightQueue_ from column height / emitters
+//   AddLightUpdate recomputes one cell (L + state 0x2000/0x3c0)
+//   AddLights drains queue (binary hierarchy walk → queue drain)
 
 #include "TreeBuilder.h"
 #include <algorithm>
 #include <cstring>
-#include <queue>
-#include <vector>
+#include <cmath>
 
 int LightMap::Index(int x, int y, int z) const {
     int lx = x - ox_, ly = y - oy_, lz = z - oz_;
@@ -21,26 +18,33 @@ int LightMap::Index(int x, int y, int z) const {
     return lx + sizeX_ * (ly + sizeY_ * lz);
 }
 
-void LightMap::Init(GridData& grid) {
-    ox_ = grid.originX; oy_ = grid.originY; oz_ = grid.originZ;
-    sizeX_ = grid.sizeX > 0 ? grid.sizeX : (int)(grid.worldMax.x - grid.worldMin.x);
-    sizeY_ = grid.sizeY > 0 ? grid.sizeY : (int)(grid.worldMax.y - grid.worldMin.y);
-    sizeZ_ = grid.sizeZ > 0 ? grid.sizeZ : (int)(grid.worldMax.z - grid.worldMin.z);
-    if (sizeX_ <= 0) { ox_ = (int)grid.worldMin.x; sizeX_ = (int)(grid.worldMax.x - grid.worldMin.x); }
-    if (sizeY_ <= 0) { oy_ = (int)grid.worldMin.y; sizeY_ = (int)(grid.worldMax.y - grid.worldMin.y); }
-    if (sizeZ_ <= 0) { oz_ = (int)grid.worldMin.z; sizeZ_ = (int)(grid.worldMax.z - grid.worldMin.z); }
-    data_.assign((size_t)sizeX_ * sizeY_ * sizeZ_, 0);
-    dirty_ = true;
-    InitDefaultCurves();
-    brightnessApplied_ = -1.f;
-    UpdateLightMap();
-    UpdateSunRays(grid);
-    PropagateBlockLights(grid);
+void LightMap::EnsureAuxSize() {
+    size_t xz = (size_t)sizeX_ * (size_t)sizeZ_;
+    if (skyHeight_.size() != xz) skyHeight_.assign(xz, (uint8_t)sizeY_);
+    if (sunRayDirty_.size() != xz) sunRayDirty_.assign(xz, 1);
+    if (inQueue_.size() != data_.size()) inQueue_.assign(data_.size(), 0);
+    regionCountX_ = (sizeX_ + 15) >> 4;
+    regionCountZ_ = (sizeZ_ + 15) >> 4;
 }
 
-// L at mat[+0x1a] is stored as uint8_t; signed values -1/-2 encode as 0xFF/0xFE.
-// Always interpret via int8_t. Light channels are 0..15 with saturating arithmetic
-// (binary nibbles & 0x0f / & 0xf0 — no wrap on underflow).
+void LightMap::Enqueue(int lightIdx) {
+    if (lightIdx < 0 || lightIdx >= (int)data_.size()) return;
+    if (lightIdx >= (int)inQueue_.size()) inQueue_.resize(data_.size(), 0);
+    if (inQueue_[(size_t)lightIdx]) return;
+    inQueue_[(size_t)lightIdx] = 1;
+    lightQueue_.push(lightIdx);
+}
+
+void LightMap::InitDefaultCurves() {
+    for (int i = 0; i < 16; ++i) {
+        float t = (float)i / 15.f;
+        curveR_[i] = t;
+        curveG_[i] = t;
+        curveB_[i] = t;
+        curveRow_[i] = t;
+    }
+}
+
 static int SignedL(const Material* m) {
     if (!m) return 0;
     int v = (int)(int8_t)m->sizeL();
@@ -56,12 +60,10 @@ static bool IsOpaque(const GridData& grid, unsigned char t) {
     uint8_t cls = m->prop01();
     if (cls == 1 || cls == 2 || cls == 4) return false;
     if (!m->col()) return false;
-    // L<0 (leaves/water): attenuate sky, do not fully occlude
     if (SignedL(m) < 0) return false;
     return true;
 }
 
-// Emission only for L in 1..15 (torch 14, lamp 15, …). L<=0 never emits.
 static int EmissionLevel(const GridData& grid, unsigned char t) {
     if (t == 0) return 0;
     const Material* m = grid.GetMaterial((int)t);
@@ -71,298 +73,381 @@ static int EmissionLevel(const GridData& grid, unsigned char t) {
     return LightPack::Clamp15(L);
 }
 
-// How much to subtract from sky when the ray enters this cell (L=-1 → 1, L=-2 → 2).
-static int SkyAtten(const GridData& grid, unsigned char t, int cidx) {
-    if (t == 0) {
-        if (cidx >= 0 && cidx < (int)grid.cellStates.size() &&
-            (grid.cellStates[cidx] & 0x3fc0) != 0)
-            return 2; // water/ice L=-2
-        return 0;
-    }
-    const Material* m = grid.GetMaterial((int)t);
-    if (!m) return 0;
-    int L = SignedL(m);
-    if (L >= 0) return 0;
-    return -L; // 1 or 2
-}
-
-// Apply signed L to a 0..15 sky sample: saturate, never wrap.
-//   level=0, L=-2 → 0;  level=2, L=-2 → 0;  level=3, L=-2 → 1
 static int ApplySkyL(int skyLevel, int signedL) {
     if (signedL >= 0) return LightPack::Clamp15(skyLevel);
     return LightPack::Clamp15(skyLevel + signedL);
 }
 
-void LightMap::UpdateSunRays(GridData& grid) {
-    // Fast path: lightmap shares origin/size with grid → direct index into cellTypes
-    const bool aligned = (ox_ == grid.originX && oy_ == grid.originY && oz_ == grid.originZ &&
-                          sizeX_ == grid.sizeX && sizeY_ == grid.sizeY && sizeZ_ == grid.sizeZ &&
-                          !grid.cellTypes.empty());
-    for (int z = 0; z < sizeZ_; ++z) {
-        for (int x = 0; x < sizeX_; ++x) {
-            int sky = 15;
-            for (int y = sizeY_ - 1; y >= 0; --y) {
-                int idx = x + sizeX_ * (y + sizeY_ * z);
-                unsigned char t;
-                int cidx = -1;
-                if (aligned) {
-                    t = grid.cellTypes[(size_t)idx];
-                    cidx = idx;
-                } else {
-                    cidx = grid.CoordToIndex(x + ox_, y + oy_, z + oz_);
-                    t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
-                }
-                if (IsOpaque(grid, t)) {
-                    sky = 0;
-                } else {
-                    // Saturating add of signed L into sky (L=-2 at 0 stays 0, not 14/15).
-                    const Material* mm = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
-                    int sL = 0;
-                    if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
-                        (grid.cellStates[cidx] & 0x3fc0) != 0)
-                        sL = -2;
-                    else if (mm)
-                        sL = SignedL(mm);
-                    sky = ApplySkyL(sky, sL);
-                }
-                sky = LightPack::Clamp15(sky);
-                int block = LightPack::Clamp15(LightPack::Block(data_[idx]));
-                data_[idx] = LightPack::Make(sky, block);
-            }
+// ---------------------------------------------------------------------------
+// Init / InvalidateLighting path
+// ---------------------------------------------------------------------------
+void LightMap::Init(GridData& grid) {
+    ox_ = grid.originX; oy_ = grid.originY; oz_ = grid.originZ;
+    sizeX_ = grid.sizeX > 0 ? grid.sizeX : (int)(grid.worldMax.x - grid.worldMin.x);
+    sizeY_ = grid.sizeY > 0 ? grid.sizeY : (int)(grid.worldMax.y - grid.worldMin.y);
+    sizeZ_ = grid.sizeZ > 0 ? grid.sizeZ : (int)(grid.worldMax.z - grid.worldMin.z);
+    if (sizeX_ <= 0) { ox_ = (int)grid.worldMin.x; sizeX_ = (int)(grid.worldMax.x - grid.worldMin.x); }
+    if (sizeY_ <= 0) { oy_ = (int)grid.worldMin.y; sizeY_ = (int)(grid.worldMax.y - grid.worldMin.y); }
+    if (sizeZ_ <= 0) { oz_ = (int)grid.worldMin.z; sizeZ_ = (int)(grid.worldMax.z - grid.worldMin.z); }
+    data_.assign((size_t)sizeX_ * sizeY_ * sizeZ_, 0);
+    dirty_ = true;
+    InitDefaultCurves();
+    brightnessApplied_ = -1.f;
+    EnsureAuxSize();
+    UpdateLightMap();
+    // InvalidateLighting: zero lights, UpdateSunRays all, SetAddLights all, AddLights
+    PropagateBlockLights(grid);
+}
+
+// ---------------------------------------------------------------------------
+// UpdateSunRays — sky height map + sky nibble (binary 0x92440 column walk)
+// ---------------------------------------------------------------------------
+void LightMap::UpdateSunRaysColumn(GridData& grid, int lx, int lz) {
+    if (lx < 0 || lz < 0 || lx >= sizeX_ || lz >= sizeZ_) return;
+    int sky = 15;
+    int firstOpaque = sizeY_; // height map: y of first opaque from top, or sizeY if none
+    for (int y = sizeY_ - 1; y >= 0; --y) {
+        int idx = lx + sizeX_ * (y + sizeY_ * lz);
+        int wx = lx + ox_, wy = y + oy_, wz = lz + oz_;
+        int cidx = grid.CoordToIndex(wx, wy, wz);
+        unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
+        if (IsOpaque(grid, t)) {
+            if (firstOpaque == sizeY_) firstOpaque = y;
+            sky = 0;
+        } else {
+            const Material* mm = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
+            int sL = 0;
+            if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
+                (grid.cellStates[cidx] & 0x3fc0) != 0)
+                sL = -2;
+            else if (mm)
+                sL = SignedL(mm);
+            sky = ApplySkyL(sky, sL);
         }
+        sky = LightPack::Clamp15(sky);
+        int block = LightPack::Block(data_[(size_t)idx]);
+        data_[(size_t)idx] = LightPack::Make(sky, block);
     }
+    skyHeight_[(size_t)XZIndex(lx, lz)] = (uint8_t)(firstOpaque > 255 ? 255 : firstOpaque);
+    sunRayDirty_[(size_t)XZIndex(lx, lz)] = 0;
+}
+
+void LightMap::UpdateSunRays(GridData& grid) {
+    EnsureAuxSize();
+    for (int z = 0; z < sizeZ_; ++z)
+        for (int x = 0; x < sizeX_; ++x)
+            UpdateSunRaysColumn(grid, x, z);
     dirty_ = false;
 }
 
 void LightMap::UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, int maxZ) {
-    if (data_.empty() || sizeX_ <= 0 || sizeY_ <= 0 || sizeZ_ <= 0) return;
-    // Clamp to lightmap bounds (local indices)
+    EnsureAuxSize();
     int lx0 = minX - ox_; if (lx0 < 0) lx0 = 0;
     int lx1 = maxX - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
     int lz0 = minZ - oz_; if (lz0 < 0) lz0 = 0;
     int lz1 = maxZ - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
-    if (lx0 >= lx1 || lz0 >= lz1) return;
+    for (int z = lz0; z < lz1; ++z)
+        for (int x = lx0; x < lx1; ++x)
+            UpdateSunRaysColumn(grid, x, z);
+}
 
-    for (int z = lz0; z < lz1; ++z) {
-        for (int x = lx0; x < lx1; ++x) {
-            int sky = 15;
-            for (int y = sizeY_ - 1; y >= 0; --y) {
-                int idx = x + sizeX_ * (y + sizeY_ * z);
-                int wx = x + ox_, wy = y + oy_, wz = z + oz_;
-                int cidx = grid.CoordToIndex(wx, wy, wz);
-                unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
-                if (IsOpaque(grid, t)) {
-                    sky = 0;
-                } else {
-                    // Saturating add of signed L into sky (L=-2 at 0 stays 0, not 14/15).
-                    const Material* mm = (t != 0) ? grid.GetMaterial((int)t) : nullptr;
-                    int sL = 0;
-                    if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
-                        (grid.cellStates[cidx] & 0x3fc0) != 0)
-                        sL = -2;
-                    else if (mm)
-                        sL = SignedL(mm);
-                    sky = ApplySkyL(sky, sL);
-                }
-                sky = LightPack::Clamp15(sky);
-                int block = LightPack::Clamp15(LightPack::Block(data_[idx]));
-                data_[idx] = LightPack::Make(sky, block);
-            }
+void LightMap::InvalidateSunRays(int worldX, int worldZ) {
+    // Binary InvalidateSunRays(param_1, param_2): region column coords, marks 16×16
+    // height cells 0xff and dirty flag at +0x84.
+    EnsureAuxSize();
+    int lx0 = (worldX - ox_) & ~15;
+    int lz0 = (worldZ - oz_) & ~15;
+    for (int z = lz0; z < lz0 + 16 && z < sizeZ_; ++z) {
+        if (z < 0) continue;
+        for (int x = lx0; x < lx0 + 16 && x < sizeX_; ++x) {
+            if (x < 0) continue;
+            skyHeight_[(size_t)XZIndex(x, z)] = 0xff;
+            sunRayDirty_[(size_t)XZIndex(x, z)] = 1;
         }
     }
 }
 
-void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
-    // Matches GridData::AddLight(x,y,z,ushort) — seeds block-light channel
-    int i = Index(x, y, z);
-    if (i < 0) return;
-    int newBlock = LightPack::Block(packed);
-    int sky = LightPack::Sky(data_[i]);
-    int cur = LightPack::Block(data_[i]);
-    if (newBlock > cur)
-        data_[i] = LightPack::Make(sky, newBlock);
+int LightMap::GetSkyHeight(int wx, int wz) const {
+    int lx = wx - ox_, lz = wz - oz_;
+    if (lx < 0 || lz < 0 || lx >= sizeX_ || lz >= sizeZ_) return sizeY_;
+    if (skyHeight_.empty()) return sizeY_;
+    return (int)skyHeight_[(size_t)XZIndex(lx, lz)];
 }
 
-// Apply AddLightUpdate state/L packing to sky+block nibbles already decremented.
-// Binary after neighbor-max and -1: material L, then state 0x2000 / 0x3c0.
-static uint16_t ApplyLAndState(GridData& grid, int cidx, int sky, int block) {
-    sky = LightPack::Clamp15(sky);
-    block = LightPack::Clamp15(block);
-    unsigned char t = (cidx >= 0 && cidx < (int)grid.cellTypes.size())
-                          ? grid.cellTypes[cidx] : 0;
-    unsigned short st = (cidx >= 0 && cidx < (int)grid.cellStates.size())
-                            ? grid.cellStates[cidx] : 0;
+// ---------------------------------------------------------------------------
+// AddLightUpdate @ 0x94b60 — single cell from neighbours + L + state
+// ---------------------------------------------------------------------------
+bool LightMap::AddLightUpdate(GridData& grid, int x, int y, int z) {
+    int idx = Index(x, y, z);
+    if (idx < 0) return false;
+    int cidx = grid.CoordToIndex(x, y, z);
+    if (cidx < 0) return false;
 
-    int sL = 0;
+    unsigned char t = grid.cellTypes[cidx];
+    unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
+
+    // Binary: type!=0 && FTL(+0x1b)==0 → keep current light, clear hierarchy dirty only
     if (t != 0) {
         const Material* mat = grid.GetMaterial((int)t);
-        sL = SignedL(mat);
+        if (mat && mat->flowPerm(0) == 0) {
+            // Solids store 0; faces sample outside via GetFaceLight
+            uint16_t keep = data_[(size_t)idx] & 0x00ff;
+            // still allow emission if L>0 even on "solid" with FTL0? Binary early-outs
+            // before L. Emitters have FTL != 0.
+            return false;
+        }
     }
+
+    int sky = 0, block = 0;
+
+    auto take = [&](int nx, int ny, int nz, GridData::FlowType outF, GridData::FlowType inF) {
+        int ni = grid.CoordToIndex(nx, ny, nz);
+        if (ni < 0) {
+            // Outside +Y = open sky (binary y+1 >= sizeY)
+            if (ny >= oy_ + sizeY_ && sky < 15) sky = 15;
+            return;
+        }
+        if (t != 0 && grid.IsFlowAllowed(cidx, outF) == 0) return;
+        unsigned char nt = grid.cellTypes[ni];
+        if (nt != 0 && grid.IsFlowAllowed(ni, inF) == 0) return;
+        uint16_t lv = GetLight(nx, ny, nz);
+        int ns = LightPack::Sky(lv);
+        int nb = LightPack::Block(lv);
+        if (ns > sky) sky = ns;
+        if (nb > block) block = nb;
+    };
+
+    take(x + 1, y, z, GridData::FlowXP, GridData::FlowXN);
+    take(x - 1, y, z, GridData::FlowXN, GridData::FlowXP);
+    take(x, y + 1, z, GridData::FlowYP, GridData::FlowYN);
+    take(x, y - 1, z, GridData::FlowYN, GridData::FlowYP);
+    take(x, y, z + 1, GridData::FlowZP, GridData::FlowZN);
+    take(x, y, z - 1, GridData::FlowZN, GridData::FlowZP);
+
+    // Also: if this cell is at/above sky height column open — seed sky from height map
+    // (GetLightInside path: y relative to +0x68 height).
+    int h = GetSkyHeight(x, z);
+    // h = first opaque y in lightmap local; world y = h + oy_
+    // Cells with local ly >= h are "above/at first solid from top" when h was found walking
+    // from top — actually firstOpaque is the y index of first solid. Air above it has ly > firstOpaque.
+    int ly = y - oy_;
+    if (ly > h && sky < 15) {
+        // Between top of world and first solid — open sky column already filled by UpdateSunRays;
+        // neighbour gather should have gotten it. Reinforce open top:
+        if (ly >= sizeY_ - 1) sky = 15;
+    }
+
+    // Decrement
+    if (sky > 0) sky -= 1;
+    if (block > 0) block -= 1;
+
+    // Material L (+0x1a)
+    int sL = 0;
+    if (t != 0) sL = SignedL(grid.GetMaterial((int)t));
     if (sL < 0) {
         int al = -sL;
-        sky = (sky > al) ? (sky - al) : 0;
-        block = (block > al) ? (block - al) : 0;
+        sky = (sky > al) ? sky - al : 0;
+        block = (block > al) ? block - al : 0;
     } else if (sL > 0) {
         if (block < sL) block = sL;
     }
 
-    // state & 0x2000 → water fluid atten (bit12 → 1 else 2)
-    // state & 0x3c0 (and not 0x2000) → pack 0xff (lava)
+    // State branches
+    uint16_t packed;
     if ((st & GridData::STATE_BIT_2000) != 0) {
         int atten = ((st & 0x1000) != 0) ? 1 : 2;
-        int outSky = (sky > atten) ? (sky - atten) : 0;
-        int outBlk = (block > atten) ? (block - atten) : 0;
-        return LightPack::Make(outSky, outBlk);
+        int os = (sky > atten) ? sky - atten : 0;
+        int ob = (block > atten) ? block - atten : 0;
+        packed = LightPack::Make(os, ob);
+    } else if ((st & GridData::STATE_BIT_3C0) != 0) {
+        packed = LightPack::Make(15, 15);
+    } else {
+        packed = LightPack::Make(sky, block);
     }
-    if ((st & GridData::STATE_BIT_3C0) != 0) {
-        return LightPack::Make(15, 15);
-    }
-    return LightPack::Make(sky, block);
+
+    uint16_t old = data_[(size_t)idx] & 0x00ff;
+    if (packed == old) return false;
+    data_[(size_t)idx] = packed;
+    return true;
 }
 
-// Block-channel BFS inside [lx0,lx1)×[ly0,ly1)×[lz0,lz1) lightmap-local bounds.
-// Preserves sky from UpdateSunRays*; applies L + water state at each write.
-static void PropagateBlockRegion(LightMap& self, GridData& grid,
-                                 int lx0, int lx1, int ly0, int ly1, int lz0, int lz1,
-                                 int sizeX, int sizeY, int sizeZ,
-                                 int ox, int oy, int oz,
-                                 std::vector<uint16_t>& data) {
-    // Clear block nibble only inside region (keep sky from sun rays).
-    for (int z = lz0; z < lz1; ++z)
-        for (int y = ly0; y < ly1; ++y)
-            for (int x = lx0; x < lx1; ++x) {
-                int idx = x + sizeX * (y + sizeY * z);
-                int sky = LightPack::Sky(data[(size_t)idx]);
-                data[(size_t)idx] = LightPack::Make(sky, 0);
-            }
+void LightMap::AddLight(GridData& grid, int x, int y, int z, uint16_t packed) {
+    int i = Index(x, y, z);
+    if (i < 0) return;
+    int newBlock = LightPack::Block(packed);
+    int sky = LightPack::Sky(data_[(size_t)i]);
+    int cur = LightPack::Block(data_[(size_t)i]);
+    if (newBlock > cur) {
+        data_[(size_t)i] = LightPack::Make(sky, newBlock);
+        Enqueue(i);
+        // Binary also marks 6-neighbour hierarchy dirty via |0x8000
+        const int d[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+        for (int k = 0; k < 6; ++k)
+            Enqueue(Index(x + d[k][0], y + d[k][1], z + d[k][2]));
+    }
+    (void)grid;
+}
 
-    std::queue<int> q;
-    auto inBounds = [&](int x, int y, int z) {
-        return x >= lx0 && x < lx1 && y >= ly0 && y < ly1 && z >= lz0 && z < lz1;
-    };
+// ---------------------------------------------------------------------------
+// SetAddLights(rx, rz) — seed queue for 16×16 column from height + emitters
+// ---------------------------------------------------------------------------
+void LightMap::SetAddLights(GridData& grid, int regionX, int regionZ) {
+    // regionX/Z are world-region indices (floor div 16 of world coords) OR
+    // local region indices 0..count-1. Binary uses param as region column index
+    // into maps sized by +0x58/+0x60. We accept world-aligned region origin.
+    EnsureAuxSize();
+    int lx0 = regionX * 16;
+    int lz0 = regionZ * 16;
+    // If args look like world coords already aligned:
+    if (regionX >= sizeX_ || regionZ >= sizeZ_) {
+        lx0 = (regionX - ox_) & ~15;
+        lz0 = (regionZ - oz_) & ~15;
+    }
+    if (lx0 < 0) lx0 = 0;
+    if (lz0 < 0) lz0 = 0;
 
-    // Seed emitters whose cells fall in region
-    for (int z = lz0; z < lz1; ++z) {
-        for (int y = ly0; y < ly1; ++y) {
-            for (int x = lx0; x < lx1; ++x) {
-                int wx = x + ox, wy = y + oy, wz = z + oz;
+    for (int lz = lz0; lz < lz0 + 16 && lz < sizeZ_; ++lz) {
+        for (int lx = lx0; lx < lx0 + 16 && lx < sizeX_; ++lx) {
+            // Ensure sky column current
+            if (sunRayDirty_[(size_t)XZIndex(lx, lz)])
+                UpdateSunRaysColumn(grid, lx, lz);
+
+            for (int ly = 0; ly < sizeY_; ++ly) {
+                int idx = lx + sizeX_ * (ly + sizeY_ * lz);
+                int wx = lx + ox_, wy = ly + oy_, wz = lz + oz_;
                 int cidx = grid.CoordToIndex(wx, wy, wz);
                 if (cidx < 0) continue;
                 unsigned char t = grid.cellTypes[cidx];
-                if (t == 0) continue;
                 int emit = EmissionLevel(grid, t);
-                if (emit <= 0) continue;
-                int idx = x + sizeX * (y + sizeY * z);
-                int sky = LightPack::Sky(data[(size_t)idx]);
-                // Apply L/state packing for the emitter cell
-                data[(size_t)idx] = ApplyLAndState(grid, cidx, sky, emit);
-                q.push(idx);
+                if (emit > 0) {
+                    int sky = LightPack::Sky(data_[(size_t)idx]);
+                    data_[(size_t)idx] = LightPack::Make(sky, emit);
+                    Enqueue(idx);
+                }
+                // Queue cells that have any sky or may need neighbour pull
+                if (LightPack::Sky(data_[(size_t)idx]) > 0 || emit > 0)
+                    Enqueue(idx);
             }
         }
     }
-    if (q.empty()) return;
+}
 
-    const int dx[6] = {1, -1, 0, 0, 0, 0};
-    const int dy[6] = {0, 0, 1, -1, 0, 0};
-    const int dz[6] = {0, 0, 0, 0, 1, -1};
+// ---------------------------------------------------------------------------
+// AddLights — drain queue (binary walks hierarchy then processes queue entries)
+// ---------------------------------------------------------------------------
+void LightMap::AddLights(GridData& grid, int maxSteps) {
+    EnsureAuxSize();
+    int steps = 0;
+    const int d[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    while (!lightQueue_.empty() && steps < maxSteps) {
+        int idx = lightQueue_.front();
+        lightQueue_.pop();
+        if (idx >= 0 && idx < (int)inQueue_.size())
+            inQueue_[(size_t)idx] = 0;
+        ++steps;
 
-    while (!q.empty()) {
-        int idx = q.front();
-        q.pop();
-        int level = LightPack::Block(data[(size_t)idx]);
-        if (level <= 1) continue;
-        int lx = idx % sizeX;
-        int ly = (idx / sizeX) % sizeY;
-        int lz = idx / (sizeX * sizeY);
-        for (int d = 0; d < 6; ++d) {
-            int nx = lx + dx[d], ny = ly + dy[d], nz = lz + dz[d];
-            if (!inBounds(nx, ny, nz)) continue;
-            int nidx = nx + sizeX * (ny + sizeY * nz);
-            int wx = nx + ox, wy = ny + oy, wz = nz + oz;
-            int cidx = grid.CoordToIndex(wx, wy, wz);
-            unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : (unsigned char)0;
-            if (IsOpaque(grid, t)) continue;
+        int lx = idx % sizeX_;
+        int ly = (idx / sizeX_) % sizeY_;
+        int lz = idx / (sizeX_ * sizeY_);
+        int wx = lx + ox_, wy = ly + oy_, wz = lz + oz_;
 
-            int newLevel = LightPack::Clamp15(level - 1);
-            int sky = LightPack::Sky(data[(size_t)nidx]);
-            uint16_t packed = ApplyLAndState(grid, cidx, sky, newLevel);
-            int finalBlk = LightPack::Block(packed);
-            int cur = LightPack::Block(data[(size_t)nidx]);
-            if (finalBlk > cur) {
-                data[(size_t)nidx] = packed;
-                q.push(nidx);
-            }
+        if (!AddLightUpdate(grid, wx, wy, wz))
+            continue;
+
+        // Neighbours need recompute (binary AddLight marks them via hierarchy)
+        for (int k = 0; k < 6; ++k) {
+            int nidx = Index(wx + d[k][0], wy + d[k][1], wz + d[k][2]);
+            Enqueue(nidx);
         }
     }
-    (void)self;
 }
 
 void LightMap::PropagateBlockLights(GridData& grid) {
-    // Full-world block BFS after sky columns are filled by UpdateSunRays.
-    if (data_.empty() || sizeX_ <= 0 || sizeY_ <= 0 || sizeZ_ <= 0) return;
-    PropagateBlockRegion(*this, grid, 0, sizeX_, 0, sizeY_, 0, sizeZ_,
-                         sizeX_, sizeY_, sizeZ_, ox_, oy_, oz_, data_);
+    EnsureAuxSize();
+    // Zero block channel, keep structure
+    for (size_t i = 0; i < data_.size(); ++i) {
+        int sky = LightPack::Sky(data_[i]);
+        data_[i] = LightPack::Make(sky, 0);
+    }
+    while (!lightQueue_.empty()) lightQueue_.pop();
+    inQueue_.assign(data_.size(), 0);
+
+    UpdateSunRays(grid);
+    // SetAddLights for every region column
+    int rcX = (sizeX_ + 15) >> 4;
+    int rcZ = (sizeZ_ + 15) >> 4;
+    for (int rz = 0; rz < rcZ; ++rz)
+        for (int rx = 0; rx < rcX; ++rx)
+            SetAddLights(grid, rx, rz);
+    AddLights(grid, 1 << 24);
 }
 
 void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                          int minZ, int maxZ) {
-    // Expand by 15 (max nibble travel) — binary light cannot jump farther.
-    if (data_.empty() || sizeX_ <= 0) return;
+    EnsureAuxSize();
     const int margin = 15;
-    int lx0 = (minX - margin) - ox_; if (lx0 < 0) lx0 = 0;
-    int lx1 = (maxX + margin) - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
-    int ly0 = (minY - margin) - oy_; if (ly0 < 0) ly0 = 0;
-    int ly1 = (maxY + margin) - oy_; if (ly1 > sizeY_) ly1 = sizeY_;
-    int lz0 = (minZ - margin) - oz_; if (lz0 < 0) lz0 = 0;
-    int lz1 = (maxZ + margin) - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
-    if (lx0 >= lx1 || ly0 >= ly1 || lz0 >= lz1) return;
+    int x0 = minX - margin, x1 = maxX + margin;
+    int y0 = minY - margin, y1 = maxY + margin;
+    int z0 = minZ - margin, z1 = maxZ + margin;
 
-    // Refresh sky columns in the XZ span (full Y — binary column is full height).
-    UpdateSunRaysLocal(grid, lx0 + ox_, lx1 + ox_, lz0 + oz_, lz1 + oz_);
-    PropagateBlockRegion(*this, grid, lx0, lx1, ly0, ly1, lz0, lz1,
-                         sizeX_, sizeY_, sizeZ_, ox_, oy_, oz_, data_);
+    // Invalidate + update sun rays for covered columns
+    for (int wz = z0; wz < z1; wz += 16)
+        for (int wx = x0; wx < x1; wx += 16)
+            InvalidateSunRays(wx, wz);
+    UpdateSunRaysLocal(grid, x0, x1, z0, z1);
+
+    // Clear block nibble in AABB, queue cells
+    int lx0 = x0 - ox_; if (lx0 < 0) lx0 = 0;
+    int lx1 = x1 - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
+    int ly0 = y0 - oy_; if (ly0 < 0) ly0 = 0;
+    int ly1 = y1 - oy_; if (ly1 > sizeY_) ly1 = sizeY_;
+    int lz0 = z0 - oz_; if (lz0 < 0) lz0 = 0;
+    int lz1 = z1 - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
+
+    for (int z = lz0; z < lz1; ++z)
+        for (int y = ly0; y < ly1; ++y)
+            for (int x = lx0; x < lx1; ++x) {
+                int idx = x + sizeX_ * (y + sizeY_ * z);
+                int sky = LightPack::Sky(data_[(size_t)idx]);
+                data_[(size_t)idx] = LightPack::Make(sky, 0);
+            }
+
+    // SetAddLights for each region column touched
+    int rx0 = lx0 >> 4, rx1 = (lx1 + 15) >> 4;
+    int rz0 = lz0 >> 4, rz1 = (lz1 + 15) >> 4;
+    for (int rz = rz0; rz < rz1; ++rz)
+        for (int rx = rx0; rx < rx1; ++rx)
+            SetAddLights(grid, rx, rz);
+
+    AddLights(grid, 1 << 20);
 }
 
+// ---------------------------------------------------------------------------
+// GetLight / GetFaceLight / color
+// ---------------------------------------------------------------------------
 uint16_t LightMap::GetLight(int x, int y, int z) const {
     int i = Index(x, y, z);
     if (i < 0) {
-        // Open sky only above lightmap; below/side → no sky (caves at edges).
         if (y >= oy_ + sizeY_) return LightPack::Make(15, 0);
         return LightPack::Make(0, 0);
     }
-    return data_[i];
+    return data_[(size_t)i];
 }
 
 uint16_t LightMap::GetFaceLight(int x, int y, int z, int face) const {
-    // Mesh ourFace: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
-    // Binary GetLight face: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN
-    // our→bin modes: +X→0, -X→0x1800, +Y→0x800, -Y→0x2000, +Z→0x1000, -Z→0x2800
-    // Sample the cell outside the face (same as binary neighbor select).
     int nx = x, ny = y, nz = z;
     uint16_t mode = LightPack::MODE_DEFAULT;
     switch (face) {
-        case 0: nx++; mode = LightPack::MODE_DEFAULT; break; // XP
-        case 1: nx--; mode = LightPack::MODE_1800;    break; // XN
-        case 2: ny++; mode = LightPack::MODE_0800;    break; // YP
-        case 3: ny--; mode = LightPack::MODE_2000;    break; // YN
-        case 4: nz++; mode = LightPack::MODE_1000;    break; // ZP
-        case 5: nz--; mode = LightPack::MODE_2800;    break; // ZN
+        case 0: nx++; mode = LightPack::MODE_DEFAULT; break;
+        case 1: nx--; mode = LightPack::MODE_1800;    break;
+        case 2: ny++; mode = LightPack::MODE_0800;    break;
+        case 3: ny--; mode = LightPack::MODE_2000;    break;
+        case 4: nz++; mode = LightPack::MODE_1000;    break;
+        case 5: nz--; mode = LightPack::MODE_2800;    break;
         default: break;
     }
     uint16_t v = GetLight(nx, ny, nz);
     return (uint16_t)((v & ~LightPack::MODE_MASK) | mode);
-}
-
-void LightMap::InitDefaultCurves() {
-    // Binary stores 16 floats at +0xf4 / +0x134 / +0x174 / +0x1b4.
-    // Ctor does not fill them; linear 0..1 ramps produce a valid UpdateLightMap table.
-    for (int i = 0; i < 16; ++i) {
-        float t = (float)i / 15.f;
-        curveR_[i] = t;
-        curveG_[i] = t;
-        curveB_[i] = t;
-        curveRow_[i] = t;
-    }
 }
 
 void LightMap::SetBrightness(float b) {
@@ -372,17 +457,6 @@ void LightMap::SetBrightness(float b) {
 }
 
 void LightMap::UpdateLightMap() {
-    // Binary GridData::UpdateLightMap @ 0x94920 (objdump-verified constants):
-    //   skip if brightness (+0x1f4) == applied (+0x1f8)
-    //   mul1=0.53 add1=0.47  mul2=0.35 add2=0.65  f3=1.5  scale=239  bias=16  clamp=255
-    //   for row j, col i:
-    //     rowF = brightness * curveRow[j]
-    //     R = (curveR[i]*1.5 + (brightness*0.53+0.47)*rowF) * 239 + 16
-    //     G = (curveG[i]*1.5 + (brightness*0.35+0.65)*rowF) * 239 + 16
-    //     B = (curveB[i]*1.5 + rowF) * 239 + 16
-    //   index in table = j*16+i  matching GetLightColor (sky<<4)|block with sky=j block=i
-    //   wait: index = (sky)*16 + block → outer sky (row), inner block (col)
-    // Epsilon: continuous time-of-day must not rebuild LUT + remesh every frame.
     if (brightnessApplied_ >= 0.f) {
         float d = brightness_ - brightnessApplied_;
         if (d < 0.f) d = -d;
@@ -394,7 +468,7 @@ void LightMap::UpdateLightMap() {
     const float kF3 = 1.5f;
     const float kScale = 239.f, kBias = 16.f, kClamp = 255.f;
     float b = brightness_;
-    float termR = b * kMul1 + kAdd1; // xmm after mul/add for R path
+    float termR = b * kMul1 + kAdd1;
     float termG = b * kMul2 + kAdd2;
     for (int sky = 0; sky < 16; ++sky) {
         float rowF = b * curveRow_[sky];
@@ -411,11 +485,6 @@ void LightMap::UpdateLightMap() {
                 return (uint32_t)v;
             };
             uint32_t R = ch(rf), G = ch(gf), B = ch(bf);
-            // ARGB as packed in binary OR path: A fixed 0xFF, R in low? GetLightColor
-            // returns (uVar1 & 0xff) as blue-ish channel with *scale — Windows-style
-            // 0xAARRGGBB with R in bits 16-23. Binary scales:
-            //   (uVar1 & 0xff) , (uVar1 & 0xff00), (uVar1 & 0xff0000)
-            // Store 0xFFBBGGRR is wrong; use 0xAARRGGBB: R<<16|G<<8|B
             colorTable_[sky * 16 + block] = 0xFF000000u | (R << 16) | (G << 8) | B;
         }
     }
@@ -423,10 +492,6 @@ void LightMap::UpdateLightMap() {
 }
 
 uint32_t LightMap::GetLightColor(uint16_t packed) const {
-    // Binary GetLightColor @ 0x947e0:
-    //   uVar1 = table[(sky*16)+block]
-    //   mode = packed & 0x3800
-    //   0 / 0x1800 → *0xA4 ; 0x1000/0x2800 → *0xD2 ; 0x2000 → *0x94
     int sky = LightPack::Sky(packed);
     int block = LightPack::Block(packed);
     uint32_t uVar1 = colorTable_[(sky << 4) | block];
