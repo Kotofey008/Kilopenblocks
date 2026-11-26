@@ -4,13 +4,15 @@
 // Mode bits applied in GetLight @ 0x94480 by binary face (0=XP..5=ZN):
 //   0→0, 1→0x800, 2→0x1000, 3→0x1800, 4→0x2000, 5→0x2800
 // Mesh ourFace 0=+X..5=-Z maps via GetFaceLight to those modes.
-// AddLightUpdate applies signed material L (+0x1a): L>0 emit, L<0 attenuate
-// both sky and block by |L|. PropagateBlockLights mirrors block-channel half.
+//
+// P1: PropagateBlockLights follows AddLightUpdate (0x94b60) for BOTH channels:
+//   neighbor max sky/block → decrement → material L (+0x1a) → state 0x2000/0x3c0.
 
 #include "TreeBuilder.h"
 #include <algorithm>
 #include <cstring>
 #include <queue>
+#include <vector>
 
 int LightMap::Index(int x, int y, int z) const {
     int lx = x - ox_, ly = y - oy_, lz = z - oz_;
@@ -181,23 +183,165 @@ void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
         data_[i] = LightPack::Make(sky, newBlock);
 }
 
-void LightMap::PropagateBlockLights(GridData& grid) {
-    // BFS outward from emitters; level decreases by 1 per step through non-opaque.
-    // Binary AddLightUpdate (0x94b60): after neighbor-max and -1 step, apply cell L:
-    //   L > 0 → emit (block nibble = L)
-    //   L < 0 → attenuate BOTH sky and block by |L| (saturating)
-    // We keep sky from UpdateSunRays and only maintain the block channel here,
-    // but still apply negative-L attenuation to block when light enters the cell.
-    for (size_t i = 0; i < data_.size(); ++i) {
-        int sky = LightPack::Sky(data_[i]);
-        data_[i] = LightPack::Make(sky, 0);
+// ---------------------------------------------------------------------------
+// AddLightUpdate @ 0x94b60 — single-cell recompute from current lightmap neighbours.
+// Returns packed sky|block (low/high nibble). Matches ghidra C + disasm.
+// ---------------------------------------------------------------------------
+static uint16_t ComputeAddLightUpdate(const LightMap& lm, GridData& grid,
+                                      int wx, int wy, int wz, int cidx) {
+    const int sizeX = grid.sizeX;
+    const int sizeY = grid.sizeY;
+    const int sizeZ = grid.sizeZ;
+    if (cidx < 0 || cidx >= (int)grid.cellTypes.size())
+        return 0;
+
+    unsigned char t = grid.cellTypes[cidx];
+    unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
+
+    // --- Opaque solid with FTL==0: keep existing light (binary early-out) ---
+    if (t != 0) {
+        const Material* mat = grid.GetMaterial((int)t);
+        if (mat && mat->flowPerm(0) == 0) {
+            // Binary: if (+0x1b)==0 goto keep current and return
+            return lm.GetLight(wx, wy, wz) & 0x00ff; // sky|block only
+        }
     }
+
+    // Gather max sky (low nibble) and max block (high nibble, units 0x10) from 6 neighbours.
+    // Binary only accepts a neighbour if the shared face allows flow.
+    int sky = 0;   // 0..15
+    int block = 0; // 0..15 (we store nibble; binary uses 0x10 steps internally)
+
+    auto sample = [&](int nx, int ny, int nz, GridData::FlowType outFlow, GridData::FlowType inFlow) {
+        int ni = grid.CoordToIndex(nx, ny, nz);
+        if (ni < 0) return;
+        // Outgoing flow from this cell toward neighbour
+        if (t != 0 && grid.IsFlowAllowed(cidx, outFlow) == 0) return;
+        // Incoming flow from neighbour into this cell
+        unsigned char nt = grid.cellTypes[ni];
+        if (nt != 0) {
+            if (grid.IsFlowAllowed(ni, inFlow) == 0) return;
+        }
+        uint16_t lv = lm.GetLight(nx, ny, nz);
+        int ns = LightPack::Sky(lv);
+        int nb = LightPack::Block(lv);
+        if (ns > sky) sky = ns;
+        if (nb > block) block = nb;
+    };
+
+    // +X (neighbour x+1): out XP, in XN
+    if (wx + 1 < grid.originX + sizeX)
+        sample(wx + 1, wy, wz, GridData::FlowXP, GridData::FlowXN);
+    // -X
+    if (wx - 1 >= grid.originX)
+        sample(wx - 1, wy, wz, GridData::FlowXN, GridData::FlowXP);
+    // +Y
+    if (wy + 1 < grid.originY + sizeY)
+        sample(wx, wy + 1, wz, GridData::FlowYP, GridData::FlowYN);
+    else {
+        // Open sky above world — binary sets local_8c = 0xf when y+1 >= sizeY
+        if (sky < 15) sky = 15;
+    }
+    // -Y
+    if (wy - 1 >= grid.originY)
+        sample(wx, wy - 1, wz, GridData::FlowYN, GridData::FlowYP);
+    // +Z
+    if (wz + 1 < grid.originZ + sizeZ)
+        sample(wx, wy, wz + 1, GridData::FlowZP, GridData::FlowZN);
+    // -Z
+    if (wz - 1 >= grid.originZ)
+        sample(wx, wy, wz - 1, GridData::FlowZN, GridData::FlowZP);
+
+    // Decrement one step (binary: sky = sky==0 ? 0 : sky-1; block -= 1 nibble)
+    if (sky > 0) sky -= 1;
+    if (block > 0) block -= 1;
+
+    // Material L at +0x1a (signed). For type==0 binary still reads materials[0].L (=0).
+    int sL = 0;
+    if (t != 0) {
+        const Material* mat = grid.GetMaterial((int)t);
+        sL = SignedL(mat);
+    } else {
+        // Air slot L is 0; water/lava handled via state below, not material L.
+        sL = 0;
+    }
+    if (sL != 0) {
+        if (sL < 0) {
+            int al = -sL;
+            sky = (sky > al) ? (sky - al) : 0;
+            block = (block > al) ? (block - al) : 0;
+        } else {
+            // L > 0: emit — block = max(block, L)
+            if (block < sL) block = sL;
+        }
+    }
+
+    // State branches (binary after L):
+    //   !(state & 0x2000):
+    //     (state & 0x3c0)==0 → pack = (block<<4)|sky
+    //     else               → pack = 0xff  (lava / logged liquid)
+    //   (state & 0x2000):  water fluid — attenuate by 1 or 2 from bit12 of state
+    uint16_t packed;
+    if ((st & GridData::STATE_BIT_2000) == 0) {
+        if ((st & GridData::STATE_BIT_3C0) == 0) {
+            packed = (uint16_t)((sky & 0xf) | ((block & 0xf) << 4));
+        } else {
+            packed = 0x00ff; // full sky+block
+        }
+    } else {
+        // atten = (state bit12 ? 1 : 2);  bit12 = (state & 0x1000) != 0
+        // from: (int)(state << 19) >> 31  → -1 if bit12 else 0; then +2
+        int atten = ((st & 0x1000) != 0) ? 1 : 2;
+        int outSky = 0, outBlk = 0;
+        if (sky > atten) outSky = sky - atten;
+        if (block > atten) outBlk = block - atten;
+        packed = (uint16_t)((outSky & 0xf) | ((outBlk & 0xf) << 4));
+    }
+    return packed;
+}
+
+void LightMap::PropagateBlockLights(GridData& grid) {
+    // Full dual-channel rebuild via AddLightUpdate semantics (no hierarchy queue).
+    // 1) clear  2) seed open-sky top + L>0 emitters  3) BFS relax until stable
+    if (data_.empty() || sizeX_ <= 0 || sizeY_ <= 0 || sizeZ_ <= 0) return;
+
+    data_.assign(data_.size(), 0);
     std::queue<int> q;
+    std::vector<uint8_t> inq(data_.size(), 0);
+
+    auto enqueue = [&](int idx) {
+        if (idx < 0 || idx >= (int)data_.size()) return;
+        if (inq[(size_t)idx]) return;
+        inq[(size_t)idx] = 1;
+        q.push(idx);
+    };
+
+    // Seed: top layer open to sky (binary y+1 >= sizeY → sky 0xf before decrement)
+    for (int z = 0; z < sizeZ_; ++z) {
+        for (int x = 0; x < sizeX_; ++x) {
+            int wy = oy_ + sizeY_ - 1;
+            int wx = ox_ + x, wz = oz_ + z;
+            int cidx = grid.CoordToIndex(wx, wy, wz);
+            if (cidx < 0) continue;
+            unsigned char t = grid.cellTypes[cidx];
+            // Only seed through non-FTL-blocked cells
+            if (t != 0) {
+                const Material* m = grid.GetMaterial((int)t);
+                if (m && m->flowPerm(0) == 0) continue;
+            }
+            // After Compute: sky from above-world 15 → decrement → 14, unless L/state
+            data_[(size_t)(x + sizeX_ * ((sizeY_ - 1) + sizeY_ * z))] =
+                ComputeAddLightUpdate(*this, grid, wx, wy, wz, cidx);
+            enqueue(x + sizeX_ * ((sizeY_ - 1) + sizeY_ * z));
+        }
+    }
+
+    // Seed: positive-L emitters
     const size_t n = grid.cellTypes.size();
     for (size_t ci = 0; ci < n; ++ci) {
         unsigned char t = grid.cellTypes[ci];
         if (t == 0) continue;
-        int emit = LightPack::Clamp15(EmissionLevel(grid, t));
+        int emit = EmissionLevel(grid, t);
         if (emit <= 0) continue;
         int lx = (int)(ci % (size_t)grid.sizeX);
         int t1 = (int)(ci / (size_t)grid.sizeX);
@@ -206,24 +350,30 @@ void LightMap::PropagateBlockLights(GridData& grid) {
         int wx = lx + grid.originX, wy = ly + grid.originY, wz = lz + grid.originZ;
         int idx = Index(wx, wy, wz);
         if (idx < 0) continue;
-        int sky = LightPack::Sky(data_[idx]);
-        data_[idx] = LightPack::Make(sky, emit);
-        q.push(idx);
+        // Apply full formula (will max block with L)
+        uint16_t packed = ComputeAddLightUpdate(*this, grid, wx, wy, wz, (int)ci);
+        // Ensure emit present even if neighbours empty
+        int sky = LightPack::Sky(packed);
+        int blk = LightPack::Block(packed);
+        if (blk < emit) blk = emit;
+        data_[(size_t)idx] = LightPack::Make(sky, blk);
+        enqueue(idx);
     }
-    if (q.empty()) return;
 
     const int dx[6] = {1, -1, 0, 0, 0, 0};
     const int dy[6] = {0, 0, 1, -1, 0, 0};
     const int dz[6] = {0, 0, 0, 0, 1, -1};
 
+    // BFS: when a cell changes, recompute its 6 neighbours
     while (!q.empty()) {
         int idx = q.front();
         q.pop();
-        int level = LightPack::Block(data_[idx]);
-        if (level <= 1) continue;
+        inq[(size_t)idx] = 0;
+
         int lx = idx % sizeX_;
         int ly = (idx / sizeX_) % sizeY_;
         int lz = idx / (sizeX_ * sizeY_);
+
         for (int d = 0; d < 6; ++d) {
             int nx = lx + dx[d], ny = ly + dy[d], nz = lz + dz[d];
             if (nx < 0 || ny < 0 || nz < 0 || nx >= sizeX_ || ny >= sizeY_ || nz >= sizeZ_)
@@ -231,27 +381,13 @@ void LightMap::PropagateBlockLights(GridData& grid) {
             int nidx = nx + sizeX_ * (ny + sizeY_ * nz);
             int wx = nx + ox_, wy = ny + oy_, wz = nz + oz_;
             int cidx = grid.CoordToIndex(wx, wy, wz);
-            unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : BlockId::Air;
-            if (IsOpaque(grid, t)) continue;
+            if (cidx < 0) continue;
 
-            // Incoming = neighbor_level - 1, then apply destination cell L (binary).
-            int newLevel = LightPack::Clamp15(level - 1);
-            int sL = 0;
-            if (t == 0 && cidx >= 0 && cidx < (int)grid.cellStates.size() &&
-                (grid.cellStates[cidx] & 0x3fc0) != 0) {
-                sL = -2; // fluid in air cell
-            } else if (t != 0) {
-                const Material* mm = grid.GetMaterial((int)t);
-                sL = SignedL(mm);
-            }
-            if (sL < 0)
-                newLevel = LightPack::Clamp15(newLevel + sL); // |L| attenuation
-
-            int cur = LightPack::Block(data_[nidx]);
-            if (newLevel > cur) {
-                int sky = LightPack::Clamp15(LightPack::Sky(data_[nidx]));
-                data_[nidx] = LightPack::Make(sky, newLevel);
-                q.push(nidx);
+            uint16_t neu = ComputeAddLightUpdate(*this, grid, wx, wy, wz, cidx);
+            uint16_t old = data_[(size_t)nidx] & 0x00ff;
+            if (neu != old) {
+                data_[(size_t)nidx] = neu;
+                enqueue(nidx);
             }
         }
     }
