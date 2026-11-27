@@ -13,7 +13,9 @@
 // =============================================================================
 int LightRules::SignedL(const Material* m) {
     if (!m) return 0;
-    int v = (int)(int8_t)m->sizeL();
+    // sizeL is stored as uint8 in Material raw; interpret as signed int8.
+    uint8_t raw = m->sizeL();
+    int v = (raw & 0x80) ? ((int)raw - 256) : (int)raw;
     if (v < -15) v = -15;
     if (v > 15) v = 15;
     return v;
@@ -38,9 +40,14 @@ int LightRules::Opacity(const GridData& grid, unsigned char type, unsigned short
     if (L > 0)
         return 0; // emit only; pass-through for propagation
 
-    // Absorb: L<0 only when MBI!=0 (ice/water/leaves translucent materials)
-    if (L < 0 && mbi != 0)
-        return LightPack::Clamp15(-L);
+    // Absorb: L<0 only when MBI!=0 (ice/water/leaves). Magnitude is positive;
+    // never return negative opacity (that would ADD light when subtracted).
+    if (L < 0 && mbi != 0) {
+        int absL = -L; // L is -1..-15 → 1..15
+        if (absL < 1) absL = 1;
+        if (absL > 15) absL = 15;
+        return absL;
+    }
 
     // Non-cube models: light passes (cross/torch/ladder/reed)
     if (cls == 1 || cls == 2 || cls == 3 || cls == 4)
@@ -189,18 +196,18 @@ void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, 
         for (int x = lx0; x < lx1; ++x) {
             RecalcHeightColumn(grid, x, z);
 
-            // Vertical sky: start 15 at top, subtract opacity each cell (air=0 keep).
-            // Full solid (op>=15) forces 0 for that cell and entire column below.
-            // Ice/water (op 1..14) only darken — never re-brighten further down.
+            // Vertical sky: start 15 at top. Each cell: br = max(0, br - opacity).
+            // Floor is always 0 — further absorb cannot raise light (no wrap / invert).
+            // Solid (op>=15): this cell and entire remainder of column = 0.
             int br = 15;
             for (int y = sizeY_ - 1; y >= 0; --y) {
                 int idx = x + sizeX_ * (y + sizeY_ * z);
                 int wx = x + ox_, wy = y + oy_, wz = z + oz_;
                 int op = LightRules::OpacityAt(grid, wx, wy, wz);
+                if (op < 0) op = 0; // belt-and-suspenders
                 int blk = LightPack::Block(data_[(size_t)idx]);
 
                 if (op >= 15) {
-                    // Solid roof/floor: zero this cell and everything below.
                     for (int yy = y; yy >= 0; --yy) {
                         int i2 = x + sizeX_ * (yy + sizeY_ * z);
                         int b2 = LightPack::Block(data_[(size_t)i2]);
@@ -208,8 +215,8 @@ void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, 
                     }
                     break;
                 }
-                br -= op; // air op=0 → br unchanged
-                if (br < 0) br = 0;
+                // Saturating subtract — never below 0, never wrap to 15 via &0xf
+                br = LightPack::SaturateSub(br, op);
                 data_[(size_t)idx] = LightPack::Make(br, blk);
                 if (br == 0) {
                     for (int yy = y - 1; yy >= 0; --yy) {
@@ -270,8 +277,8 @@ void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1
         if (b <= 1) return;
         int op = LightRules::OpacityAt(grid, x + ox_, y + oy_, z + oz_);
         if (op >= 15) return;
-        int step = op == 0 ? 1 : op; // MCPE: block==0 → 1
-        int nl = b - step;
+        int step = (op <= 0) ? 1 : op; // MCPE: transparent still costs 1 to spread
+        int nl = LightPack::SaturateSub(b, step);
         if (nl > 0) setBlk(x, y, z, nl);
     };
     for (int z = lz0; z < lz1; ++z)
@@ -306,9 +313,8 @@ void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1
             if (!inR(nx, ny, nz)) continue;
             int op = LightRules::OpacityAt(grid, nx + ox_, ny + oy_, nz + oz_);
             if (op >= 15) continue;
-            int step = op == 0 ? 1 : op;
-            int nl = level - step;
-            if (nl < 0) nl = 0;
+            int step = (op <= 0) ? 1 : op;
+            int nl = LightPack::SaturateSub(level, step);
             setBlk(nx, ny, nz, nl);
         }
     }
@@ -387,7 +393,9 @@ uint16_t LightMap::GetLight(int x, int y, int z) const {
         if (y >= oy_ + sizeY_) return LightPack::Make(15, 0);
         return 0;
     }
-    return data_[(size_t)i];
+    // Re-pack through Clamp15 so corrupt/negative never surfaces as bright nibbles.
+    uint16_t v = data_[(size_t)i];
+    return LightPack::Make(LightPack::Sky(v), LightPack::Block(v), LightPack::Mode(v));
 }
 
 uint16_t LightMap::GetFaceLight(int x, int y, int z, int face) const {

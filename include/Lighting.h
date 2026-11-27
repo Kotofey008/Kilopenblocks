@@ -26,9 +26,18 @@ namespace LightPack {
     static constexpr uint16_t MODE_2800 = 0x2800;
 
     inline int Clamp15(int v) {
-        if (v < 0) return 0;
-        if (v > 15) return 15;
+        // Hard floor 0 / ceil 15 — never allow negative into nibble pack (&0xf would
+        // turn -1 into 15 and "invert" darkness back to full bright).
+        if (v <= 0) return 0;
+        if (v >= 15) return 15;
         return v;
+    }
+    // light = max(0, light - amount); amount treated as unsigned absorb.
+    inline int SaturateSub(int light, int amount) {
+        if (light <= 0) return 0;
+        if (amount <= 0) return Clamp15(light);
+        if (amount >= light) return 0;
+        return Clamp15(light - amount);
     }
     inline uint16_t Make(int sky, int block, uint16_t mode = MODE_DEFAULT) {
         sky = Clamp15(sky);
