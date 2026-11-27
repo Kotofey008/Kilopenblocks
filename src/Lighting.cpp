@@ -22,32 +22,28 @@ int LightRules::SignedL(const Material* m) {
 int LightRules::Opacity(const GridData& grid, unsigned char type, unsigned short state) {
     // Air + fluid state (Lite water is type0 + STATE_BIT_2000, not material id 5).
     if (type == 0) {
-        if ((state & GridData::STATE_BIT_2000) != 0) {
-            // Binary water atten ~1–2; use 2 so deep columns reach 0 quickly.
-            return 2;
-        }
+        if ((state & GridData::STATE_BIT_2000) != 0)
+            return 2; // attenuate; never increases with depth
         return 0;
     }
     const Material* m = grid.GetMaterial((int)type);
-    if (!m) return 15; // unknown solid
+    if (!m) return 15;
 
     int L = SignedL(m);
-    if (L > 0) {
-        // Emitters (torch etc.): light passes (opacity 0); emission handled separately.
-        return 0;
-    }
-    if (L < 0) {
-        // Leaves / ice / filter: attenuate, do not fully occlude (binary negative L).
-        return LightPack::Clamp15(-L);
-    }
+    if (L > 0)
+        return 0; // emitter: pass-through, emission separate
+    if (L < 0)
+        return LightPack::Clamp15(-L); // ice -2, leaves -1, water mat -2
 
-    // Non-emitting solid: BMT class + col flag
-    if (!m->col()) return 0; // glass-like / no collision → light passes
+    // FTL != 0 → light filter (glass, slabs filter path) — not full occlusion
+    if (m->raw[0x1b] != 0)
+        return 1;
+
+    if (!m->col()) return 0;
     uint8_t cls = m->prop01();
-    // 1=cross, 2=torch, 3=ladder, 4=plant-like — light passes
     if (cls == 1 || cls == 2 || cls == 3 || cls == 4) return 0;
 
-    return 15; // full cube solid
+    return 15;
 }
 
 int LightRules::OpacityAt(const GridData& grid, int wx, int wy, int wz) {
@@ -101,7 +97,7 @@ void LightMap::Init(GridData& grid) {
     if (sizeY_ <= 0) { oy_ = (int)grid.worldMin.y; sizeY_ = (int)(grid.worldMax.y - grid.worldMin.y); }
     if (sizeZ_ <= 0) { oz_ = (int)grid.worldMin.z; sizeZ_ = (int)(grid.worldMax.z - grid.worldMin.z); }
     data_.assign((size_t)sizeX_ * (size_t)sizeY_ * (size_t)sizeZ_, 0);
-    skyHeight_.assign((size_t)sizeX_ * (size_t)sizeZ_, (uint8_t)sizeY_);
+    skyHeight_.assign((size_t)sizeX_ * (size_t)sizeZ_, (uint16_t)sizeY_);
     dirty_ = true;
     InitDefaultCurves();
     brightnessApplied_ = -1.f;
@@ -118,6 +114,10 @@ void LightMap::RecalcHeightColumn(GridData& grid, int lx, int lz) {
     // MCPE LevelChunk::recalcHeightmapOnly: from top, while block below is
     // transparent (opacity==0), lower y. Result = first Y where cell is sky-lit
     // (ly >= height). If whole column transparent, height = 0.
+    // Heightmap stopper = full solid only (opacity>=15). Ice/water/leaves
+    // attenuate in the vertical seed but must NOT collapse isSkyLit early —
+    // that caused "stack N ice then light jumps back" style inconsistency
+    // when mixed with local rebuilds.
     int y = sizeY_;
     while (y > 0) {
         int wx = lx + ox_, wy = (y - 1) + oy_, wz = lz + oz_;
@@ -125,12 +125,11 @@ void LightMap::RecalcHeightColumn(GridData& grid, int lx, int lz) {
         unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
         unsigned short st = (cidx >= 0 && cidx < (int)grid.cellStates.size())
                                 ? grid.cellStates[cidx] : 0;
-        // MCPE: while lightBlock[tile]==0. Leaves (opacity>0) stop the walk.
-        if (LightRules::Opacity(grid, t, st) != 0)
+        if (LightRules::BlocksSkyHeight(grid, t, st))
             break;
         --y;
     }
-    skyHeight_[(size_t)XZIndex(lx, lz)] = (uint8_t)(y > 255 ? 255 : y);
+    skyHeight_[(size_t)XZIndex(lx, lz)] = (uint16_t)y;
 }
 
 void LightMap::RebuildHeightmap(GridData& grid) {
@@ -178,8 +177,9 @@ void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, 
         for (int x = lx0; x < lx1; ++x) {
             RecalcHeightColumn(grid, x, z);
 
-            // Vertical seed like MCPE LevelChunk::recalcHeightmap:
-            // from top: br starts 15, subtract opacity each cell.
+            // Vertical sky: start 15 at top, subtract opacity each cell (air=0 keep).
+            // Full solid (op>=15) forces 0 for that cell and entire column below.
+            // Ice/water (op 1..14) only darken — never re-brighten further down.
             int br = 15;
             for (int y = sizeY_ - 1; y >= 0; --y) {
                 int idx = x + sizeX_ * (y + sizeY_ * z);
@@ -188,20 +188,18 @@ void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, 
                 int blk = LightPack::Block(data_[(size_t)idx]);
 
                 if (op >= 15) {
-                    br = 0;
-                    data_[(size_t)idx] = LightPack::Make(0, blk);
-                    continue;
+                    // Solid roof/floor: zero this cell and everything below.
+                    for (int yy = y; yy >= 0; --yy) {
+                        int i2 = x + sizeX_ * (yy + sizeY_ * z);
+                        int b2 = LightPack::Block(data_[(size_t)i2]);
+                        data_[(size_t)i2] = LightPack::Make(0, b2);
+                    }
+                    break;
                 }
-                int step = op;
-                if (step == 0) step = 0; // air: MCPE vertical column keeps br until solid
-                // MCPE vertical seed: br -= lightBlock; if lightBlock==0, br unchanged in their
-                // first loop only writes while br>0 after subtract. For air lightBlock=0,
-                // br -= 0 keeps 15 all the way to heightmap solid — correct outdoor.
-                br -= step;
+                br -= op; // air op=0 → br unchanged
                 if (br < 0) br = 0;
                 data_[(size_t)idx] = LightPack::Make(br, blk);
-                if (br <= 0) {
-                    // Fill rest of column with 0 sky (below full attenuation)
+                if (br == 0) {
                     for (int yy = y - 1; yy >= 0; --yy) {
                         int i2 = x + sizeX_ * (yy + sizeY_ * z);
                         int b2 = LightPack::Block(data_[(size_t)i2]);
@@ -402,12 +400,20 @@ void LightMap::SetBrightness(float b) {
 }
 
 void LightMap::UpdateLightMap() {
-    if (brightnessApplied_ >= 0.f) return;
-    brightnessApplied_ = 1.f;
+    // GLES color arrays ignore glColor — day/night must live in the LUT that
+    // GetLightColor reads when meshes are (re)built. Rebuild when brightness
+    // moves enough; Frame remeshes a few view columns (not full world).
+    if (brightnessApplied_ >= 0.f) {
+        float d = brightness_ - brightnessApplied_;
+        if (d < 0.f) d = -d;
+        if (d < 0.06f) return;
+    }
+    brightnessApplied_ = brightness_;
     const float kMul1 = 0.53f, kAdd1 = 0.47f;
     const float kMul2 = 0.35f, kAdd2 = 0.65f;
     const float kF3 = 1.5f, kScale = 239.f, kBias = 16.f, kClamp = 255.f;
-    float b = 1.f;
+    float b = brightness_;
+    if (b < 0.15f) b = 0.15f; // keep torches readable at midnight
     float termR = b * kMul1 + kAdd1;
     float termG = b * kMul2 + kAdd2;
     for (int sky = 0; sky < 16; ++sky) {
@@ -425,7 +431,7 @@ void LightMap::UpdateLightMap() {
                 0xFF000000u | (ch(rf) << 16) | (ch(gf) << 8) | ch(bf);
         }
     }
-    tableDirty_ = false;
+    tableDirty_ = true;
 }
 
 uint32_t LightMap::GetLightColor(uint16_t packed) const {

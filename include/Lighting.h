@@ -112,7 +112,7 @@ public:
 private:
     std::vector<uint16_t> data_;
     // Per-XZ heightmap (local Y, 0..sizeY). sizeY means open sky to bottom.
-    std::vector<uint8_t> skyHeight_;
+    std::vector<uint16_t> skyHeight_;
     uint32_t colorTable_[256]{};
     float brightness_ = 1.f;
     float brightnessApplied_ = -1.f;

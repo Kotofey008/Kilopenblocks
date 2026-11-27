@@ -856,7 +856,17 @@ void GLApplication::Frame() {
         // Match Clouds::SetSkyLightScale path: 0.2 + 0.8 * dayFactor (night not pure black)
         lightMap_.SetBrightness(0.2f + 0.8f * dayF);
         lightMap_.UpdateLightMap();
-        // Day/night: no remesh. World pass multiplies vertex colors by GetDayScale().
+        // GLES COLOR_ARRAY ignores glColor — LUT must change and a few view
+        // columns remesh so baked vertex colors track day/night (budgeted).
+        if (lightMap_.ConsumeTableDirty()) {
+            GridData& grid = game_.GetGrid();
+            // Only mark columns that already have meshes (not entire world).
+            int marked = 0;
+            for (size_t i = 0; i < regionMeshes_.size() && marked < 12; ++i) {
+                grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
+                ++marked;
+            }
+        }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.
     // TickWater advances clock by frame dt (~16ms) and runs body only when due.
