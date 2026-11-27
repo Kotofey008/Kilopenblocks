@@ -307,15 +307,15 @@ void GLApplication::EnsureRegionMeshes() {
         int dirtyOx[16], dirtyOz[16];
         int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
         // Higher drain when many columns dirty (day/night LUT catch-up).
-        int kMaxDirtyCols = (nDirty > 8) ? 16 : (nDirty > 2 ? 8 : 2);
+        // Place: 2 cols/frame. Day-ring (~49) drains at 4/frame — smooth, no spike.
+        int kMaxDirtyCols = (nDirty > 16) ? 6 : (nDirty > 4 ? 4 : 2);
         int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
 
         for (int i = 0; i < nRebuild; ++i) {
             const int ox = dirtyOx[i];
             const int oz = dirtyOz[i];
-            // Ensure sky column matches current blocks before meshing (tunnels/ice).
-            if (!lightMap_.Empty())
-                lightMap_.RefreshColumnSky(grid, ox, oz, 1, 1);
+            // Sky already updated in 2a (PropagateBlockLightsLocal) when lightDirty.
+            // Re-walking every column here doubled place cost for no gain.
             // Rebuild every Y-slab already resident for this XZ column.
             for (size_t mi = 0; mi < regionMeshes_.size(); ++mi) {
                 if (regionMeshes_[mi].ox == ox && regionMeshes_[mi].oz == oz)
@@ -350,8 +350,7 @@ void GLApplication::EnsureRegionMeshes() {
                     if (oy < wMinY || oy >= wMaxY) continue;
                     if (oz < wMinZ || oz >= wMaxZ) continue;
                     if (hasMesh(ox, oy, oz)) continue;
-                    if (!lightMap_.Empty())
-                        lightMap_.RefreshColumnSky(grid, ox, oz, 1, 1);
+                    // Lightmap was full-built at Init; streaming only needs mesh.
                     rebuildOne(ox, oy, oz);
                     ++built;
                 }
@@ -849,12 +848,19 @@ void GLApplication::Frame() {
         // GLES COLOR_ARRAY ignores glColor — LUT must change and a few view
         // columns remesh so baked vertex colors track day/night (budgeted).
         if (lightMap_.ConsumeTableDirty()) {
-            // GLES COLOR_ARRAY ignores glColor — must rebuild meshes so LUT
-            // day/night is visible. Mark EVERY loaded XZ column (unique ox,oz).
-            // Drain stays budgeted (2–16 cols/frame); all catch up over time.
+            // Remesh only view-ring columns (not every loaded mesh) to avoid
+            // hitch on each day/night step. Outer ring catches up as player moves.
             GridData& grid = game_.GetGrid();
-            for (size_t i = 0; i < regionMeshes_.size(); ++i)
-                grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
+            EntityPlayer* pl = game_.GetLocalPlayer();
+            int pcx = 0, pcz = 0;
+            if (pl) {
+                pcx = ((int)pl->GetPosition().x) & ~15;
+                pcz = ((int)pl->GetPosition().z) & ~15;
+            }
+            const int ring = 3; // 7×7 columns
+            for (int dz = -ring; dz <= ring; ++dz)
+                for (int dx = -ring; dx <= ring; ++dx)
+                    grid.MarkRegionDirty(pcx + dx * 16, 0, pcz + dz * 16);
         }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.

@@ -163,11 +163,16 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
                     if (L > 0) emit = L > emit ? L : emit;
                 }
             }
-            const int step = 16;
-            const int span = emit > 0 ? 16 : 16; // one ring of columns either way
-            for (int dz = -span; dz <= span; dz += step)
-                for (int dx = -span; dx <= span; dx += step)
-                    MarkRegionDirty(x + dx, y, z + dz);
+            // Non-emit: only the cell's column (already MarkRegionDirty above + face
+            // neighbours). Emitters: dirty ±15 light radius in 16-col steps so torch
+            // light reach remeshes without full-world span every solid place.
+            if (emit > 0) {
+                const int step = 16;
+                const int span = 16;
+                for (int dz = -span; dz <= span; dz += step)
+                    for (int dx = -span; dx <= span; dx += step)
+                        MarkRegionDirty(x + dx, y, z + dz);
+            }
             NoteLightDirty(x, y, z, emit > 0 ? 15 : 2);
         }
     }

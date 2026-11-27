@@ -101,8 +101,14 @@ int LightMap::Index(int x, int y, int z) const {
 }
 
 void LightMap::InitDefaultCurves() {
+    // Original-like: levels 15..13 visually identical; steps clear from 12 down to 0.
+    // (Previous linear i/15 made 15..11 look flat instead.)
     for (int i = 0; i < 16; ++i) {
-        float t = (float)i / 15.f;
+        float t;
+        if (i >= 13)
+            t = 1.f;
+        else
+            t = (float)i / 12.f * (12.f / 13.f); // 12 → ~0.923, just under plateau
         curveR_[i] = curveG_[i] = curveB_[i] = curveRow_[i] = t;
     }
 }
@@ -442,7 +448,7 @@ void LightMap::UpdateLightMap() {
     if (brightnessApplied_ >= 0.f) {
         float d = brightness_ - brightnessApplied_;
         if (d < 0.f) d = -d;
-        if (d < 0.06f) return;
+        if (d < 0.14f) return; // fewer day/night remesh steps → less hitch
     }
     brightnessApplied_ = brightness_;
     const float kMul1 = 0.53f, kAdd1 = 0.47f;
