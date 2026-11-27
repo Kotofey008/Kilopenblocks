@@ -40,10 +40,10 @@ int LightRules::Opacity(const GridData& grid, unsigned char type, unsigned short
     if (L > 0)
         return 0; // emit only; pass-through for propagation
 
-    // Absorb: L<0 only when MBI!=0 (ice/water/leaves). Magnitude is positive;
-    // never return negative opacity (that would ADD light when subtracted).
-    if (L < 0 && mbi != 0) {
-        int absL = -L; // L is -1..-15 → 1..15
+    // Absorb: any L<0 (ice -2, leaves -1, water -2). Magnitude positive only.
+    // Floor of light after subtract is 0 — never invert/wrap upward.
+    if (L < 0) {
+        int absL = -L;
         if (absL < 1) absL = 1;
         if (absL > 15) absL = 15;
         return absL;
@@ -183,6 +183,22 @@ bool LightMap::IsSkyLit(int wx, int wy, int wz) const {
 // Sky column using heightmap + opacity falloff (MCPE recalcHeightmap vertical)
 // Horizontal sky flood still deferred (step 3 queue) — avoids border glow.
 // =============================================================================
+
+void LightMap::RefreshColumnSky(GridData& grid, int worldOx, int worldOz, int colsX, int colsZ) {
+    if (data_.empty() || sizeX_ <= 0) return;
+    int lx0 = (worldOx - ox_);
+    int lz0 = (worldOz - oz_);
+    // Expand to cover colsX/colsZ region columns (16-wide each if worldOx aligned).
+    int lx1 = lx0 + (colsX > 0 ? colsX * 16 : 16);
+    int lz1 = lz0 + (colsZ > 0 ? colsZ * 16 : 16);
+    if (lx0 < 0) lx0 = 0;
+    if (lz0 < 0) lz0 = 0;
+    if (lx1 > sizeX_) lx1 = sizeX_;
+    if (lz1 > sizeZ_) lz1 = sizeZ_;
+    if (lx0 >= lx1 || lz0 >= lz1) return;
+    PropagateSky(grid, lx0, lx1, 0, sizeY_, lz0, lz1);
+}
+
 void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1) {
     (void)ly0;
     (void)ly1;

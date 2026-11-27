@@ -290,45 +290,32 @@ void GLApplication::EnsureRegionMeshes() {
         }
     }
 
-    // ---- 2) Dirty XZ columns (region+0x1f) — budgeted Region::Update analogue ----
+    // ---- 2a) Light first (independent of mesh dirty list) ----
+    // Previously light only ran inside AnyRegionDirty+Consume, so failed marks
+    // skipped sky updates entirely. Always drain lightDirty when set.
+    if (!lightMap_.Empty() && grid.PeekLightDirty()) {
+        int lx0, ly0, lz0, lx1, ly1, lz1;
+        grid.ConsumeLightDirty();
+        if (grid.GetLightDirtyAABB(lx0, ly0, lz0, lx1, ly1, lz1)) {
+            lightMap_.PropagateBlockLightsLocal(grid, lx0, lx1, ly0, ly1, lz0, lz1);
+        }
+    }
+
+    // ---- 2b) Dirty XZ columns — budgeted mesh rebuild ----
     // Sparse dirtyRegionIndices_ — skip entirely when idle (no O(world) scan).
     if (grid.AnyRegionDirty()) {
         int dirtyOx[16], dirtyOz[16];
         int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
-        // Normally 2 cols/frame (place/break). When many columns dirty at once
-        // (e.g. SetLeavesQuality marks all), drain faster so quality change is visible.
         // Higher drain when many columns dirty (day/night LUT catch-up).
         int kMaxDirtyCols = (nDirty > 8) ? 16 : (nDirty > 2 ? 8 : 2);
         int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
 
-        // Light propagation is NOT done every dirty frame (that destroyed FPS:
-        // ±15 expand + full-Y BFS every frame while draining). Light runs once
-        // when grid.ConsumeLightDirty() is set by SetCell; mesh drain stays cheap.
-        if (nRebuild > 0 && !lightMap_.Empty() && grid.ConsumeLightDirty()) {
-            int minX = dirtyOx[0], maxX = dirtyOx[0] + 16;
-            int minZ = dirtyOz[0], maxZ = dirtyOz[0] + 16;
-            for (int i = 0; i < nRebuild; ++i) {
-                if (dirtyOx[i] < minX) minX = dirtyOx[i];
-                if (dirtyOx[i] + 16 > maxX) maxX = dirtyOx[i] + 16;
-                if (dirtyOz[i] < minZ) minZ = dirtyOz[i];
-                if (dirtyOz[i] + 16 > maxZ) maxZ = dirtyOz[i] + 16;
-            }
-            // Use light dirty AABB recorded at SetCell (includes ±15), fallback to cols.
-            int lx0, lx1, ly0, ly1, lz0, lz1;
-            if (grid.GetLightDirtyAABB(lx0, ly0, lz0, lx1, ly1, lz1)) {
-                lightMap_.PropagateBlockLightsLocal(grid, lx0, lx1, ly0, ly1, lz0, lz1);
-            } else {
-                const int R = 15;
-                int minY = grid.originY;
-                int maxY = grid.originY + (grid.sizeY > 0 ? grid.sizeY : 64);
-                lightMap_.PropagateBlockLightsLocal(
-                    grid, minX - R, maxX + R, minY, maxY, minZ - R, maxZ + R);
-            }
-        }
-
         for (int i = 0; i < nRebuild; ++i) {
             const int ox = dirtyOx[i];
             const int oz = dirtyOz[i];
+            // Ensure sky column matches current blocks before meshing (tunnels/ice).
+            if (!lightMap_.Empty())
+                lightMap_.RefreshColumnSky(grid, ox, oz, 1, 1);
             // Rebuild every Y-slab already resident for this XZ column.
             for (size_t mi = 0; mi < regionMeshes_.size(); ++mi) {
                 if (regionMeshes_[mi].ox == ox && regionMeshes_[mi].oz == oz)
@@ -363,6 +350,8 @@ void GLApplication::EnsureRegionMeshes() {
                     if (oy < wMinY || oy >= wMaxY) continue;
                     if (oz < wMinZ || oz >= wMaxZ) continue;
                     if (hasMesh(ox, oy, oz)) continue;
+                    if (!lightMap_.Empty())
+                        lightMap_.RefreshColumnSky(grid, ox, oz, 1, 1);
                     rebuildOne(ox, oy, oz);
                     ++built;
                 }

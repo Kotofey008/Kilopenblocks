@@ -365,6 +365,7 @@ public:
     // re-run full light BFS every dirty-mesh frame (that destroyed FPS).
     void NoteLightDirty(int x, int y, int z, int radius = 15);
     bool ConsumeLightDirty();
+    bool PeekLightDirty() const { return lightDirty_; }
     bool GetLightDirtyAABB(int& minX, int& minY, int& minZ,
                            int& maxX, int& maxY, int& maxZ) const;
     // Rebuild hierarchical 0x4000 maps from cellStates (post-gen / after bulk PutCell).

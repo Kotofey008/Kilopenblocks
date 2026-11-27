@@ -113,6 +113,8 @@ public:
     // skyHeight_[lx+sizeX*lz] = lowest local Y where cell is sky-lit (ly >= height → lit).
     // Matches MCPE: isSkyLit iff y >= heightmap[xz].
     void RebuildHeightmap(GridData& grid);
+    // Recalc heightmap + vertical sky for one world-aligned XZ column band.
+    void RefreshColumnSky(GridData& grid, int worldOx, int worldOz, int colsX = 1, int colsZ = 1);
     void RecalcHeightColumn(GridData& grid, int lx, int lz);
     int GetSkyHeightLocal(int lx, int lz) const;
     int GetSkyHeightWorld(int wx, int wz) const;
