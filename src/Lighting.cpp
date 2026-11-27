@@ -20,29 +20,41 @@ int LightRules::SignedL(const Material* m) {
 }
 
 int LightRules::Opacity(const GridData& grid, unsigned char type, unsigned short state) {
-    // Air + fluid state (Lite water is type0 + STATE_BIT_2000, not material id 5).
+    // MtlDesc L (user notes):
+    //   <0 absorb (relevant when MBI!=0), 0 none, 1..15 emit.
+    // FTL/FTW are flow permissions — NOT light opacity (do not use for light).
     if (type == 0) {
         if ((state & GridData::STATE_BIT_2000) != 0)
-            return 2; // attenuate; never increases with depth
+            return 2; // host water fluid
         return 0;
     }
     const Material* m = grid.GetMaterial((int)type);
     if (!m) return 15;
 
     int L = SignedL(m);
+    uint8_t mbi = m->prop02(); // MBI
+    uint8_t cls = m->prop01(); // BMT
+
     if (L > 0)
-        return 0; // emitter: pass-through, emission separate
-    if (L < 0)
-        return LightPack::Clamp15(-L); // ice -2, leaves -1, water mat -2
+        return 0; // emit only; pass-through for propagation
 
-    // FTL != 0 → light filter (glass, slabs filter path) — not full occlusion
-    if (m->raw[0x1b] != 0)
-        return 1;
+    // Absorb: L<0 only when MBI!=0 (ice/water/leaves translucent materials)
+    if (L < 0 && mbi != 0)
+        return LightPack::Clamp15(-L);
 
-    if (!m->col()) return 0;
-    uint8_t cls = m->prop01();
-    if (cls == 1 || cls == 2 || cls == 3 || cls == 4) return 0;
+    // Non-cube models: light passes (cross/torch/ladder/reed)
+    if (cls == 1 || cls == 2 || cls == 3 || cls == 4)
+        return 0;
 
+    // No collision → light passes (plants etc.)
+    if (!m->col())
+        return 0;
+
+    // MBI 1/2 glass-like with L==0: full pass (glass L=0 MBI=1)
+    if (mbi == 1 || mbi == 2)
+        return 0;
+
+    // Solid full cube (stone/dirt/…)
     return 15;
 }
 

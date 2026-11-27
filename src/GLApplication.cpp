@@ -297,7 +297,8 @@ void GLApplication::EnsureRegionMeshes() {
         int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
         // Normally 2 cols/frame (place/break). When many columns dirty at once
         // (e.g. SetLeavesQuality marks all), drain faster so quality change is visible.
-        int kMaxDirtyCols = (nDirty > 8) ? 16 : 2;
+        // Higher drain when many columns dirty (day/night LUT catch-up).
+        int kMaxDirtyCols = (nDirty > 8) ? 16 : (nDirty > 2 ? 8 : 2);
         int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
 
         // Light propagation is NOT done every dirty frame (that destroyed FPS:
@@ -859,13 +860,12 @@ void GLApplication::Frame() {
         // GLES COLOR_ARRAY ignores glColor — LUT must change and a few view
         // columns remesh so baked vertex colors track day/night (budgeted).
         if (lightMap_.ConsumeTableDirty()) {
+            // GLES COLOR_ARRAY ignores glColor — must rebuild meshes so LUT
+            // day/night is visible. Mark EVERY loaded XZ column (unique ox,oz).
+            // Drain stays budgeted (2–16 cols/frame); all catch up over time.
             GridData& grid = game_.GetGrid();
-            // Only mark columns that already have meshes (not entire world).
-            int marked = 0;
-            for (size_t i = 0; i < regionMeshes_.size() && marked < 12; ++i) {
+            for (size_t i = 0; i < regionMeshes_.size(); ++i)
                 grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
-                ++marked;
-            }
         }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.
