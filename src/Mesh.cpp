@@ -297,10 +297,9 @@ void RegionMesher::FaceUV(const Material& mat, int ourFace, float& u0, float& v0
 
 uint32_t RegionMesher::FaceColor(const LightMap* lights, int x, int y, int z, int face) {
     if (!lights) return 0xFFFFFFFFu;
-    uint32_t col = lights->GetLightColor(lights->GetFaceLight(x, y, z, face));
-    if ((col & 0xFFu) < 32 && ((col >> 8) & 0xFFu) < 32)
-        col = 0xFFC0C0C0u;
-    return col;
+    // Do NOT lift dark colors — that hid all cave/ice/water attenuation
+    // (sky0+block0 became 0xC0C0C0 ≈ "level 9" everywhere underground).
+    return lights->GetLightColor(lights->GetFaceLight(x, y, z, face));
 }
 
 void RegionMesher::EmitFace(MeshBuffer& out, int x, int y, int z, int face,
