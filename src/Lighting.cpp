@@ -1,17 +1,17 @@
 #include "Lighting.h"
-// INTENTIONAL DEVIATION: MCPE / classic dual-channel flood-fill propagation.
-// See Lighting.h banner. Public packing + GetFaceLight + GetLightColor stay
-// original-compatible for mesher and future RE work.
+// Step 1–2: LightRules (opacity/emission from Material) + heightmap / isSkyLit.
+// Propagation still simplified; queue (step 3) not yet. Intentional MCPE-borrowed
+// rules adapted to Lite materials/fluids — packing/GetFaceLight/GetLightColor original-compatible.
 
 #include <algorithm>
 #include <cstring>
 #include <queue>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Material helpers (project Material table)
-// ---------------------------------------------------------------------------
-static int SignedL(const Material* m) {
+// =============================================================================
+// LightRules — step 1
+// =============================================================================
+int LightRules::SignedL(const Material* m) {
     if (!m) return 0;
     int v = (int)(int8_t)m->sizeL();
     if (v < -15) v = -15;
@@ -19,46 +19,65 @@ static int SignedL(const Material* m) {
     return v;
 }
 
-// Blocks that stop sky and block light (solid, not leaves/glass/cross/torch).
-static bool IsOpaque(const GridData& grid, unsigned char t) {
-    if (t == 0) return false;
-    const Material* m = grid.GetMaterial((int)t);
-    if (!m) return true;
-    if (!m->col()) return false;
+int LightRules::Opacity(const GridData& grid, unsigned char type, unsigned short state) {
+    // Air + fluid state (Lite water is type0 + STATE_BIT_2000, not material id 5).
+    if (type == 0) {
+        if ((state & GridData::STATE_BIT_2000) != 0) {
+            // Binary water atten ~1–2; use 2 so deep columns reach 0 quickly.
+            return 2;
+        }
+        return 0;
+    }
+    const Material* m = grid.GetMaterial((int)type);
+    if (!m) return 15; // unknown solid
+
+    int L = SignedL(m);
+    if (L > 0) {
+        // Emitters (torch etc.): light passes (opacity 0); emission handled separately.
+        return 0;
+    }
+    if (L < 0) {
+        // Leaves / ice / filter: attenuate, do not fully occlude (binary negative L).
+        return LightPack::Clamp15(-L);
+    }
+
+    // Non-emitting solid: BMT class + col flag
+    if (!m->col()) return 0; // glass-like / no collision → light passes
     uint8_t cls = m->prop01();
-    // 1=cross, 2=torch, 3=ladder, 4=… non-cube — light passes
-    if (cls == 1 || cls == 2 || cls == 3 || cls == 4) return false;
-    // Negative L (leaves, ice) — attenuate, do not fully occlude
-    if (SignedL(m) < 0) return false;
-    return true;
+    // 1=cross, 2=torch, 3=ladder, 4=plant-like — light passes
+    if (cls == 1 || cls == 2 || cls == 3 || cls == 4) return 0;
+
+    return 15; // full cube solid
 }
 
-static int Emission(const GridData& grid, unsigned char t) {
-    if (t == 0) return 0;
-    const Material* m = grid.GetMaterial((int)t);
+int LightRules::OpacityAt(const GridData& grid, int wx, int wy, int wz) {
+    int cidx = grid.CoordToIndex(wx, wy, wz);
+    if (cidx < 0) return 0;
+    unsigned char t = grid.cellTypes[cidx];
+    unsigned short st = (cidx < (int)grid.cellStates.size()) ? grid.cellStates[cidx] : 0;
+    return Opacity(grid, t, st);
+}
+
+int LightRules::Emission(const GridData& grid, unsigned char type) {
+    if (type == 0) return 0;
+    const Material* m = grid.GetMaterial((int)type);
     int L = SignedL(m);
     return (L > 0) ? LightPack::Clamp15(L) : 0;
 }
 
-// Attenuation when light enters this cell (leaves L=-1 → −1 extra, water/ice −2).
-static int CellAtten(const GridData& grid, int cidx, unsigned char t) {
-    if (t != 0) {
-        int L = SignedL(grid.GetMaterial((int)t));
-        if (L < 0) return -L;
-        return 0;
-    }
-    // Air with fluid bits (host water stored as type0 + state).
-    // Stronger atten so underwater closed volumes go dark (esp. at night).
-    if (cidx >= 0 && cidx < (int)grid.cellStates.size()) {
-        unsigned short st = grid.cellStates[cidx];
-        if ((st & GridData::STATE_BIT_2000) != 0)
-            return 3; // deep water → 0 within ~5 cells from surface sky
-
-    }
-    return 0;
+int LightRules::EmissionAt(const GridData& grid, int wx, int wy, int wz) {
+    int cidx = grid.CoordToIndex(wx, wy, wz);
+    if (cidx < 0) return 0;
+    return Emission(grid, grid.cellTypes[cidx]);
 }
 
-// ---------------------------------------------------------------------------
+bool LightRules::BlocksSkyHeight(const GridData& grid, unsigned char type, unsigned short state) {
+    // Heightmap only stops on full occlusion (opacity 15). Leaves/water reduce
+    // sky in-column but do not define "can see sky" threshold (MCPE lightBlock==0 walk).
+    return Opacity(grid, type, state) >= 15;
+}
+
+// =============================================================================
 int LightMap::Index(int x, int y, int z) const {
     int lx = x - ox_, ly = y - oy_, lz = z - oz_;
     if (lx < 0 || ly < 0 || lz < 0 || lx >= sizeX_ || ly >= sizeY_ || lz >= sizeZ_)
@@ -82,22 +101,71 @@ void LightMap::Init(GridData& grid) {
     if (sizeY_ <= 0) { oy_ = (int)grid.worldMin.y; sizeY_ = (int)(grid.worldMax.y - grid.worldMin.y); }
     if (sizeZ_ <= 0) { oz_ = (int)grid.worldMin.z; sizeZ_ = (int)(grid.worldMax.z - grid.worldMin.z); }
     data_.assign((size_t)sizeX_ * (size_t)sizeY_ * (size_t)sizeZ_, 0);
+    skyHeight_.assign((size_t)sizeX_ * (size_t)sizeZ_, (uint8_t)sizeY_);
     dirty_ = true;
     InitDefaultCurves();
     brightnessApplied_ = -1.f;
     UpdateLightMap();
+    RebuildHeightmap(grid);
     PropagateBlockLights(grid);
 }
 
-// ---------------------------------------------------------------------------
-// Sky: column top-down seed + BFS flood (MCPE)
-// ---------------------------------------------------------------------------
+// =============================================================================
+// Step 2: heightmap / isSkyLit
+// =============================================================================
+void LightMap::RecalcHeightColumn(GridData& grid, int lx, int lz) {
+    if (lx < 0 || lz < 0 || lx >= sizeX_ || lz >= sizeZ_) return;
+    // MCPE LevelChunk::recalcHeightmapOnly: from top, while block below is
+    // transparent (opacity==0), lower y. Result = first Y where cell is sky-lit
+    // (ly >= height). If whole column transparent, height = 0.
+    int y = sizeY_;
+    while (y > 0) {
+        int wx = lx + ox_, wy = (y - 1) + oy_, wz = lz + oz_;
+        int cidx = grid.CoordToIndex(wx, wy, wz);
+        unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
+        unsigned short st = (cidx >= 0 && cidx < (int)grid.cellStates.size())
+                                ? grid.cellStates[cidx] : 0;
+        // MCPE: while lightBlock[tile]==0. Leaves (opacity>0) stop the walk.
+        if (LightRules::Opacity(grid, t, st) != 0)
+            break;
+        --y;
+    }
+    skyHeight_[(size_t)XZIndex(lx, lz)] = (uint8_t)(y > 255 ? 255 : y);
+}
+
+void LightMap::RebuildHeightmap(GridData& grid) {
+    if (sizeX_ <= 0 || sizeZ_ <= 0) return;
+    skyHeight_.assign((size_t)sizeX_ * (size_t)sizeZ_, 0);
+    for (int z = 0; z < sizeZ_; ++z)
+        for (int x = 0; x < sizeX_; ++x)
+            RecalcHeightColumn(grid, x, z);
+}
+
+int LightMap::GetSkyHeightLocal(int lx, int lz) const {
+    if (lx < 0 || lz < 0 || lx >= sizeX_ || lz >= sizeZ_ || skyHeight_.empty())
+        return sizeY_;
+    return (int)skyHeight_[(size_t)XZIndex(lx, lz)];
+}
+
+int LightMap::GetSkyHeightWorld(int wx, int wz) const {
+    return GetSkyHeightLocal(wx - ox_, wz - oz_);
+}
+
+bool LightMap::IsSkyLit(int wx, int wy, int wz) const {
+    // Above world → sky. Below origin → not.
+    if (wy >= oy_ + sizeY_) return true;
+    if (wy < oy_) return false;
+    int lx = wx - ox_, lz = wz - oz_;
+    if (lx < 0 || lz < 0 || lx >= sizeX_ || lz >= sizeZ_) return true; // void sides: open
+    int ly = wy - oy_;
+    return ly >= GetSkyHeightLocal(lx, lz);
+}
+
+// =============================================================================
+// Sky column using heightmap + opacity falloff (MCPE recalcHeightmap vertical)
+// Horizontal sky flood still deferred (step 3 queue) — avoids border glow.
+// =============================================================================
 void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1) {
-    // INTENTIONAL MCPE-like column sky ONLY (no horizontal sky flood).
-    // Horizontal sky BFS lit sealed tunnels / deep water from distant open air at the
-    // same Y through local-update borders — "glow at depth". Vertical occlusion is
-    // enough for outdoor daylight; caves/tunnels stay 0 without a torch.
-    // Always walk full world height for affected XZ (ly0/ly1 ignored for vertical).
     (void)ly0;
     (void)ly1;
     if (lx0 < 0) lx0 = 0;
@@ -108,30 +176,47 @@ void LightMap::PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, 
 
     for (int z = lz0; z < lz1; ++z) {
         for (int x = lx0; x < lx1; ++x) {
-            int sky = 15;
+            RecalcHeightColumn(grid, x, z);
+
+            // Vertical seed like MCPE LevelChunk::recalcHeightmap:
+            // from top: br starts 15, subtract opacity each cell.
+            int br = 15;
             for (int y = sizeY_ - 1; y >= 0; --y) {
                 int idx = x + sizeX_ * (y + sizeY_ * z);
                 int wx = x + ox_, wy = y + oy_, wz = z + oz_;
-                int cidx = grid.CoordToIndex(wx, wy, wz);
-                unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
+                int op = LightRules::OpacityAt(grid, wx, wy, wz);
                 int blk = LightPack::Block(data_[(size_t)idx]);
-                if (IsOpaque(grid, t)) {
-                    sky = 0;
+
+                if (op >= 15) {
+                    br = 0;
                     data_[(size_t)idx] = LightPack::Make(0, blk);
                     continue;
                 }
-                int atten = CellAtten(grid, cidx, t);
-                int level = sky - atten;
-                if (level < 0) level = 0;
-                data_[(size_t)idx] = LightPack::Make(level, blk);
-                // Open air: keep level for next cell down (no -1 per air cell).
-                // Water/leaves: atten already applied → level drops with depth.
-                sky = level;
+                int step = op;
+                if (step == 0) step = 0; // air: MCPE vertical column keeps br until solid
+                // MCPE vertical seed: br -= lightBlock; if lightBlock==0, br unchanged in their
+                // first loop only writes while br>0 after subtract. For air lightBlock=0,
+                // br -= 0 keeps 15 all the way to heightmap solid — correct outdoor.
+                br -= step;
+                if (br < 0) br = 0;
+                data_[(size_t)idx] = LightPack::Make(br, blk);
+                if (br <= 0) {
+                    // Fill rest of column with 0 sky (below full attenuation)
+                    for (int yy = y - 1; yy >= 0; --yy) {
+                        int i2 = x + sizeX_ * (yy + sizeY_ * z);
+                        int b2 = LightPack::Block(data_[(size_t)i2]);
+                        data_[(size_t)i2] = LightPack::Make(0, b2);
+                    }
+                    break;
+                }
             }
         }
     }
 }
 
+// =============================================================================
+// Block channel (unchanged structure; uses LightRules::Emission / Opacity)
+// =============================================================================
 void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1) {
     for (int z = lz0; z < lz1; ++z)
         for (int y = ly0; y < ly1; ++y)
@@ -156,21 +241,14 @@ void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1
         }
     };
 
-    for (int z = lz0; z < lz1; ++z) {
-        for (int y = ly0; y < ly1; ++y) {
+    for (int z = lz0; z < lz1; ++z)
+        for (int y = ly0; y < ly1; ++y)
             for (int x = lx0; x < lx1; ++x) {
-                int wx = x + ox_, wy = y + oy_, wz = z + oz_;
-                int cidx = grid.CoordToIndex(wx, wy, wz);
-                if (cidx < 0) continue;
-                int emit = Emission(grid, grid.cellTypes[cidx]);
-                if (emit > 0)
-                    setBlk(x, y, z, emit);
+                int emit = LightRules::EmissionAt(grid, x + ox_, y + oy_, z + oz_);
+                if (emit > 0) setBlk(x, y, z, emit);
             }
-        }
-    }
 
-    // Seed from block light just outside the cleared AABB so local updates
-    // blend with the rest of the world (torch near region edge).
+    // Border seed from outside AABB (existing block light)
     auto pullOutside = [&](int x, int y, int z, int ox2, int oy2, int oz2) {
         if (!inR(x, y, z)) return;
         if (ox2 >= lx0 && ox2 < lx1 && oy2 >= ly0 && oy2 < ly1 && oz2 >= lz0 && oz2 < lz1)
@@ -180,12 +258,10 @@ void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1
         int oiLocal = ox2 + sizeX_ * (oy2 + sizeY_ * oz2);
         int b = LightPack::Block(data_[(size_t)oiLocal]);
         if (b <= 1) return;
-        int wx = x + ox_, wy = y + oy_, wz = z + oz_;
-        int cidx = grid.CoordToIndex(wx, wy, wz);
-        unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
-        if (IsOpaque(grid, t)) return;
-        int atten = CellAtten(grid, cidx, t);
-        int nl = b - 1 - atten;
+        int op = LightRules::OpacityAt(grid, x + ox_, y + oy_, z + oz_);
+        if (op >= 15) return;
+        int step = op == 0 ? 1 : op; // MCPE: block==0 → 1
+        int nl = b - step;
         if (nl > 0) setBlk(x, y, z, nl);
     };
     for (int z = lz0; z < lz1; ++z)
@@ -218,12 +294,10 @@ void LightMap::PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1
         for (int d = 0; d < 6; ++d) {
             int nx = x + dx[d], ny = y + dy[d], nz = z + dz[d];
             if (!inR(nx, ny, nz)) continue;
-            int wx = nx + ox_, wy = ny + oy_, wz = nz + oz_;
-            int cidx = grid.CoordToIndex(wx, wy, wz);
-            unsigned char t = (cidx >= 0) ? grid.cellTypes[cidx] : 0;
-            if (IsOpaque(grid, t)) continue;
-            int atten = CellAtten(grid, cidx, t);
-            int nl = level - 1 - atten;
+            int op = LightRules::OpacityAt(grid, nx + ox_, ny + oy_, nz + oz_);
+            if (op >= 15) continue;
+            int step = op == 0 ? 1 : op;
+            int nl = level - step;
             if (nl < 0) nl = 0;
             setBlk(nx, ny, nz, nl);
         }
@@ -245,13 +319,12 @@ void LightMap::RebuildRegion(GridData& grid, int lx0, int lx1, int ly0, int ly1,
 }
 
 void LightMap::PropagateBlockLights(GridData& grid) {
+    RebuildHeightmap(grid);
     RebuildRegion(grid, 0, sizeX_, 0, sizeY_, 0, sizeZ_);
 }
 
 void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                          int minZ, int maxZ) {
-    // Sky: full-height columns for XZ only (cheap O(cols*Y), no 3D sky BFS).
-    // Block: tight AABB BFS around the edit (torches).
     int lx0 = minX - ox_; if (lx0 < 0) lx0 = 0;
     int lx1 = maxX - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
     int ly0 = minY - oy_; if (ly0 < 0) ly0 = 0;
@@ -259,19 +332,29 @@ void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int
     int lz0 = minZ - oz_; if (lz0 < 0) lz0 = 0;
     int lz1 = maxZ - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
     if (lx0 >= lx1 || lz0 >= lz1) return;
-
+    // Height + sky for columns; block in Y band
+    for (int z = lz0; z < lz1; ++z)
+        for (int x = lx0; x < lx1; ++x)
+            RecalcHeightColumn(grid, x, z);
     PropagateSky(grid, lx0, lx1, 0, sizeY_, lz0, lz1);
     if (ly0 < ly1)
         PropagateBlock(grid, lx0, lx1, ly0, ly1, lz0, lz1);
 }
 
 void LightMap::UpdateSunRays(GridData& grid) {
-    // Compatibility: full sky+block rebuild
-    PropagateBlockLights(grid);
+    RebuildHeightmap(grid);
+    PropagateSky(grid, 0, sizeX_, 0, sizeY_, 0, sizeZ_);
 }
 
 void LightMap::UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, int maxZ) {
-    PropagateBlockLightsLocal(grid, minX, maxX, oy_, oy_ + sizeY_, minZ, maxZ);
+    int lx0 = minX - ox_; if (lx0 < 0) lx0 = 0;
+    int lx1 = maxX - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
+    int lz0 = minZ - oz_; if (lz0 < 0) lz0 = 0;
+    int lz1 = maxZ - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
+    for (int z = lz0; z < lz1; ++z)
+        for (int x = lx0; x < lx1; ++x)
+            RecalcHeightColumn(grid, x, z);
+    PropagateSky(grid, lx0, lx1, 0, sizeY_, lz0, lz1);
 }
 
 void LightMap::InvalidateSunRays(int /*worldX*/, int /*worldZ*/) {
@@ -288,11 +371,9 @@ void LightMap::AddLight(int x, int y, int z, uint16_t packed) {
         data_[(size_t)i] = LightPack::Make(sky, nb);
 }
 
-// ---------------------------------------------------------------------------
 uint16_t LightMap::GetLight(int x, int y, int z) const {
     int i = Index(x, y, z);
     if (i < 0) {
-        // Open void above world = full sky (mesher top faces)
         if (y >= oy_ + sizeY_) return LightPack::Make(15, 0);
         return 0;
     }
@@ -300,8 +381,6 @@ uint16_t LightMap::GetLight(int x, int y, int z) const {
 }
 
 uint16_t LightMap::GetFaceLight(int x, int y, int z, int face) const {
-    // Sample cell outside the face; mode bits from binary face map.
-    // ourFace: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
     int nx = x, ny = y, nz = z;
     uint16_t mode = LightPack::MODE_DEFAULT;
     switch (face) {
@@ -320,12 +399,9 @@ void LightMap::SetBrightness(float b) {
     if (b < 0.f) b = 0.f;
     if (b > 1.f) b = 1.f;
     brightness_ = b;
-    // Do NOT rebuild LUT or flag remesh — day/night is a draw-time glColor scale
-    // so weak devices never remesh the world on time change.
 }
 
 void LightMap::UpdateLightMap() {
-    // Bake LUT once at full daylight (brightness=1). Night dims via GetDayScale().
     if (brightnessApplied_ >= 0.f) return;
     brightnessApplied_ = 1.f;
     const float kMul1 = 0.53f, kAdd1 = 0.47f;
@@ -353,11 +429,8 @@ void LightMap::UpdateLightMap() {
 }
 
 uint32_t LightMap::GetLightColor(uint16_t packed) const {
-    // Binary GetLightColor mode scales (verified earlier from .so).
     int sky = LightPack::Sky(packed);
     int block = LightPack::Block(packed);
-    // INTENTIONAL: LUT has +16 bias even for (0,0) → grey residual on cave/water
-    // faces at night. True unlit cells must be black.
     if (sky == 0 && block == 0)
         return 0xFF000000u;
     uint32_t uVar1 = colorTable_[(sky << 4) | block];
@@ -366,7 +439,7 @@ uint32_t LightMap::GetLightColor(uint16_t packed) const {
     if (mode == 0x2000) scale = 0x94;
     else if (mode == 0x2800 || mode == 0x1000) scale = 0xd2;
     else if (mode == 0x1800 || mode == 0) scale = 0xa4;
-    else return uVar1; // MODE_0800 (YP): unscaled in binary fall-through
+    else return uVar1;
     uint32_t r = ((uVar1 >> 16) & 0xff) * scale >> 8;
     uint32_t g = ((uVar1 >> 8) & 0xff) * scale >> 8;
     uint32_t b = (uVar1 & 0xff) * scale >> 8;

@@ -5,29 +5,25 @@
 #include <queue>
 
 // =============================================================================
-// INTENTIONAL DEVIATION (self-made): light *propagation* is MCPE / classic-style
-// dual-channel flood-fill (sky + block, levels 0..15), not a 1:1 port of
-// GridData::AddLightUpdate / SetAddLights / hierarchy maps from the original .so.
+// INTENTIONAL DEVIATION: light *propagation* borrows NeoMCPE / classic dual-channel
+// mechanics (opacity step, emission, heightmap / isSkyLit) adapted to Exploration
+// Lite materials, fluids, and packing — not a 1:1 port of binary AddLightUpdate.
 //
-// Kept compatible with original-facing project interfaces so later RE work is not blocked:
-//   - packing: sky[0:3] | block[4:7] | mode[11:13]  (GetLightColor scales unchanged)
-//   - face modes from binary GetLight (XP=0 … ZN=0x2800) via GetFaceLight
-//   - Material L: >0 emit (block channel), <0 attenuate both channels (leaves/water/ice)
-//   - UpdateLightMap brightness LUT (day/night) — does NOT re-propagate light
-//   - mesher samples GetFaceLight + GetLightColor only
-//
-// Original binary addresses (reference only): GetLight 0x94480, GetLightColor 0x947e0,
-// UpdateLightMap 0x94920, AddLightUpdate 0x94b60, …
+// Kept original-compatible for mesher + future RE:
+//   - packing sky[0:3]|block[4:7]|mode[11:13]
+//   - GetFaceLight face modes (binary map)
+//   - GetLightColor LUT + mode scales
+//   - Material L: >0 emission, <0 attenuation (opacity step)
 // =============================================================================
 
 namespace LightPack {
     static constexpr uint16_t MODE_MASK = 0x3800;
     static constexpr uint16_t MODE_DEFAULT = 0x0000;
-    static constexpr uint16_t MODE_0800 = 0x0800; // YP
-    static constexpr uint16_t MODE_1000 = 0x1000; // ZP
-    static constexpr uint16_t MODE_1800 = 0x1800; // XN
-    static constexpr uint16_t MODE_2000 = 0x2000; // YN
-    static constexpr uint16_t MODE_2800 = 0x2800; // ZN
+    static constexpr uint16_t MODE_0800 = 0x0800;
+    static constexpr uint16_t MODE_1000 = 0x1000;
+    static constexpr uint16_t MODE_1800 = 0x1800;
+    static constexpr uint16_t MODE_2000 = 0x2000;
+    static constexpr uint16_t MODE_2800 = 0x2800;
 
     inline int Clamp15(int v) {
         if (v < 0) return 0;
@@ -44,17 +40,37 @@ namespace LightPack {
     inline uint16_t Mode(uint16_t v) { return (uint16_t)(v & MODE_MASK); }
 }
 
+// ---------------------------------------------------------------------------
+// Step 1: opacity / emission from Lite Material + fluid state
+// (NeoMCPE lightBlock / lightEmission adapted — not tile-id tables)
+// ---------------------------------------------------------------------------
+namespace LightRules {
+    // Signed L from material byte +0x1a (binary MtlDesc L field).
+    int SignedL(const Material* m);
+
+    // NeoMCPE lightBlock equivalent [0..15]: light loss when entering this cell.
+    // 0  = transparent (air); formula treats 0 as 1 step when spreading.
+    // 15 = fully blocks (solid).
+    // Leaves/ice: -L; water fluid state: 2–3.
+    int Opacity(const GridData& grid, unsigned char type, unsigned short state);
+    int OpacityAt(const GridData& grid, int wx, int wy, int wz);
+
+    // NeoMCPE lightEmission: Material L > 0.
+    int Emission(const GridData& grid, unsigned char type);
+    int EmissionAt(const GridData& grid, int wx, int wy, int wz);
+
+    // Heightmap stopper: opacity >= 15 (true solid). Leaves/water do not raise heightmap.
+    bool BlocksSkyHeight(const GridData& grid, unsigned char type, unsigned short state);
+}
+
 class LightMap {
 public:
     void Init(GridData& grid);
 
-    // Full rebuild (world load / rare invalidation).
     void PropagateBlockLights(GridData& grid);
-    // Local rebuild after place/break — AABB expanded by light radius 15.
     void PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                    int minZ, int maxZ);
 
-    // Compatibility stubs used by older call sites / docs (map onto MCPE path).
     void UpdateSunRays(GridData& grid);
     void UpdateSunRaysLocal(GridData& grid, int minX, int maxX, int minZ, int maxZ);
     void InvalidateSunRays(int worldX, int worldZ);
@@ -66,7 +82,6 @@ public:
 
     void SetBrightness(float b);
     float GetBrightness() const { return brightness_; }
-    // Draw-time modulate (0.2..1.0). Torches still visible at night via floor.
     float GetDayScale() const {
         float s = 0.25f + 0.75f * brightness_;
         if (s < 0.25f) s = 0.25f;
@@ -85,8 +100,19 @@ public:
         return d;
     }
 
+    // Step 2: heightmap / isSkyLit (NeoMCPE LevelChunk heightmap adapted)
+    // skyHeight_[lx+sizeX*lz] = lowest local Y where cell is sky-lit (ly >= height → lit).
+    // Matches MCPE: isSkyLit iff y >= heightmap[xz].
+    void RebuildHeightmap(GridData& grid);
+    void RecalcHeightColumn(GridData& grid, int lx, int lz);
+    int GetSkyHeightLocal(int lx, int lz) const;
+    int GetSkyHeightWorld(int wx, int wz) const;
+    bool IsSkyLit(int wx, int wy, int wz) const;
+
 private:
     std::vector<uint16_t> data_;
+    // Per-XZ heightmap (local Y, 0..sizeY). sizeY means open sky to bottom.
+    std::vector<uint8_t> skyHeight_;
     uint32_t colorTable_[256]{};
     float brightness_ = 1.f;
     float brightnessApplied_ = -1.f;
@@ -100,9 +126,9 @@ private:
     bool tableDirty_ = true;
 
     int Index(int x, int y, int z) const;
+    int XZIndex(int lx, int lz) const { return lx + sizeX_ * lz; }
     void InitDefaultCurves();
 
-    // MCPE-style internal
     void RebuildRegion(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1);
     void PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1);
     void PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1);
