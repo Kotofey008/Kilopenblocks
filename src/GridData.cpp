@@ -150,13 +150,25 @@ void GridData::SetCell(int x, int y, int z, unsigned char type, unsigned short s
             if (lz == 15) MarkRegionDirty(x, y, z + 1);
         }
 
-        // Light can travel 15 blocks — mark mesh columns in radius once (not every frame).
+        // Light dirty once at edit. Torch radius 15; plain solid/sky only ±1 column.
         if (typeChanged || bit2000Changed) {
-            // Mesh columns within light radius (16-aligned), once at edit time.
-            for (int dz = -16; dz <= 16; dz += 16)
-                for (int dx = -16; dx <= 16; dx += 16)
+            int emit = 0;
+            if (const Material* m = GetMaterial((int)type)) {
+                int L = (int)(int8_t)m->sizeL();
+                if (L > 0) emit = L;
+            }
+            if (oldType) {
+                if (const Material* m = GetMaterial((int)oldType)) {
+                    int L = (int)(int8_t)m->sizeL();
+                    if (L > 0) emit = L > emit ? L : emit;
+                }
+            }
+            const int step = 16;
+            const int span = emit > 0 ? 16 : 16; // one ring of columns either way
+            for (int dz = -span; dz <= span; dz += step)
+                for (int dx = -span; dx <= span; dx += step)
                     MarkRegionDirty(x + dx, y, z + dz);
-            NoteLightDirty(x, y, z);
+            NoteLightDirty(x, y, z, emit > 0 ? 15 : 2);
         }
     }
 
@@ -277,8 +289,8 @@ int GridData::CollectDirtyRegions(int* outOx, int* outOz, int maxOut) const {
     return n;
 }
 
-void GridData::NoteLightDirty(int x, int y, int z) {
-    const int R = 15;
+void GridData::NoteLightDirty(int x, int y, int z, int radius) {
+    const int R = radius > 0 ? radius : 2;
     int x0 = x - R, y0 = y - R, z0 = z - R;
     int x1 = x + R + 1, y1 = y + R + 1, z1 = z + R + 1;
     if (!lightDirty_) {

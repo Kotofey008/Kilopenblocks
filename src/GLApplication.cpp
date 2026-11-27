@@ -492,7 +492,11 @@ void GLApplication::RenderWorld() {
 
     glEnable(GL_TEXTURE_2D);
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    glColor4f(1.f, 1.f, 1.f, 1.f);
+    // Day/night without remesh: modulate baked daylight colors (weak-device friendly).
+    {
+        float ds = lightMap_.Empty() ? 1.f : lightMap_.GetDayScale();
+        glColor4f(ds, ds, ds, 1.f);
+    }
 #if defined(__ANDROID__)
     glDisable(GL_BLEND);
     glDisable(GL_ALPHA_TEST);
@@ -852,14 +856,7 @@ void GLApplication::Frame() {
         // Match Clouds::SetSkyLightScale path: 0.2 + 0.8 * dayFactor (night not pure black)
         lightMap_.SetBrightness(0.2f + 0.8f * dayF);
         lightMap_.UpdateLightMap();
-        if (lightMap_.ConsumeTableDirty()) {
-            // Day/night only changes the color LUT — do NOT InvalidateLighting()
-            // (that marks every region dirty → multi-second remesh storms).
-            // Only remesh columns that already have loaded meshes.
-            GridData& grid = game_.GetGrid();
-            for (size_t i = 0; i < regionMeshes_.size(); ++i)
-                grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
-        }
+        // Day/night: no remesh. World pass multiplies vertex colors by GetDayScale().
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.
     // TickWater advances clock by frame dt (~16ms) and runs body only when due.

@@ -363,7 +363,7 @@ public:
 
     // One-shot light rebuild (SetCell). EnsureRegionMeshes consumes once — never
     // re-run full light BFS every dirty-mesh frame (that destroyed FPS).
-    void NoteLightDirty(int x, int y, int z);
+    void NoteLightDirty(int x, int y, int z, int radius = 15);
     bool ConsumeLightDirty();
     bool GetLightDirtyAABB(int& minX, int& minY, int& minZ,
                            int& maxX, int& maxY, int& maxZ) const;

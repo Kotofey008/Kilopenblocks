@@ -66,6 +66,13 @@ public:
 
     void SetBrightness(float b);
     float GetBrightness() const { return brightness_; }
+    // Draw-time modulate (0.2..1.0). Torches still visible at night via floor.
+    float GetDayScale() const {
+        float s = 0.25f + 0.75f * brightness_;
+        if (s < 0.25f) s = 0.25f;
+        if (s > 1.f) s = 1.f;
+        return s;
+    }
     void UpdateLightMap();
 
     uint16_t GetLight(int x, int y, int z) const;
