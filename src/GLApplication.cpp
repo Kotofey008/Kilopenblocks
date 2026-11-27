@@ -307,8 +307,8 @@ void GLApplication::EnsureRegionMeshes() {
         int dirtyOx[16], dirtyOz[16];
         int nDirty = grid.CollectDirtyRegions(dirtyOx, dirtyOz, 16);
         // Higher drain when many columns dirty (day/night LUT catch-up).
-        // Place: 2 cols/frame. Day-ring (~49) drains at 4/frame — smooth, no spike.
-        int kMaxDirtyCols = (nDirty > 16) ? 6 : (nDirty > 4 ? 4 : 2);
+        // Place: 2/frame. Day/night catch-up of many cols: 3/frame (smooth, no hitch).
+        int kMaxDirtyCols = (nDirty > 8) ? 3 : 2;
         int nRebuild = nDirty < kMaxDirtyCols ? nDirty : kMaxDirtyCols;
 
         for (int i = 0; i < nRebuild; ++i) {
@@ -848,19 +848,11 @@ void GLApplication::Frame() {
         // GLES COLOR_ARRAY ignores glColor — LUT must change and a few view
         // columns remesh so baked vertex colors track day/night (budgeted).
         if (lightMap_.ConsumeTableDirty()) {
-            // Remesh only view-ring columns (not every loaded mesh) to avoid
-            // hitch on each day/night step. Outer ring catches up as player moves.
+            // All loaded XZ columns must track LUT (else far chunks stay on old day
+            // colors until resume). Unique ox,oz only; drain stays 2–4/frame → no spike.
             GridData& grid = game_.GetGrid();
-            EntityPlayer* pl = game_.GetLocalPlayer();
-            int pcx = 0, pcz = 0;
-            if (pl) {
-                pcx = ((int)pl->GetPosition().x) & ~15;
-                pcz = ((int)pl->GetPosition().z) & ~15;
-            }
-            const int ring = 3; // 7×7 columns
-            for (int dz = -ring; dz <= ring; ++dz)
-                for (int dx = -ring; dx <= ring; ++dx)
-                    grid.MarkRegionDirty(pcx + dx * 16, 0, pcz + dz * 16);
+            for (size_t i = 0; i < regionMeshes_.size(); ++i)
+                grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
         }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.

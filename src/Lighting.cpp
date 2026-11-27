@@ -101,16 +101,15 @@ int LightMap::Index(int x, int y, int z) const {
 }
 
 void LightMap::InitDefaultCurves() {
-    // Original-like: levels 15..13 visually identical; steps clear from 12 down to 0.
-    // (Previous linear i/15 made 15..11 look flat instead.)
-    for (int i = 0; i < 16; ++i) {
-        float t;
-        if (i >= 13)
-            t = 1.f;
-        else
-            t = (float)i / 12.f * (12.f / 13.f); // 12 → ~0.923, just under plateau
-        curveR_[i] = curveG_[i] = curveB_[i] = curveRow_[i] = t;
-    }
+    // Visual weights tuned so AFTER UpdateLightMap formula:
+    //   15==14==13 (plateau), then 12,11,…,0 each a clear step on white blocks.
+    // Linear i/15 and the previous 0..12 remap both crushed the top of the range.
+    static const float kVis[16] = {
+        0.00f, 0.07f, 0.14f, 0.21f, 0.29f, 0.37f, 0.46f, 0.55f,  // 0..7
+        0.64f, 0.73f, 0.82f, 0.90f, 0.96f, 1.00f, 1.00f, 1.00f   // 8..12, 13..15
+    };
+    for (int i = 0; i < 16; ++i)
+        curveR_[i] = curveG_[i] = curveB_[i] = curveRow_[i] = kVis[i];
 }
 
 void LightMap::Init(GridData& grid) {
