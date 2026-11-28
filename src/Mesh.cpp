@@ -171,10 +171,9 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
     unsigned short nSt = (nIdx < (int)grid.cellStates.size())
                              ? grid.cellStates[nIdx] : 0;
 
-    // Air / empty type: always emit (treat as non-occluder). Air is BMT0
-    // height 0x10 MBI=1 after LoadMaterials — falls into MBI!=0 → 2 below.
-    if (nType == 0)
-        return (selfHt != 0 && selfHt < 0x10) ? 2 : 1;
+    // Air (type 0): Material height 0x10 MBI=1 after LoadMaterials → MBI!=0 path
+    // returns 2 (emit). Do not special-case return 1 (that forced dark self-light
+    // when AddBlockFace still branched on needFlags&2).
 
     // Same type + MBI==1 (glass / leaves) — 0x835c9 / 0x836e8
     if (nType == selfType && selfMat->prop02() == 1) {
@@ -555,42 +554,17 @@ void RegionMesher::AddLadder(MeshBuffer& out, GridData& grid, int x, int y, int 
 void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, int z,
                                 const Material& mat, int ourFace, int needFlags,
                                 const LightMap* lights) {
-    // Binary AddBlockFace @ 0x877a0:
-    //   if ((param_6 & 2) == 0) light = GetLightInside(x,y,z,face);
-    //   else                     light = GetLight(x,y,z,face);
-    // needFlags comes from NeedFace return (0/1/2/3). Bit 1 (value 2) selects
-    // the “outside / neighbour” light path. FaceColor already applies face
-    // mode via GetFaceLight; when bit1 clear we sample self-cell light
-    // (GetLight without neighbour step) to approximate GetLightInside.
+    // Light: always FaceColor → GetFaceLight (neighbour + face mode).
+    // Sampling self-cell when (needFlags&2)==0 made outdoor solids black:
+    // solid cells hold low/zero sky; bright values live in air neighbours.
+    // Restore light_outdoor_torch baseline. needFlags kept for geometry only.
+    (void)needFlags;
     int idx = grid.CoordToIndex(x, y, z);
     unsigned short st = (idx >= 0 && idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
     uint8_t cls = mat.prop01();
     float u0, v0, u1, v1;
     FaceUV(mat, ourFace, u0, v0, u1, v1, st);
-    uint32_t col;
-    if (lights) {
-        if ((needFlags & 2) != 0) {
-            // GetLight path (neighbour / face light)
-            col = FaceColor(lights, x, y, z, ourFace);
-        } else {
-            // GetLightInside approximation: sample this cell, still apply face mode
-            uint16_t packed = lights->GetLight(x, y, z);
-            // Re-apply face mode bits the same way GetFaceLight does
-            uint16_t mode = 0;
-            switch (ourFace) {
-                case 0: mode = 0x0000; break;
-                case 1: mode = 0x1800; break;
-                case 2: mode = 0x0800; break;
-                case 3: mode = 0x2000; break;
-                case 4: mode = 0x1000; break;
-                case 5: mode = 0x2800; break;
-            }
-            packed = (uint16_t)((packed & ~0x3800) | mode);
-            col = lights->GetLightColor(packed);
-        }
-    } else {
-        col = 0xFFFFFFFFu;
-    }
+    uint32_t col = FaceColor(lights, x, y, z, ourFace);
     float fx = (float)x, fy = (float)y, fz = (float)z;
     // UVR bit1 (value 2): special Y-face UV corner layout (AddBlockFace local_28).
     // UVR=3 sets bits 0+1. Index with same facing as kUvrFaceTable.
