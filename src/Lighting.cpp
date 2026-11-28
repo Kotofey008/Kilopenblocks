@@ -53,8 +53,17 @@ int LightRules::OpacityAt(const GridData& grid, int wx, int wy, int wz) {
 int LightRules::Emission(const GridData& grid, unsigned char type) {
     if (type == 0) return 0;
     const Material* m = grid.GetMaterial((int)type);
+    if (!m) return 0;
     int L = SignedL(m);
-    return (L > 0) ? LightPack::Clamp15(L) : 0;
+    if (L > 0) return LightPack::Clamp15(L);
+    // Torch BMT=2 placed as unlit shell (17) while Active (18) holds L=14 in
+    // blocks.txt. Palette often places 17 — use paired active L so torch lights.
+    if (m->prop01() == 2 && (int)type + 1 < 256) {
+        const Material* a = grid.GetMaterial((int)type + 1);
+        int La = SignedL(a);
+        if (La > 0) return LightPack::Clamp15(La);
+    }
+    return 0;
 }
 
 int LightRules::EmissionAt(const GridData& grid, int wx, int wy, int wz) {
@@ -433,17 +442,33 @@ int LightMap::RunUpdate(GridData& grid, const LightUpdateBox& box, int cellBudge
 
 int LightMap::ProcessLightQueue(GridData& grid, int maxCells) {
     if (updates_.empty() || maxCells <= 0) return 0;
-    int left = maxCells;
     int processed = 0;
-    // Cap iterations so expand cannot infinite-loop in one frame
-    int guard = 64;
-    while (!updates_.empty() && left > 0 && guard-- > 0) {
-        LightUpdateBox box = updates_.front();
-        updates_.erase(updates_.begin());
-        int v = RunUpdate(grid, box, left);
-        left -= v;
-        processed += v;
-    }
+    // Block first — sky boxes are large and used to starve torch flood entirely.
+    int blockBudget = maxCells * 2 / 3;
+    if (blockBudget < 500) blockBudget = maxCells / 2;
+    int skyBudget = maxCells - blockBudget;
+    if (skyBudget < 200) skyBudget = 200;
+
+    auto runLayer = [&](LightLayer layer, int budget) {
+        int left = budget;
+        int guard = 48;
+        while (left > 0 && guard-- > 0) {
+            int idx = -1;
+            for (size_t i = 0; i < updates_.size(); ++i) {
+                if (updates_[i].layer == layer) { idx = (int)i; break; }
+            }
+            if (idx < 0) break;
+            LightUpdateBox box = updates_[(size_t)idx];
+            updates_.erase(updates_.begin() + idx);
+            int v = RunUpdate(grid, box, left);
+            left -= v;
+            processed += v;
+        }
+        return left; // leftover unused
+    };
+    int leftBlock = runLayer(LightLayer::Block, blockBudget);
+    // Unused block budget → sky
+    runLayer(LightLayer::Sky, skyBudget + (leftBlock > 0 ? leftBlock : 0));
     return processed;
 }
 
@@ -571,7 +596,35 @@ void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int
     Enqueue(LightLayer::Sky,
             minX - margin, oy_, minZ - margin,
             maxX - 1 + margin, oy_ + sizeY_ - 1, maxZ - 1 + margin);
-    Enqueue(LightLayer::Block, minX, minY, minZ, maxX - 1, maxY - 1, maxZ - 1);
+
+    // Block: expand Y to full if AABB was flat; always at least ±15 for emitters in range.
+    int by0 = minY, by1 = maxY - 1;
+    if (by1 < by0) { by0 = minY; by1 = minY; }
+    // Scan AABB for any emitter — if present, run synchronous block flood (torch must
+    // light the room this frame, not after sky queue drains).
+    bool anyEmit = false;
+    int e0x = minX, e1x = maxX - 1, e0y = by0, e1y = by1, e0z = minZ, e1z = maxZ - 1;
+    for (int z = minZ; z < maxZ && !anyEmit; ++z)
+        for (int y = by0; y <= by1 && !anyEmit; ++y)
+            for (int x = minX; x < maxX; ++x) {
+                int em = LightRules::EmissionAt(grid, x, y, z);
+                if (em > 0) { anyEmit = true; break; }
+            }
+    if (anyEmit) {
+        // Full torch radius around the AABB
+        int lx0 = (minX - 15) - ox_; if (lx0 < 0) lx0 = 0;
+        int lx1 = (maxX + 15) - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
+        int ly0 = (by0 - 15) - oy_; if (ly0 < 0) ly0 = 0;
+        int ly1 = (by1 + 15) - oy_; if (ly1 > sizeY_) ly1 = sizeY_;
+        int lz0 = (minZ - 15) - oz_; if (lz0 < 0) lz0 = 0;
+        int lz1 = (maxZ + 15) - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
+        PropagateBlock(grid, lx0, lx1, ly0, ly1, lz0, lz1);
+        for (int z = lz0; z < lz1; ++z)
+            for (int x = lx0; x < lx1; ++x)
+                grid.MarkRegionDirty(x + ox_, 0, z + oz_);
+    } else {
+        Enqueue(LightLayer::Block, minX, by0, minZ, maxX - 1, by1, maxZ - 1);
+    }
 }
 
 void LightMap::RefreshColumnSky(GridData& grid, int worldOx, int worldOz, int colsX, int colsZ) {
