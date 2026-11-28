@@ -587,22 +587,32 @@ void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int
             minX - margin, oy_, minZ - margin,
             maxX - 1 + margin, oy_ + sizeY_ - 1, maxZ - 1 + margin);
 
-    // Block channel: always re-flood ±15 around the dirty AABB synchronously.
-    // - L>0 place: seeds emission and spreads
-    // - L>0 break: clears old block light (PropagateBlock zeros then re-seeds)
-    // Queue alone was starved by large Sky boxes (no light until resume).
+    // Block: enqueue; if L-related (AABB ≥ ~15 or any emitter in box), sync flood
+    // with modest radius to avoid multi-frame lag on every solid place.
     int y0 = minY, y1 = maxY - 1;
     if (y1 < y0) y1 = y0;
-    int bx0 = (minX - 15) - ox_; if (bx0 < 0) bx0 = 0;
-    int bx1 = (maxX + 15) - ox_; if (bx1 > sizeX_) bx1 = sizeX_;
-    int by0 = (y0 - 15) - oy_; if (by0 < 0) by0 = 0;
-    int by1 = (y1 + 15) - oy_; if (by1 > sizeY_) by1 = sizeY_;
-    int bz0 = (minZ - 15) - oz_; if (bz0 < 0) bz0 = 0;
-    int bz1 = (maxZ + 15) - oz_; if (bz1 > sizeZ_) bz1 = sizeZ_;
-    PropagateBlock(grid, bx0, bx1, by0, by1, bz0, bz1);
-    for (int z = bz0; z < bz1; ++z)
-        for (int x = bx0; x < bx1; ++x)
-            grid.MarkRegionDirty(x + ox_, 0, z + oz_);
+    bool anyEmit = false;
+    for (int z = minZ; z < maxZ && !anyEmit; ++z)
+        for (int y = y0; y <= y1 && !anyEmit; ++y)
+            for (int x = minX; x < maxX; ++x)
+                if (LightRules::EmissionAt(grid, x, y, z) > 0) { anyEmit = true; break; }
+    // Wide dirty AABB comes from NoteLightDirty(R=15) on L+/L- edits.
+    bool wide = (maxX - minX) >= 20 || (maxZ - minZ) >= 20;
+    if (anyEmit || wide) {
+        int R = anyEmit ? 12 : 10;
+        int bx0 = (minX - R) - ox_; if (bx0 < 0) bx0 = 0;
+        int bx1 = (maxX + R) - ox_; if (bx1 > sizeX_) bx1 = sizeX_;
+        int by0 = (y0 - R) - oy_; if (by0 < 0) by0 = 0;
+        int by1 = (y1 + R) - oy_; if (by1 > sizeY_) by1 = sizeY_;
+        int bz0 = (minZ - R) - oz_; if (bz0 < 0) bz0 = 0;
+        int bz1 = (maxZ + R) - oz_; if (bz1 > sizeZ_) bz1 = sizeZ_;
+        PropagateBlock(grid, bx0, bx1, by0, by1, bz0, bz1);
+        for (int z = bz0; z < bz1; ++z)
+            for (int x = bx0; x < bx1; ++x)
+                grid.MarkRegionDirty(x + ox_, 0, z + oz_);
+    } else {
+        Enqueue(LightLayer::Block, minX, y0, minZ, maxX - 1, y1, maxZ - 1);
+    }
 }
 
 void LightMap::RefreshColumnSky(GridData& grid, int worldOx, int worldOz, int colsX, int colsZ) {
@@ -706,13 +716,18 @@ void LightMap::UpdateLightMap() {
 uint32_t LightMap::GetLightColor(uint16_t packed) const {
     int sky = LightPack::Sky(packed);
     int block = LightPack::Block(packed);
-    // Caves ≈ full night outdoor (maybe slightly darker), not pure black.
-    // Level 5 ≈ table RGB 96 — close to noon-baked night outdoor after dayScale.
-    if (sky == 0 && block == 0) {
-        sky = 5;
-        block = 0;
-    }
-    uint32_t uVar1 = colorTable_[(sky << 4) | block];
+    // NeoMCPE-style skyDarken: night dims sky nibble only, block (L>0) stays full.
+    // Outdoor night sky=15 → skyEff~4–6 so torch block=14 actually shows.
+    // Uniform vertex dayScale was dimming sky and block equally → torch invisible outdoors.
+    int darken = (int)((1.f - brightness_) * 11.f + 0.5f);
+    if (darken < 0) darken = 0;
+    if (darken > 15) darken = 15;
+    int skyEff = sky - darken;
+    if (skyEff < 0) skyEff = 0;
+    // Cave residual: no pure black
+    if (skyEff == 0 && block == 0)
+        skyEff = 1;
+    uint32_t uVar1 = colorTable_[(skyEff << 4) | block];
     uint32_t mode = (uint32_t)(packed & LightPack::MODE_MASK);
     int scale;
     if (mode == 0x2000) scale = 0x94;

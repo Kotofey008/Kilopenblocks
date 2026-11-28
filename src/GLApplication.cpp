@@ -240,13 +240,8 @@ void GLApplication::EnsureRegionMeshes() {
             slot->ox = ox; slot->oy = oy; slot->oz = oz;
         }
         RegionMesher::Build(grid, ox, oy, oz, blockDefs_, slot->layers, &lightMap_);
-        // Noon LUT baked into verts; apply live day scale (far chunks stay in sync
-        // when scale changes without remesh — see Frame day path).
-        {
-            float ds = lightMap_.Empty() ? 1.f : lightMap_.GetDayScale();
-            for (int li = 0; li < 7; ++li)
-                slot->layers[li].ScaleVertexRgb(ds);
-        }
+        // Day/night is skyDarken inside GetLightColor (block light stays full).
+        // No uniform ScaleVertexRgb — that hid outdoor torches at night.
         slot->valid = false;
         for (int li = 0; li < 7; ++li)
             if (slot->layers[li].IndexCount() > 0) { slot->valid = true; break; }
@@ -856,28 +851,18 @@ void GLApplication::Frame() {
     // so baked vertex colors track the cycle (GetLightColor table path).
     if (!lightMap_.Empty()) {
         // Match Clouds::SetSkyLightScale path: 0.2 + 0.8 * dayFactor (night not pure black)
-        lightMap_.SetBrightness(0.2f + 0.8f * dayF);
-        lightMap_.UpdateLightMap(); // table stays noon; no mesh rebuild
-        // Day/night: scale ALL loaded mesh vertex RGB by ratio. Instant, no lag,
-        // no far-chunk leftover day colors (COLOR_ARRAY ignores glColor).
-        {
-            // Meshes are built with current GetDayScale() already applied.
-            // First frame: only sync tracker. Later: multiply by ratio so far
-            // chunks update instantly (no remesh / no stale day lighting).
-            static float s_meshDayScale = -1.f;
-            float ds = lightMap_.GetDayScale();
-            if (s_meshDayScale < 0.f) {
-                s_meshDayScale = ds;
-            } else {
-                float denom = s_meshDayScale > 1e-4f ? s_meshDayScale : 1.f;
-                float ratio = ds / denom;
-                if (ratio < 0.97f || ratio > 1.03f) {
-                    for (size_t mi = 0; mi < regionMeshes_.size(); ++mi)
-                        for (int li = 0; li < 7; ++li)
-                            regionMeshes_[mi].layers[li].ScaleVertexRgb(ratio);
-                    s_meshDayScale = ds;
-                }
-            }
+        float newB = 0.2f + 0.8f * dayF;
+        float oldB = lightMap_.GetBrightness();
+        lightMap_.SetBrightness(newB);
+        lightMap_.UpdateLightMap();
+        // skyDarken changed → remesh loaded columns so GetLightColor picks new skyEff
+        // (torches stay bright; sky dims). Budgeted drain avoids hitch.
+        float db = newB - oldB;
+        if (db < 0.f) db = -db;
+        if (db >= 0.08f) {
+            GridData& g = game_.GetGrid();
+            for (size_t i = 0; i < regionMeshes_.size(); ++i)
+                g.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
         }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.
