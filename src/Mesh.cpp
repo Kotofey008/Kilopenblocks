@@ -68,81 +68,133 @@ void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
 // all six faces (NeedFaceXP/XN/YP/YN/ZP/ZN share structure; axis only changes
 // neighbour offset).
 // ---------------------------------------------------------------------------
+// NeedFace* recovery from rizin jumptables (NeedFaceXP @ 0x833d0 family).
+//
+// PIC tables resolved (NeedFaceXP non-boundary / boundary):
+//   BMT 0 → complex height/state path (0x835c0 / 0x83678)
+//   BMT 1,2,3,4 → return 0 (0x83460)  // not used in solid path
+//   BMT 5 → return 1 (0x834d8)
+//   BMT 6 → complex stairs (0x834e0 / 0x83658)
+//   BMT 7 → complex door (0x83550 / 0x83630)
+//   BMT 8 → state&7==3 ? 2 : 1 (0x834b0)
+//   BMT 9,10 → return 3 (0x834d0)
+//
+// Return values used by AddBlockFace:
+//   0 = cull face
+//   1 = emit full face
+//   2 = partial / special (slab height, stairs step, …)
+//   3 = special (trapdoor/gate style)
+//
+// Project face numbering: 0=+X 1=-X 2=+Y 3=-Y 4=+Z 5=-Z
+// Binary AddBlockFace face arg: 0=XP 1=YP 2=ZP 3=XN 4=YN 5=ZN
+// (caller maps; this function stays on project convention.)
+// ---------------------------------------------------------------------------
 int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
-    // NeedFace* @ 0x833d0 family — per-class jump in binary.
-    //
-    // Adjacent-face cull (drop shared face between two cells) runs ONLY when
-    // BOTH materials satisfy (after LoadMaterials gating):
-    //   BMT (+0x01) == 0
-    //   height (+0x00) == 0x10  // file BH 0 or 16 → full cell; BH 1..15 partial
-    //   MBI  (+0x02) == 0       // fully opaque
-    // Any other neighbour (slab, glass MBI=1, ice MBI=2, leaves, BMT≠0, air, …)
-    // does NOT suppress the face.
     int selfIdx = grid.CoordToIndex(x, y, z);
     if (selfIdx < 0) return 0;
     unsigned char selfType = grid.cellTypes[selfIdx];
     if (selfType == 0) return 0;
 
+    const Material* selfMat = grid.GetMaterial((int)selfType);
+    if (!selfMat) return 1;
+
+    const uint8_t selfBmt = selfMat->prop01();
+    if (selfBmt > 10) return 0;
+
+    // Neighbour offset (project face order)
     int nx = x, ny = y, nz = z;
     switch (face) {
-        case 0: nx++; break; case 1: nx--; break;
-        case 2: ny++; break; case 3: ny--; break;
-        case 4: nz++; break; case 5: nz--; break;
+        case 0: nx++; break;
+        case 1: nx--; break;
+        case 2: ny++; break;
+        case 3: ny--; break;
+        case 4: nz++; break;
+        case 5: nz--; break;
         default: return 0;
     }
     int nIdx = grid.CoordToIndex(nx, ny, nz);
-    const Material* selfMat = grid.GetMaterial((int)selfType);
 
-    auto isMutualOccluder = [](unsigned char t, const Material* mat) -> bool {
-        if (t == 0 || !mat) return false;
-        if (mat->prop01() != 0) return false;     // BMT
-        if (mat->height() != 0x10) return false;  // full BH only
-        if (mat->prop02() != 0) return false;     // MBI
-        return true;
-    };
+    // --- BMT 1/2/3/4: solid-path tables return 0 (cross/torch/ladder handled elsewhere)
+    if (selfBmt == 1 || selfBmt == 2 || selfBmt == 3 || selfBmt == 4)
+        return 0;
 
-    auto isPartialHeight = [](const Material* mat) -> bool {
-        if (!mat || mat->prop01() != 0) return false;
-        uint8_t ht = mat->height();
-        return ht != 0 && ht < 0x10;
-    };
+    // --- BMT 5 fence: table → 1
+    if (selfBmt == 5)
+        return 1;
 
+    // --- BMT 8 lamp: state&7 == 3 → 2 else 1  (NeedFaceXP 0x834b0)
+    if (selfBmt == 8) {
+        unsigned short st = (selfIdx < (int)grid.cellStates.size())
+                                ? grid.cellStates[selfIdx] : 0;
+        return ((st & 7) == 3) ? 2 : 1;
+    }
+
+    // --- BMT 9 gate / BMT 10 trapdoor: table → 3
+    if (selfBmt == 9 || selfBmt == 10)
+        return 3;
+
+    // --- BMT 6 stairs / BMT 7 door: partial (2) until full case bodies recovered
+    //     Boundary vs non-boundary differ; for now always request partial so
+    //     AddBlockFace emits the step/door geometry.
+    if (selfBmt == 6 || selfBmt == 7)
+        return 2;
+
+    // ========== BMT 0 (solid / slab) — recovered from 0x835c0 / 0x83678 ==========
+    // Out-of-world face: always emit (partial if self height < 16)
     if (nIdx < 0) {
-        if (isPartialHeight(selfMat)) return 2;
+        uint8_t ht = selfMat->height();
+        if (ht != 0 && ht < 0x10) return 2;
         return 1;
     }
 
     unsigned char nType = grid.cellTypes[nIdx];
     const Material* nMat = grid.GetMaterial((int)nType);
+    unsigned short selfSt = (selfIdx < (int)grid.cellStates.size())
+                                ? grid.cellStates[selfIdx] : 0;
+    unsigned short nSt = (nIdx < (int)grid.cellStates.size())
+                             ? grid.cellStates[nIdx] : 0;
 
-    // Only full opaque solid touching full opaque solid → cull shared face.
-    if (isMutualOccluder(selfType, selfMat) && isMutualOccluder(nType, nMat))
-        return 0;
-
-    // MBI=1 same-type adjacent face cull (glass / leaves + All/LeavesQuality):
-    // Binary: MBI==1 + same type → drop shared face, except All(+0x07)!=0 with
-    // LeavesQuality Fancy (2): keep internal faces.
-    //   Off (0): cull same-id (and mesh layer forced to 0 in AddBlockFace/Build)
-    //   Fast (1): cull same-id (cutout layer, like glass)
-    //   Fancy (2): keep same-id faces for All=1
-    if (nType == selfType && selfMat && selfMat->prop02() == 1) {
+    // Same type + MBI==1 (glass / leaves path) — from 0x835c9 / 0x836e8
+    if (nType == selfType && selfMat->prop02() == 1) {
         if (selfMat->allFaces()) {
-            // All=1 leaves: only Fancy keeps inter-block faces
+            // All=1 (leaves): only Fancy keeps internal faces
             if (grid.GetLeavesQuality() != GridData::LeavesQuality::Fancy)
                 return 0;
+            // Fancy: fall through to height tests below
         } else {
-            return 0; // MBI=1 All=0 (e.g. glass): always cull same-id face
+            return 0; // glass-like: always cull same-id
         }
     }
 
-    if (isPartialHeight(selfMat))
+    // Neighbour MBI != 0 → partial (2)  (0x835d3 path)
+    if (nMat && nMat->prop02() != 0)
         return 2;
 
-    if (selfMat) {
-        uint8_t cls = selfMat->prop01();
-        if (cls == 6 || cls == 7 || cls == 10) return 2;
+    // Neighbour BMT != 0 → further tests; most non-zero → 2
+    if (nMat && nMat->prop01() != 0) {
+        // Stairs / door / trapdoor neighbour: still emit
+        return 2;
     }
-    return 1;
+
+    // Both BMT 0. Compare heights and upside-down bit (state&4).
+    // Binary (0x835eb..0x8362a):
+    //   neigh height invalid (>0xf) → cull (0)
+    //   neigh height < self height → partial (2)
+    //   else xor state&4 → 0 or 2
+    uint8_t selfHt = selfMat->height();
+    uint8_t nHt = nMat ? nMat->height() : 0x10;
+    if (nHt > 0x0f)
+        return 0;
+    if (nHt < selfHt)
+        return 2;
+
+    // Same / higher neighbour height: cull only when upside-down bits match
+    // (xor of state&4 == 0 → cull; else partial). Binary:
+    //   xor eax,edx ; and 4 ; cmp 1 ; sbb/not → 0 or 2
+    const unsigned short upMask = 0x4;
+    if (((selfSt ^ nSt) & upMask) == 0)
+        return 0;
+    return 2;
 }
 
 bool RegionMesher::IsSolid(GridData& grid, int x, int y, int z) {
@@ -492,13 +544,42 @@ void RegionMesher::AddLadder(MeshBuffer& out, GridData& grid, int x, int y, int 
 void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, int z,
                                 const Material& mat, int ourFace, int needFlags,
                                 const LightMap* lights) {
-    (void)needFlags;
+    // Binary AddBlockFace @ 0x877a0:
+    //   if ((param_6 & 2) == 0) light = GetLightInside(x,y,z,face);
+    //   else                     light = GetLight(x,y,z,face);
+    // needFlags comes from NeedFace return (0/1/2/3). Bit 1 (value 2) selects
+    // the “outside / neighbour” light path. FaceColor already applies face
+    // mode via GetFaceLight; when bit1 clear we sample self-cell light
+    // (GetLight without neighbour step) to approximate GetLightInside.
     int idx = grid.CoordToIndex(x, y, z);
     unsigned short st = (idx >= 0 && idx < (int)grid.cellStates.size()) ? grid.cellStates[idx] : 0;
     uint8_t cls = mat.prop01();
     float u0, v0, u1, v1;
     FaceUV(mat, ourFace, u0, v0, u1, v1, st);
-    uint32_t col = FaceColor(lights, x, y, z, ourFace);
+    uint32_t col;
+    if (lights) {
+        if ((needFlags & 2) != 0) {
+            // GetLight path (neighbour / face light)
+            col = FaceColor(lights, x, y, z, ourFace);
+        } else {
+            // GetLightInside approximation: sample this cell, still apply face mode
+            uint16_t packed = lights->GetLight(x, y, z);
+            // Re-apply face mode bits the same way GetFaceLight does
+            uint16_t mode = 0;
+            switch (ourFace) {
+                case 0: mode = 0x0000; break;
+                case 1: mode = 0x1800; break;
+                case 2: mode = 0x0800; break;
+                case 3: mode = 0x2000; break;
+                case 4: mode = 0x1000; break;
+                case 5: mode = 0x2800; break;
+            }
+            packed = (uint16_t)((packed & ~0x3800) | mode);
+            col = lights->GetLightColor(packed);
+        }
+    } else {
+        col = 0xFFFFFFFFu;
+    }
     float fx = (float)x, fy = (float)y, fz = (float)z;
     // UVR bit1 (value 2): special Y-face UV corner layout (AddBlockFace local_28).
     // UVR=3 sets bits 0+1. Index with same facing as kUvrFaceTable.
