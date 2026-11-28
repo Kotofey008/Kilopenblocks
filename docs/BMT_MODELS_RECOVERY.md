@@ -32,8 +32,8 @@ Legend:
 | ID | Issue | Severity | Status | Original | Project | Action |
 |----|-------|----------|--------|----------|---------|--------|
 | BMT0-01 | Full cube path | P1 | Partial | Exact face verts + UV from tables | EmitFace | Prefer recovered table over EmitFace when height==0x10 && !upside. |
-| BMT0-02 | Partial height (slab) geometry | P0 | Partial | Height from +0x00, state&4 = upside-down; side V scaled; Y faces partial | y0/y1 calc + EmitAxisFace; V scaling approximate | Exact vertex offsets from AddBlockFace local_* tables. |
-| BMT0-03 | Slab ↔ full mutual cull | P0 | **Partial** | NeedFace height + state&4 xor | Implemented for BMT0 from XP tables | Verify Y faces + boundary tables match. |
+| BMT0-02 | Partial height (slab) geometry | P0 | **Partial** | Height +0x00, state&4 upside; side V reduced by ht; Y at slab plane | y0/y1 1/16, V frac, full only ht≥0x10 (2026-11-28) | Binary face-template ×8 still via floats; UV 0x11 fixed-point not bit-exact. |
+| BMT0-03 | Slab ↔ full mutual cull | P0 | **Partial** | NeedFaceXP height/xor; NeedFaceYP/YN edge specials | nHt>0xf→0, nHt<self→2, xor&4; Y-edge from 0x83982/0x848e0 | Region boundary tables still collapsed; confirm stacked slabs in-game. |
 | BMT0-04 | Slab merge / FullHeightBlockVariant | P1 | Partial | FullHeightBlockVariant @ 0x98f20; place rules | Present in GridData | Re-verify against binary after NeedFace fixed. |
 
 ### BMT 1 & 4 — Cross / Cane

@@ -139,60 +139,71 @@ int RegionMesher::NeedFace(GridData& grid, int x, int y, int z, int face) {
     if (selfBmt == 6 || selfBmt == 7)
         return 2;
 
-    // ========== BMT 0 (solid / slab) — recovered from 0x835c0 / 0x83678 ==========
-    // Out-of-world face: always emit (partial if self height < 16)
+    // ========== BMT 0 (solid / slab) ==========
+    // Horizontal faces: tables @ NeedFaceXP 0x835c0 / 0x83678
+    // Y faces world-edge: NeedFaceYP @ 0x83982 / NeedFaceYN @ 0x848e0
+    unsigned short selfSt = (selfIdx < (int)grid.cellStates.size())
+                                ? grid.cellStates[selfIdx] : 0;
+    const uint8_t selfHt = selfMat->height();
+    const bool selfUpside = (selfSt & 4) != 0;
+
+    // --- World-edge / missing neighbour ---
     if (nIdx < 0) {
-        uint8_t ht = selfMat->height();
-        if (ht != 0 && ht < 0x10) return 2;
+        // NeedFaceYP (no cell above): height>0xf → 2;
+        //   else (state&4)==0 → 1, upside → 2
+        // NeedFaceYN (no cell below): height>0xf → 2;
+        //   else (state&4)==0 → 2, upside → 1
+        // Horizontal missing neighbour: partial if ht<0x10 else 1
+        if (face == 2) { // +Y
+            if (selfHt > 0x0f) return 2;
+            return selfUpside ? 2 : 1;
+        }
+        if (face == 3) { // -Y
+            if (selfHt > 0x0f) return 2;
+            return selfUpside ? 1 : 2;
+        }
+        if (selfHt != 0 && selfHt < 0x10) return 2;
         return 1;
     }
 
     unsigned char nType = grid.cellTypes[nIdx];
     const Material* nMat = grid.GetMaterial((int)nType);
-    unsigned short selfSt = (selfIdx < (int)grid.cellStates.size())
-                                ? grid.cellStates[selfIdx] : 0;
     unsigned short nSt = (nIdx < (int)grid.cellStates.size())
                              ? grid.cellStates[nIdx] : 0;
 
-    // Same type + MBI==1 (glass / leaves path) — from 0x835c9 / 0x836e8
+    // Air / empty type: always emit (treat as non-occluder). Air is BMT0
+    // height 0x10 MBI=1 after LoadMaterials — falls into MBI!=0 → 2 below.
+    if (nType == 0)
+        return (selfHt != 0 && selfHt < 0x10) ? 2 : 1;
+
+    // Same type + MBI==1 (glass / leaves) — 0x835c9 / 0x836e8
     if (nType == selfType && selfMat->prop02() == 1) {
         if (selfMat->allFaces()) {
-            // All=1 (leaves): only Fancy keeps internal faces
             if (grid.GetLeavesQuality() != GridData::LeavesQuality::Fancy)
                 return 0;
-            // Fancy: fall through to height tests below
         } else {
-            return 0; // glass-like: always cull same-id
+            return 0;
         }
     }
 
-    // Neighbour MBI != 0 → partial (2)  (0x835d3 path)
+    // Neighbour MBI != 0 → 2 (0x835d3)
     if (nMat && nMat->prop02() != 0)
         return 2;
 
-    // Neighbour BMT != 0 → further tests; most non-zero → 2
-    if (nMat && nMat->prop01() != 0) {
-        // Stairs / door / trapdoor neighbour: still emit
+    // Neighbour BMT != 0 → 2
+    if (nMat && nMat->prop01() != 0)
         return 2;
-    }
 
-    // Both BMT 0. Compare heights and upside-down bit (state&4).
-    // Binary (0x835eb..0x8362a):
-    //   neigh height invalid (>0xf) → cull (0)
-    //   neigh height < self height → partial (2)
-    //   else xor state&4 → 0 or 2
-    uint8_t selfHt = selfMat->height();
+    // Both BMT 0 — height + upside (state&4) comparison (0x835eb..0x8362a)
+    //   neigh height > 0xf → cull (0)   [full-height neighbour]
+    //   neigh height < self → 2
+    //   else (selfSt^nSt)&4 == 0 → cull else 2
     uint8_t nHt = nMat ? nMat->height() : 0x10;
     if (nHt > 0x0f)
         return 0;
     if (nHt < selfHt)
         return 2;
-
-    // Same / higher neighbour height: cull only when upside-down bits match
-    // (xor of state&4 == 0 → cull; else partial). Binary:
-    //   xor eax,edx ; and 4 ; cmp 1 ; sbb/not → 0 or 2
-    const unsigned short upMask = 0x4;
-    if (((selfSt ^ nSt) & upMask) == 0)
+    if (((selfSt ^ nSt) & 4) == 0)
         return 0;
     return 2;
 }
@@ -588,37 +599,48 @@ void RegionMesher::AddBlockFace(MeshBuffer& out, GridData& grid, int x, int y, i
         uvRot = UvrTableFacing((int)st & 3, mat.uvr()) | 4;
 
     if (cls == 0) {
-        // Solid / slab from Material+0x00 height (1..16 after LoadMaterials BH gate).
-        // state&4 → upside-down (slab flush to cell ceiling) — same bit used in
-        // NeedFaceYP/YN boundary paths and ConfigureState orientation.
+        // Solid / slab — AddBlockFace class 0 @ 0x877a0.
+        // Binary mesh units: cell origin <<7 (=*128), height steps *8 (=1/16 cell).
+        // height from Material[+0x00] after LoadMaterials BH gate (1..16).
+        // state&4 = upside-down (slab flush to cell ceiling).
+        // Height adjust path only entered when height < 0x10 (binary cmp).
         int ht = (int)mat.height();
         if (ht <= 0 || ht > 16) ht = 16;
         const bool upside = (st & 4) != 0;
+
+        // Full cell (height >= 0x10): standard face, ignore upside bit for geometry
+        if (ht >= 0x10) {
+            EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col, uvRot);
+            return;
+        }
+
+        // Partial height — binary adjusts face-template shorts:
+        //   bottom-aligned: Y coords that are 0 stay 0; non-zero become ht*8
+        //   upside: zero-coords become (0x10-ht)*8; full stay 0x80
+        // World floats equivalent:
         float y0 = fy;
         float y1 = fy + (float)ht / 16.f;
         if (upside) {
             y1 = fy + 1.f;
             y0 = y1 - (float)ht / 16.f;
         }
-        // Full cube: standard face
-        if (ht >= 16 && !upside) {
-            EmitFace(out, x, y, z, ourFace, u0, v0, u1, v1, col, uvRot);
-            return;
-        }
-        // Partial height: emit only the occupied Y-range of the cell.
-        // Side faces (XP/XN/ZP/ZN): scale V so the texture maps to the slab
-        // height (bottom-aligned or top-aligned with upside-down).
+
+        // Side faces (project 0/1/4/5 = ±X ±Z): scale V to slab height.
+        // Binary: local_5c = local_90 - height  (tile V span reduced by ht units
+        // in 0x11-per-tile fixed point) for non-Y faces when bottom-aligned;
+        // upside uses (0x10-ht) offset on the other end.
         float su0 = u0, sv0 = v0, su1 = u1, sv1 = v1;
         if (ourFace == 0 || ourFace == 1 || ourFace == 4 || ourFace == 5) {
             const float frac = (float)ht / 16.f;
             if (!upside) {
-                // Bottom slab: keep v1 (bottom of tile), pull v0 down toward v1
+                // Bottom slab: keep v1 (tile bottom), compress v0 toward v1
                 sv0 = v1 + (v0 - v1) * frac;
             } else {
-                // Top slab: keep v0 (top of tile), pull v1 up toward v0
+                // Upside slab: keep v0 (tile top), compress v1 toward v0
                 sv1 = v0 + (v1 - v0) * frac;
             }
         }
+        // Y faces (2/3): full UV, plane at y0 (bottom) or y1 (top) via EmitAxisFace
         EmitAxisFace(out, fx, y0, fz, fx + 1.f, y1, fz + 1.f,
                      ourFace, su0, sv0, su1, sv1, col, uvRot);
         return;
