@@ -433,17 +433,32 @@ int LightMap::RunUpdate(GridData& grid, const LightUpdateBox& box, int cellBudge
 
 int LightMap::ProcessLightQueue(GridData& grid, int maxCells) {
     if (updates_.empty() || maxCells <= 0) return 0;
-    int left = maxCells;
     int processed = 0;
-    // Cap iterations so expand cannot infinite-loop in one frame
-    int guard = 64;
-    while (!updates_.empty() && left > 0 && guard-- > 0) {
-        LightUpdateBox box = updates_.front();
-        updates_.erase(updates_.begin());
-        int v = RunUpdate(grid, box, left);
-        left -= v;
-        processed += v;
-    }
+    // Sky boxes are huge and were starving Block (emitters never ran).
+    int blockBudget = (maxCells * 2) / 3;
+    if (blockBudget < 800) blockBudget = maxCells > 800 ? 800 : maxCells;
+    int skyBudget = maxCells - blockBudget;
+    if (skyBudget < 200) skyBudget = maxCells / 4;
+
+    auto drainLayer = [&](LightLayer layer, int budget) {
+        int left = budget;
+        int guard = 64;
+        while (left > 0 && guard-- > 0) {
+            int found = -1;
+            for (size_t i = 0; i < updates_.size(); ++i) {
+                if (updates_[i].layer == layer) { found = (int)i; break; }
+            }
+            if (found < 0) break;
+            LightUpdateBox box = updates_[(size_t)found];
+            updates_.erase(updates_.begin() + found);
+            int v = RunUpdate(grid, box, left);
+            left -= v;
+            processed += v;
+        }
+        return left;
+    };
+    int leftover = drainLayer(LightLayer::Block, blockBudget);
+    drainLayer(LightLayer::Sky, skyBudget + (leftover > 0 ? leftover : 0));
     return processed;
 }
 
@@ -571,7 +586,23 @@ void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int
     Enqueue(LightLayer::Sky,
             minX - margin, oy_, minZ - margin,
             maxX - 1 + margin, oy_ + sizeY_ - 1, maxZ - 1 + margin);
-    Enqueue(LightLayer::Block, minX, minY, minZ, maxX - 1, maxY - 1, maxZ - 1);
+
+    // Block channel: always re-flood ±15 around the dirty AABB synchronously.
+    // - L>0 place: seeds emission and spreads
+    // - L>0 break: clears old block light (PropagateBlock zeros then re-seeds)
+    // Queue alone was starved by large Sky boxes (no light until resume).
+    int y0 = minY, y1 = maxY - 1;
+    if (y1 < y0) y1 = y0;
+    int lx0 = (minX - 15) - ox_; if (lx0 < 0) lx0 = 0;
+    int lx1 = (maxX + 15) - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
+    int ly0 = (y0 - 15) - oy_; if (ly0 < 0) ly0 = 0;
+    int ly1 = (y1 + 15) - oy_; if (ly1 > sizeY_) ly1 = sizeY_;
+    int lz0 = (minZ - 15) - oz_; if (lz0 < 0) lz0 = 0;
+    int lz1 = (maxZ + 15) - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
+    PropagateBlock(grid, lx0, lx1, ly0, ly1, lz0, lz1);
+    for (int z = lz0; z < lz1; ++z)
+        for (int x = lx0; x < lx1; ++x)
+            grid.MarkRegionDirty(x + ox_, 0, z + oz_);
 }
 
 void LightMap::RefreshColumnSky(GridData& grid, int worldOx, int worldOz, int colsX, int colsZ) {
