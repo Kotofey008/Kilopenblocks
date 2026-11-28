@@ -27,6 +27,8 @@ public:
     const std::vector<uint16_t>& Indices() const { return indices_; }
     int VertexCount() const { return (int)verts_.size(); }
     int IndexCount() const { return (int)indices_.size(); }
+    // Multiply RGB of every vertex by s (A unchanged). Used for day/night without remesh.
+    void ScaleVertexRgb(float s);
 
 private:
     std::vector<PCT1Vertex> verts_;

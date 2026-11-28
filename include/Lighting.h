@@ -5,15 +5,11 @@
 #include <queue>
 
 // =============================================================================
-// INTENTIONAL DEVIATION: light *propagation* borrows NeoMCPE / classic dual-channel
-// mechanics (opacity step, emission, heightmap / isSkyLit) adapted to Exploration
-// Lite materials, fluids, and packing — not a 1:1 port of binary AddLightUpdate.
+// INTENTIONAL DEVIATION: NeoMCPE-style dual-channel LightUpdate queue adapted to
+// Lite (Material L, fluid state, packing). Not 1:1 binary AddLightUpdate.
 //
-// Kept original-compatible for mesher + future RE:
-//   - packing sky[0:3]|block[4:7]|mode[11:13]
-//   - GetFaceLight face modes (binary map)
-//   - GetLightColor LUT + mode scales
-//   - Material L: >0 emission, <0 attenuation (opacity step)
+// Public surface stays original-compatible for mesher / RE:
+//   packing sky|block|mode, GetFaceLight modes, GetLightColor, Material L
 // =============================================================================
 
 namespace LightPack {
@@ -26,13 +22,10 @@ namespace LightPack {
     static constexpr uint16_t MODE_2800 = 0x2800;
 
     inline int Clamp15(int v) {
-        // Hard floor 0 / ceil 15 — never allow negative into nibble pack (&0xf would
-        // turn -1 into 15 and "invert" darkness back to full bright).
         if (v <= 0) return 0;
         if (v >= 15) return 15;
         return v;
     }
-    // light = max(0, light - amount); amount treated as unsigned absorb.
     inline int SaturateSub(int light, int amount) {
         if (light <= 0) return 0;
         if (amount <= 0) return Clamp15(light);
@@ -49,34 +42,33 @@ namespace LightPack {
     inline uint16_t Mode(uint16_t v) { return (uint16_t)(v & MODE_MASK); }
 }
 
-// ---------------------------------------------------------------------------
-// Step 1: opacity / emission from Lite Material + fluid state
-// (NeoMCPE lightBlock / lightEmission adapted — not tile-id tables)
-// ---------------------------------------------------------------------------
 namespace LightRules {
-    // Signed L from material byte +0x1a (binary MtlDesc L field).
     int SignedL(const Material* m);
-
-    // NeoMCPE lightBlock equivalent [0..15]: light loss when entering this cell.
-    // 0  = transparent (air); formula treats 0 as 1 step when spreading.
-    // 15 = fully blocks (solid).
-    // Leaves/ice: -L; water fluid state: 2–3.
     int Opacity(const GridData& grid, unsigned char type, unsigned short state);
     int OpacityAt(const GridData& grid, int wx, int wy, int wz);
-
-    // NeoMCPE lightEmission: Material L > 0.
     int Emission(const GridData& grid, unsigned char type);
     int EmissionAt(const GridData& grid, int wx, int wy, int wz);
-
-    // Heightmap stopper: opacity >= 15 (true solid). Leaves/water do not raise heightmap.
     bool BlocksSkyHeight(const GridData& grid, unsigned char type, unsigned short state);
 }
+
+// NeoMCPE LightLayer adapted
+enum class LightLayer : uint8_t { Sky = 0, Block = 1 };
+
+// NeoMCPE LightUpdate AABB (inclusive world coords)
+struct LightUpdateBox {
+    LightLayer layer = LightLayer::Sky;
+    int x0 = 0, y0 = 0, z0 = 0;
+    int x1 = 0, y1 = 0, z1 = 0;
+    bool expandToContain(int _x0, int _y0, int _z0, int _x1, int _y1, int _z1);
+};
 
 class LightMap {
 public:
     void Init(GridData& grid);
 
+    // Full rebuild (world load). Also seeds queue cleared.
     void PropagateBlockLights(GridData& grid);
+    // Legacy entry: enqueues sky+block for AABB (processed by ProcessLightQueue).
     void PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                    int minZ, int maxZ);
 
@@ -109,21 +101,28 @@ public:
         return d;
     }
 
-    // Step 2: heightmap / isSkyLit (NeoMCPE LevelChunk heightmap adapted)
-    // skyHeight_[lx+sizeX*lz] = lowest local Y where cell is sky-lit (ly >= height → lit).
-    // Matches MCPE: isSkyLit iff y >= heightmap[xz].
+    // Step 2: heightmap
     void RebuildHeightmap(GridData& grid);
-    // Recalc heightmap + vertical sky for one world-aligned XZ column band.
     void RefreshColumnSky(GridData& grid, int worldOx, int worldOz, int colsX = 1, int colsZ = 1);
     void RecalcHeightColumn(GridData& grid, int lx, int lz);
     int GetSkyHeightLocal(int lx, int lz) const;
     int GetSkyHeightWorld(int wx, int wz) const;
     bool IsSkyLit(int wx, int wy, int wz) const;
 
+    // Step 3–5: LightUpdate queue (NeoMCPE-style)
+    // Enqueue AABB (world inclusive). Merges into existing box when possible.
+    void Enqueue(LightLayer layer, int x0, int y0, int z0, int x1, int y1, int z1);
+    // After SetCell: height recalc + enqueue sky/block around the edit.
+    void OnBlockChange(GridData& grid, int wx, int wy, int wz, int emitRadius);
+    // Drain queue, maxCells evaluations per call. Marks MarkRegionDirty only when
+    // a cell's sky/block nibble actually changes.
+    int ProcessLightQueue(GridData& grid, int maxCells);
+    bool HasPendingLight() const { return !updates_.empty(); }
+
 private:
     std::vector<uint16_t> data_;
-    // Per-XZ heightmap (local Y, 0..sizeY). sizeY means open sky to bottom.
     std::vector<uint16_t> skyHeight_;
+    std::vector<LightUpdateBox> updates_;
     uint32_t colorTable_[256]{};
     float brightness_ = 1.f;
     float brightnessApplied_ = -1.f;
@@ -140,7 +139,15 @@ private:
     int XZIndex(int lx, int lz) const { return lx + sizeX_ * lz; }
     void InitDefaultCurves();
 
-    void RebuildRegion(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1);
+    void SetSky(int wx, int wy, int wz, int sky);
+    void SetBlock(int wx, int wy, int wz, int block);
+    int GetSkyAt(int wx, int wy, int wz) const;
+    int GetBlockAt(int wx, int wy, int wz) const;
+
+    // Run one LightUpdate box; returns cells visited. May enqueue more.
+    int RunUpdate(GridData& grid, const LightUpdateBox& box, int cellBudget);
+
+    // Immediate column sky (init / full rebuild) — no queue.
     void PropagateSky(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1);
     void PropagateBlock(GridData& grid, int lx0, int lx1, int ly0, int ly1, int lz0, int lz1);
 };

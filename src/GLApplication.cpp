@@ -240,6 +240,13 @@ void GLApplication::EnsureRegionMeshes() {
             slot->ox = ox; slot->oy = oy; slot->oz = oz;
         }
         RegionMesher::Build(grid, ox, oy, oz, blockDefs_, slot->layers, &lightMap_);
+        // Noon LUT baked into verts; apply live day scale (far chunks stay in sync
+        // when scale changes without remesh — see Frame day path).
+        {
+            float ds = lightMap_.Empty() ? 1.f : lightMap_.GetDayScale();
+            for (int li = 0; li < 7; ++li)
+                slot->layers[li].ScaleVertexRgb(ds);
+        }
         slot->valid = false;
         for (int li = 0; li < 7; ++li)
             if (slot->layers[li].IndexCount() > 0) { slot->valid = true; break; }
@@ -290,15 +297,20 @@ void GLApplication::EnsureRegionMeshes() {
         }
     }
 
-    // ---- 2a) Light first (independent of mesh dirty list) ----
-    // Previously light only ran inside AnyRegionDirty+Consume, so failed marks
-    // skipped sky updates entirely. Always drain lightDirty when set.
+    // ---- 2a) LightUpdate queue (NeoMCPE-style, steps 3–5) ----
+    // SetCell → NoteLightDirty AABB → enqueue Sky/Block boxes; drain with budget.
+    // MarkRegionDirty only when a cell nibble actually changes (inside RunUpdate).
     if (!lightMap_.Empty() && grid.PeekLightDirty()) {
         int lx0, ly0, lz0, lx1, ly1, lz1;
         grid.ConsumeLightDirty();
         if (grid.GetLightDirtyAABB(lx0, ly0, lz0, lx1, ly1, lz1)) {
+            // Enqueue only (no synchronous full BFS).
             lightMap_.PropagateBlockLightsLocal(grid, lx0, lx1, ly0, ly1, lz0, lz1);
         }
+    }
+    if (!lightMap_.Empty() && lightMap_.HasPendingLight()) {
+        // ~800–1500 cell evals/frame: smooth on weak devices, catches up in 1–3 frames.
+        lightMap_.ProcessLightQueue(grid, 1200);
     }
 
     // ---- 2b) Dirty XZ columns — budgeted mesh rebuild ----
@@ -844,15 +856,27 @@ void GLApplication::Frame() {
     if (!lightMap_.Empty()) {
         // Match Clouds::SetSkyLightScale path: 0.2 + 0.8 * dayFactor (night not pure black)
         lightMap_.SetBrightness(0.2f + 0.8f * dayF);
-        lightMap_.UpdateLightMap();
-        // GLES COLOR_ARRAY ignores glColor — LUT must change and a few view
-        // columns remesh so baked vertex colors track day/night (budgeted).
-        if (lightMap_.ConsumeTableDirty()) {
-            // All loaded XZ columns must track LUT (else far chunks stay on old day
-            // colors until resume). Unique ox,oz only; drain stays 2–4/frame → no spike.
-            GridData& grid = game_.GetGrid();
-            for (size_t i = 0; i < regionMeshes_.size(); ++i)
-                grid.MarkRegionDirty(regionMeshes_[i].ox, 0, regionMeshes_[i].oz);
+        lightMap_.UpdateLightMap(); // table stays noon; no mesh rebuild
+        // Day/night: scale ALL loaded mesh vertex RGB by ratio. Instant, no lag,
+        // no far-chunk leftover day colors (COLOR_ARRAY ignores glColor).
+        {
+            // Meshes are built with current GetDayScale() already applied.
+            // First frame: only sync tracker. Later: multiply by ratio so far
+            // chunks update instantly (no remesh / no stale day lighting).
+            static float s_meshDayScale = -1.f;
+            float ds = lightMap_.GetDayScale();
+            if (s_meshDayScale < 0.f) {
+                s_meshDayScale = ds;
+            } else {
+                float denom = s_meshDayScale > 1e-4f ? s_meshDayScale : 1.f;
+                float ratio = ds / denom;
+                if (ratio < 0.97f || ratio > 1.03f) {
+                    for (size_t mi = 0; mi < regionMeshes_.size(); ++mi)
+                        for (int li = 0; li < 7; ++li)
+                            regionMeshes_[mi].layers[li].ScaleVertexRgb(ratio);
+                    s_meshDayScale = ds;
+                }
+            }
         }
     }
     // Binary UpdateWaterState @ 0xa1040: gate on +0x2d8 vs now; period +0x2d4=200.

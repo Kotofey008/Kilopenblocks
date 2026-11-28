@@ -17,6 +17,27 @@ void MeshBuffer::Clear() {
     indices_.clear();
 }
 
+void MeshBuffer::ScaleVertexRgb(float s) {
+    if (s > 0.999f && s < 1.001f) return;
+    if (s < 0.f) s = 0.f;
+    if (s > 4.f) s = 4.f;
+    for (size_t i = 0; i < verts_.size(); ++i) {
+        uint32_t c = verts_[i].color;
+        int r = (int)(((c >> 16) & 255u) * s + 0.5f);
+        int g = (int)(((c >> 8) & 255u) * s + 0.5f);
+        int b = (int)((c & 255u) * s + 0.5f);
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
+        if (r < 0) r = 0;
+        if (g < 0) g = 0;
+        if (b < 0) b = 0;
+        verts_[i].color = (c & 0xFF000000u) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    }
+}
+
+
+
 void MeshBuffer::PushQuad(const PCT1Vertex verts[4]) {
     uint16_t base = (uint16_t)verts_.size();
     for (int i = 0; i < 4; ++i) verts_.push_back(verts[i]);
