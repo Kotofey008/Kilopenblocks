@@ -593,15 +593,15 @@ void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int
     // Queue alone was starved by large Sky boxes (no light until resume).
     int y0 = minY, y1 = maxY - 1;
     if (y1 < y0) y1 = y0;
-    int lx0 = (minX - 15) - ox_; if (lx0 < 0) lx0 = 0;
-    int lx1 = (maxX + 15) - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
-    int ly0 = (y0 - 15) - oy_; if (ly0 < 0) ly0 = 0;
-    int ly1 = (y1 + 15) - oy_; if (ly1 > sizeY_) ly1 = sizeY_;
-    int lz0 = (minZ - 15) - oz_; if (lz0 < 0) lz0 = 0;
-    int lz1 = (maxZ + 15) - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
-    PropagateBlock(grid, lx0, lx1, ly0, ly1, lz0, lz1);
-    for (int z = lz0; z < lz1; ++z)
-        for (int x = lx0; x < lx1; ++x)
+    int bx0 = (minX - 15) - ox_; if (bx0 < 0) bx0 = 0;
+    int bx1 = (maxX + 15) - ox_; if (bx1 > sizeX_) bx1 = sizeX_;
+    int by0 = (y0 - 15) - oy_; if (by0 < 0) by0 = 0;
+    int by1 = (y1 + 15) - oy_; if (by1 > sizeY_) by1 = sizeY_;
+    int bz0 = (minZ - 15) - oz_; if (bz0 < 0) bz0 = 0;
+    int bz1 = (maxZ + 15) - oz_; if (bz1 > sizeZ_) bz1 = sizeZ_;
+    PropagateBlock(grid, bx0, bx1, by0, by1, bz0, bz1);
+    for (int z = bz0; z < bz1; ++z)
+        for (int x = bx0; x < bx1; ++x)
             grid.MarkRegionDirty(x + ox_, 0, z + oz_);
 }
 
