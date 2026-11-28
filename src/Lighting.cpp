@@ -554,9 +554,20 @@ void LightMap::PropagateBlockLights(GridData& grid) {
 
 void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                          int minZ, int maxZ) {
-    // Enqueue sky with extra margin so tunnel mouths sample open-air sky=15.
-    (void)grid;
-    const int margin = 2;
+    // Immediate vertical sky for touched columns so dig/open roof is not left at
+    // sky=0 until app resume. Then mark those columns dirty so mesh rebuilds.
+    int lx0 = minX - ox_; if (lx0 < 0) lx0 = 0;
+    int lx1 = maxX - ox_; if (lx1 > sizeX_) lx1 = sizeX_;
+    int lz0 = minZ - oz_; if (lz0 < 0) lz0 = 0;
+    int lz1 = maxZ - oz_; if (lz1 > sizeZ_) lz1 = sizeZ_;
+    if (lx0 < lx1 && lz0 < lz1) {
+        PropagateSky(grid, lx0, lx1, 0, sizeY_, lz0, lz1);
+        for (int z = lz0; z < lz1; ++z)
+            for (int x = lx0; x < lx1; ++x)
+                grid.MarkRegionDirty(x + ox_, 0, z + oz_);
+    }
+    // Wide sky enqueue for horizontal entrance blend (processed budgeted).
+    const int margin = 8;
     Enqueue(LightLayer::Sky,
             minX - margin, oy_, minZ - margin,
             maxX - 1 + margin, oy_ + sizeY_ - 1, maxZ - 1 + margin);
@@ -664,8 +675,12 @@ void LightMap::UpdateLightMap() {
 uint32_t LightMap::GetLightColor(uint16_t packed) const {
     int sky = LightPack::Sky(packed);
     int block = LightPack::Block(packed);
-    if (sky == 0 && block == 0)
-        return 0xFF000000u;
+    // Caves ≈ full night outdoor (maybe slightly darker), not pure black.
+    // Level 5 ≈ table RGB 96 — close to noon-baked night outdoor after dayScale.
+    if (sky == 0 && block == 0) {
+        sky = 5;
+        block = 0;
+    }
     uint32_t uVar1 = colorTable_[(sky << 4) | block];
     uint32_t mode = (uint32_t)(packed & LightPack::MODE_MASK);
     int scale;
