@@ -310,7 +310,7 @@ void GLApplication::EnsureRegionMeshes() {
     }
     if (!lightMap_.Empty() && lightMap_.HasPendingLight()) {
         // ~800–1500 cell evals/frame: smooth on weak devices, catches up in 1–3 frames.
-        lightMap_.ProcessLightQueue(grid, 1200);
+        lightMap_.ProcessLightQueue(grid, 2500); // sky flood into tunnels needs headroom
     }
 
     // ---- 2b) Dirty XZ columns — budgeted mesh rebuild ----

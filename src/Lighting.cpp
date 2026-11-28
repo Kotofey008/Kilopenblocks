@@ -252,76 +252,180 @@ int LightMap::RunUpdate(GridData& grid, const LightUpdateBox& box, int cellBudge
     int yd = (box.y1 - box.y0) + 1;
     int zd = (box.z1 - box.z0) + 1;
     int size = xd * yd * zd;
-    // NeoMCPE: skip absurdly large
+    // NeoMCPE: skip absurdly large single box
     if (size > 16 * 16 * 128) return 0;
 
-    int visited = 0;
     static const int dx[6] = {1,-1,0,0,0,0};
     static const int dy[6] = {0,0,1,-1,0,0};
     static const int dz[6] = {0,0,0,0,1,-1};
 
-    for (int x = box.x0; x <= box.x1 && visited < cellBudget; ++x) {
-        for (int z = box.z0; z <= box.z1 && visited < cellBudget; ++z) {
+    // ----- Sky: NeoMCPE horizontal+vertical flood (tunnel mouth daylight) -----
+    // Previous path only rewrote cells once in AABB order; sky from an open
+    // neighbour often arrived after the dark cell was already finalized at 0.
+    // Use a priority-style multi-pass / BFS so light walks into caves.
+    if (box.layer == LightLayer::Sky) {
+        // Heightmap for columns in box (isSkyLit)
+        for (int z = box.z0; z <= box.z1; ++z)
+            for (int x = box.x0; x <= box.x1; ++x) {
+                int lx = x - ox_, lz = z - oz_;
+                if (lx >= 0 && lz >= 0 && lx < sizeX_ && lz < sizeZ_)
+                    RecalcHeightColumn(grid, lx, lz);
+            }
+
+        // Seed: sky-lit cells → 15; opaque → 0; others keep current as starting point
+        std::queue<int> q;
+        auto tryPush = [&](int wx, int wy, int wz) {
+            int i = Index(wx, wy, wz);
+            if (i < 0) return;
+            q.push(i);
+        };
+
+        int visited = 0;
+        for (int x = box.x0; x <= box.x1; ++x)
+            for (int z = box.z0; z <= box.z1; ++z)
+                for (int y = box.y0; y <= box.y1; ++y) {
+                    int i = Index(x, y, z);
+                    if (i < 0) continue;
+                    int op = LightRules::OpacityAt(grid, x, y, z);
+                    int old = LightPack::Sky(data_[(size_t)i]);
+                    int next;
+                    if (op >= 15)
+                        next = 0;
+                    else if (IsSkyLit(x, y, z))
+                        next = 15;
+                    else
+                        next = old; // will be raised/lowered by BFS
+                    if (next != old) {
+                        SetSky(x, y, z, next);
+                        grid.MarkRegionDirty(x, y, z);
+                    }
+                    if (LightPack::Sky(data_[(size_t)i]) > 0)
+                        q.push(i);
+                    ++visited;
+                    if (visited >= cellBudget) break;
+                }
+
+        // BFS: spread sky into non-sky-lit cells (horizontal entrance blend)
+        while (!q.empty() && visited < cellBudget) {
+            int idx = q.front();
+            q.pop();
+            int level = LightPack::Sky(data_[(size_t)idx]);
+            if (level <= 1) continue;
+            int x = (idx % sizeX_) + ox_;
+            int y = ((idx / sizeX_) % sizeY_) + oy_;
+            int z = (idx / (sizeX_ * sizeY_)) + oz_;
+            for (int d = 0; d < 6; ++d) {
+                int nx = x + dx[d], ny = y + dy[d], nz = z + dz[d];
+                // Allow one cell past box so light reaches tunnel just outside AABB
+                if (nx < box.x0 - 1 || nx > box.x1 + 1) continue;
+                if (ny < box.y0 - 1 || ny > box.y1 + 1) continue;
+                if (nz < box.z0 - 1 || nz > box.z1 + 1) continue;
+                int ni = Index(nx, ny, nz);
+                if (ni < 0) continue;
+                int op = LightRules::OpacityAt(grid, nx, ny, nz);
+                if (op >= 15) continue;
+                int step = (op <= 0) ? 1 : op;
+                int nl = LightPack::SaturateSub(level, step);
+                int cur = LightPack::Sky(data_[(size_t)ni]);
+                if (nl > cur) {
+                    SetSky(nx, ny, nz, nl);
+                    grid.MarkRegionDirty(nx, ny, nz);
+                    q.push(ni);
+                }
+                ++visited;
+                if (visited >= cellBudget) break;
+            }
+        }
+
+        // If flood hit boundary with more to do, re-enqueue expanded box
+        if (!q.empty()) {
+            Enqueue(LightLayer::Sky,
+                    box.x0 - 2, box.y0 - 1, box.z0 - 2,
+                    box.x1 + 2, box.y1 + 1, box.z1 + 2);
+        }
+        return visited;
+    }
+
+    // ----- Block layer: same NeoMCPE cell formula + BFS -----
+    int visited = 0;
+    std::queue<int> q;
+    for (int x = box.x0; x <= box.x1 && visited < cellBudget; ++x)
+        for (int z = box.z0; z <= box.z1 && visited < cellBudget; ++z)
             for (int y = box.y0; y <= box.y1 && visited < cellBudget; ++y) {
                 ++visited;
                 int i = Index(x, y, z);
                 if (i < 0) continue;
-
                 int op = LightRules::OpacityAt(grid, x, y, z);
-                int step = (op <= 0) ? 1 : op;
-                if (op >= 15) step = 15;
-
-                if (box.layer == LightLayer::Sky) {
-                    int old = LightPack::Sky(data_[(size_t)i]);
-                    int emit = IsSkyLit(x, y, z) ? 15 : 0;
-                    int target = emit;
-                    if (op < 15) {
-                        int best = 0;
-                        for (int d = 0; d < 6; ++d) {
-                            int n = GetSkyAt(x + dx[d], y + dy[d], z + dz[d]);
-                            if (n > best) best = n;
-                        }
-                        int fromN = LightPack::SaturateSub(best, step);
-                        if (fromN > target) target = fromN;
-                    } else {
-                        target = 0;
+                int emit = LightRules::EmissionAt(grid, x, y, z);
+                int old = LightPack::Block(data_[(size_t)i]);
+                int next = (op >= 15) ? 0 : emit;
+                if (next != old && next >= old) {
+                    // only raise here; decrease path via full recompute below
+                }
+                // Recompute from emit + will BFS from emitters
+                if (emit > 0) {
+                    if (emit != old) {
+                        SetBlock(x, y, z, emit);
+                        if (emit != old) grid.MarkRegionDirty(x, y, z);
                     }
-                    target = LightPack::Clamp15(target);
-                    if (target != old) {
-                        SetSky(x, y, z, target);
-                        grid.MarkRegionDirty(x, y, z); // step 5: only on change
-                        int t = target > 0 ? target - 1 : 0;
-                        // Spread: enqueue neighbor faces outside box or always small
-                        Enqueue(LightLayer::Sky, x - 1, y, z, x + 1, y, z);
-                        Enqueue(LightLayer::Sky, x, y - 1, z, x, y + 1, z);
-                        Enqueue(LightLayer::Sky, x, y, z - 1, x, y, z + 1);
-                        (void)t;
-                    }
-                } else {
-                    int old = LightPack::Block(data_[(size_t)i]);
-                    int emit = LightRules::EmissionAt(grid, x, y, z);
-                    int target = emit;
-                    if (op < 15) {
-                        int best = 0;
-                        for (int d = 0; d < 6; ++d) {
-                            int n = GetBlockAt(x + dx[d], y + dy[d], z + dz[d]);
-                            if (n > best) best = n;
-                        }
-                        int fromN = LightPack::SaturateSub(best, step);
-                        if (fromN > target) target = fromN;
-                    } else {
-                        target = 0;
-                    }
-                    target = LightPack::Clamp15(target);
-                    if (target != old) {
-                        SetBlock(x, y, z, target);
-                        grid.MarkRegionDirty(x, y, z);
-                        Enqueue(LightLayer::Block, x - 1, y, z, x + 1, y, z);
-                        Enqueue(LightLayer::Block, x, y - 1, z, x, y + 1, z);
-                        Enqueue(LightLayer::Block, x, y, z - 1, x, y, z + 1);
-                    }
+                    q.push(i);
+                } else if (op >= 15 && old != 0) {
+                    SetBlock(x, y, z, 0);
+                    grid.MarkRegionDirty(x, y, z);
                 }
             }
+
+    // Decrease pass: for non-emit cells in box, recompute max(neighbors)-step
+    for (int x = box.x0; x <= box.x1 && visited < cellBudget; ++x)
+        for (int z = box.z0; z <= box.z1 && visited < cellBudget; ++z)
+            for (int y = box.y0; y <= box.y1 && visited < cellBudget; ++y) {
+                ++visited;
+                int i = Index(x, y, z);
+                if (i < 0) continue;
+                int op = LightRules::OpacityAt(grid, x, y, z);
+                int emit = LightRules::EmissionAt(grid, x, y, z);
+                if (emit > 0 || op >= 15) continue;
+                int best = 0;
+                for (int d = 0; d < 6; ++d) {
+                    int n = GetBlockAt(x + dx[d], y + dy[d], z + dz[d]);
+                    if (n > best) best = n;
+                }
+                int step = (op <= 0) ? 1 : op;
+                int target = LightPack::SaturateSub(best, step);
+                int old = LightPack::Block(data_[(size_t)i]);
+                if (target != old) {
+                    SetBlock(x, y, z, target);
+                    grid.MarkRegionDirty(x, y, z);
+                    if (target > 0) q.push(i);
+                }
+            }
+
+    while (!q.empty() && visited < cellBudget) {
+        int idx = q.front();
+        q.pop();
+        int level = LightPack::Block(data_[(size_t)idx]);
+        if (level <= 1) continue;
+        int x = (idx % sizeX_) + ox_;
+        int y = ((idx / sizeX_) % sizeY_) + oy_;
+        int z = (idx / (sizeX_ * sizeY_)) + oz_;
+        for (int d = 0; d < 6; ++d) {
+            int nx = x + dx[d], ny = y + dy[d], nz = z + dz[d];
+            if (nx < box.x0 - 1 || nx > box.x1 + 1) continue;
+            if (ny < box.y0 - 1 || ny > box.y1 + 1) continue;
+            if (nz < box.z0 - 1 || nz > box.z1 + 1) continue;
+            int ni = Index(nx, ny, nz);
+            if (ni < 0) continue;
+            int op = LightRules::OpacityAt(grid, nx, ny, nz);
+            if (op >= 15) continue;
+            int step = (op <= 0) ? 1 : op;
+            int nl = LightPack::SaturateSub(level, step);
+            int cur = LightPack::Block(data_[(size_t)ni]);
+            if (nl > cur) {
+                SetBlock(nx, ny, nz, nl);
+                grid.MarkRegionDirty(nx, ny, nz);
+                q.push(ni);
+            }
+            ++visited;
         }
     }
     return visited;
@@ -450,9 +554,12 @@ void LightMap::PropagateBlockLights(GridData& grid) {
 
 void LightMap::PropagateBlockLightsLocal(GridData& grid, int minX, int maxX, int minY, int maxY,
                                          int minZ, int maxZ) {
-    // Step 3/4 path: enqueue instead of synchronous full local rebuild.
+    // Enqueue sky with extra margin so tunnel mouths sample open-air sky=15.
     (void)grid;
-    Enqueue(LightLayer::Sky, minX, oy_, minZ, maxX - 1, oy_ + sizeY_ - 1, maxZ - 1);
+    const int margin = 2;
+    Enqueue(LightLayer::Sky,
+            minX - margin, oy_, minZ - margin,
+            maxX - 1 + margin, oy_ + sizeY_ - 1, maxZ - 1 + margin);
     Enqueue(LightLayer::Block, minX, minY, minZ, maxX - 1, maxY - 1, maxZ - 1);
 }
 
