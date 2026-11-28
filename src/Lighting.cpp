@@ -640,30 +640,28 @@ void LightMap::SetBrightness(float b) {
 }
 
 void LightMap::UpdateLightMap() {
-    static const int kSky[16] = {
-        12,  28,  44,  60,  78,  96, 116, 136,
-       156, 176, 196, 216, 236, 255, 255, 255
+    // Direct noon LUT (brightness applied at draw via vertex scale, not here).
+    // Original visual: 15==14==13 identical; from 12 down each step is clear on white.
+    // Steps of ~25 RGB so atlas textures do not hide the difference (10 was too small).
+    static const int kLvl[16] = {
+        10,  18,  28,  40,  55,  72,  90, 110,  // 0..7
+       130, 155, 180, 205, 230, 255, 255, 255   // 8..12, 13..15 plateau
     };
-    static const int kBlk[16] = {
-        12,  28,  44,  60,  78,  96, 116, 136,
-       156, 176, 196, 216, 236, 255, 255, 255
-    };
-    if (brightnessApplied_ >= 0.f) {
-        brightnessApplied_ = brightness_;
-        return;
-    }
+    // Always rebuild table (cheap 256 entries). Skipping after first init left
+    // stale curves in memory across code iterations / hot reload paths.
     brightnessApplied_ = brightness_;
     for (int sky = 0; sky < 16; ++sky) {
         for (int block = 0; block < 16; ++block) {
-            int s = kSky[sky];
-            int b = kBlk[block];
-            int r = s > b ? s : b;
-            int g = s > b ? s : b;
-            int bl = s > b ? s : b;
+            int s = kLvl[sky];
+            int b = kLvl[block];
+            int r, g, bl;
             if (b > s) {
+                // Block/torch channel: slight warm tint
                 r = b;
                 g = (b * 230) / 255;
                 bl = (b * 200) / 255;
+            } else {
+                r = g = bl = s;
             }
             colorTable_[sky * 16 + block] =
                 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bl;
